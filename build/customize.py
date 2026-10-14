@@ -486,8 +486,9 @@ def main():
 
     # 路径一律以本脚本位置为基准，这样从任何目录调用都能工作，
     # 不必先 cd 到 build/ 再执行。
+    # 上游源码已扁平化到仓库根（与 build/ 同级），不再有 rustdesk/ 子目录。
     here = Path(__file__).resolve().parent
-    root = Path(args.source).resolve() if args.source else (here.parent / "rustdesk")
+    root = Path(args.source).resolve() if args.source else here.parent
     cfg_path = Path(args.config).resolve() if args.config else (here / "custom.toml")
 
     if not root.is_dir():

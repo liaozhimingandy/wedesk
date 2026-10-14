@@ -27,17 +27,23 @@
 ## 二、目录说明
 
 这是一个**自包含仓库**：`git clone` 一次即可构建，不需要 `--recurse-submodules`，
-也不依赖 GitHub。上游 RustDesk 源码已整体纳入 `rustdesk/`。
+也不依赖 GitHub。上游 RustDesk 源码已**扁平化到仓库根**——源码根即仓库根，
+`build.py`、`Cargo.toml` 都在最外层，与上游的目录约定一致，脚本和 CI 都不需要额外跳目录。
 
 ```
-wedesk/                          ← 最终仓库，自主可控
+wedesk/                          ← 最终仓库，自主可控（源码根 = 仓库根）
 │
-├── rustdesk/                    ★ 上游源码 v1.5.1（已注入定制）
-│   ├── libs/hbb_common/         核心库，已实体化（不再是 submodule）
-│   ├── src/                     Rust 侧：被控端 / 控制端
-│   ├── flutter/                 Flutter UI
-│   └── .gitignore               已修复：解禁被上游规则吞掉的图标资源
+├── ── 上游源码（v1.5.1，已注入定制）──────────────
+├── libs/                        核心库，hbb_common 已实体化（不再是 submodule）
+├── src/                         Rust 侧：被控端 / 控制端
+├── flutter/                     Flutter UI
+├── res/                         图标、logo 等品牌资源
+├── build.py                     上游构建入口（python build.py ...）
+├── Cargo.toml  Cargo.lock
+├── LICENCE                      AGPL-3.0，随仓库保留以满足合规
+├── .github/  .cargo/  examples/  fastlane/  flatpak/  appimage/
 │
+├── ── 我们自己的东西 ──────────────────────────
 ├── server/                      自建服务器端
 │   ├── docker-compose.yml       hbbs(ID/注册) + hbbr(中继)
 │   ├── .env.example             配置项模板，复制为 .env 后填写
@@ -59,9 +65,14 @@ wedesk/                          ← 最终仓库，自主可控
 │   ├── custom.patch             定制改动的可重放补丁
 │   └── verify_patch.py          验证补丁仍能重建当前定制状态
 │
-└── docs/
-    ├── ARCHITECTURE.md          定制点原理图 —— 想改更多东西请看这里
-    └── IMPLEMENTATION.md        分阶段落地路线图
+├── docs/
+│   ├── ARCHITECTURE.md          定制点原理图 —— 想改更多东西请看这里
+│   ├── IMPLEMENTATION.md        分阶段落地路线图
+│   └── upstream/                上游自带文档（README、AGENTS、多语言说明）
+│
+├── README.md                    本文件
+├── .gitignore                   见下方「为什么要自己写 .gitignore」
+└── .gitattributes               换行策略：*.bat 强制 CRLF，其余 LF
 ```
 
 ### 为什么把上游源码直接放进仓库
@@ -77,6 +88,21 @@ wedesk/                          ← 最终仓库，自主可控
 
 > ⚠️ **`libs/hbb_common` 已被实体化**（删掉了它的 `.git` 指针和 `.gitmodules`）。
 > 服务器地址、公钥、APP_NAME 都定义在这里。若误恢复成 submodule，定制会静默失效。
+
+### 为什么要自己维护 `.gitignore`（而不是沿用上游的）
+
+上游 `.gitignore` 第 1 行是 `/build`。在它自己的仓库里这条规则无害
+（上游根本没有顶层 `build/` 目录，它的产物在 `flutter/build/` 和 `build-pkg/`），
+但本仓库的 `build/` 放的是**构建脚本**，照搬就会把整个脚本目录忽略掉。
+
+本仓库的 `.gitignore` 是三套规则合并的结果，特别注意：
+
+- **没有 `/build`** —— 这是刻意的，别"修复"它
+- 上游的 `*png / *svg / *jpg` 会吞掉 122 个 UI 图标
+  （在上游仓库因文件早已 tracked 而失效，问题被掩盖；
+  到新仓库后所有文件是 untracked，规则立刻生效）
+  因此**末尾有解禁白名单，必须留在文件最后**才生效
+- 上游产物目录 `flutter/build/` 由 `flutter/.gitignore` 管，`build-pkg/` 在此处管
 
 ---
 
@@ -150,7 +176,7 @@ git add . && git commit -m "customize client" && git push
 
 ## 四、本地构建（当前主线）
 
-源码已整合到本仓库的 `rustdesk/` 目录，定制也已注入完成。
+源码已整合到本仓库根目录（`Cargo.toml`、`build.py` 都在最外层），定制也已注入完成。
 剩下的是补齐工具链——目前卡在 MSVC（正在安装）。
 
 ### 4.1 必须先体检
@@ -313,8 +339,9 @@ python <repo>\build\customize.py --restore
 python upstream/verify_patch.py
 ```
 
-**最容易踩的坑**：上游更新会带走 `rustdesk/.gitignore` 里我们追加的资源白名单，
-导致图标再次被忽略。升级后检查该文件末尾是否还有 `wedesk 追加` 两段。
+**最容易踩的坑**：`.gitignore` 是我们自己维护的，上游更新**不会**覆盖它
+（它在仓库根，而上游源码里那份在合并时已丢弃）。
+但要留意别在升级时把上游的 `/build` 规则带回来——那会忽略掉我们的脚本目录。
 
 ---
 
@@ -335,8 +362,14 @@ python build\customize.py --dry-run   # 预览
 python build\customize.py             # 写入
 ```
 
-客户端图标目前仍是 RustDesk 原版。替换图标需要覆盖 `rustdesk/res/` 与
-`rustdesk/flutter/assets/` 下的对应文件，并重新构建。
+客户端图标目前仍是 RustDesk 原版。替换图标需要覆盖仓库根的 `res/` 与
+`flutter/assets/` 下的对应文件，并重新构建。主要几个：
+
+| 用途 | 文件 |
+| --- | --- |
+| Windows exe / 任务栏图标 | `res/icon.ico`、`res/tray-icon.ico` |
+| 安装包与 About 图标 | `res/32x32.png`、`res/128x128.png` |
+| Flutter UI 内嵌 | `flutter/assets/`、各端 `Runner/Assets` |
 
 ### 阻塞项
 

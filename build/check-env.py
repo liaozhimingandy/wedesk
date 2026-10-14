@@ -201,7 +201,9 @@ def main():
         results.append((name, bool(p), p or "未找到", "warn" if not p else "ok"))
 
     # ---------- 源码 ----------
-    src = Path(r"D:\Git\rustdesk")
+    # 上游源码已扁平化到仓库根（与 build/ 同级），路径从脚本位置推导，
+    # 不再硬编码盘符，仓库放哪都能体检。
+    src = Path(__file__).resolve().parent.parent
     if src.exists():
         has_common = (src / "libs" / "hbb_common" / "src" / "config.rs").exists()
         results.append(
@@ -211,7 +213,7 @@ def main():
                 (
                     "已就绪"
                     if has_common
-                    else "子模块缺失！需 git submodule update --init --recursive"
+                    else "未就绪：libs/hbb_common/src/config.rs 不存在"
                 ),
                 "ok" if has_common else "critical",
             )
@@ -271,8 +273,10 @@ def main():
         sys.exit(1)
     else:
         print(GREEN("环境就绪，可以尝试构建："))
-        print("    cd D:\\Git\\rustdesk")
+        print("    cd " + str(src))
         print("    python .\\build.py --portable --flutter --skip-portable-pack --hwcodec")
+        print()
+        print("  （或直接双击 build\\build-local.bat）")
         print()
 
 

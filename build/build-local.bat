@@ -7,8 +7,8 @@ REM    check-env.bat                verify nothing is missing
 REM    install-vcpkg-deps.bat       C++ dependencies (slow, once)
 REM    apply-rustdesk-engine.bat    Flutter + patched engine (once)
 REM
-REM  Source:  <repo>\rustdesk      (vendored upstream, always relative to this .bat)
-REM  Output:  <repo>\rustdesk\flutter\build\windows\x64\runner\Release
+REM  Source:  <repo>\              (vendored upstream sits at the repo root)
+REM  Output:  <repo>\flutter\build\windows\x64\runner\Release
 REM
 REM  Works from anywhere - every path is derived from %~dp0, so the repo can
 REM  live on any drive. No hardcoded D:\Git anywhere.
@@ -29,15 +29,16 @@ set VCPKG_DEFAULT_HOST_TRIPLET=x64-windows-static
 echo Flutter:  %FLUTTER_ROOT%
 echo vcpkg:    %VCPKG_ROOT%
 
-REM %~dp0 = <repo>\build\   ->  ..\rustdesk = <repo>\rustdesk
-cd /d "%~dp0..\rustdesk"
+REM 上游源码已扁平化到仓库根：%~dp0 = <repo>\build\  ->  .. = <repo>\
+cd /d "%~dp0.."
 if errorlevel 1 (
-    echo Cannot find source directory: %~dp0..\rustdesk
+    echo Cannot find repo root: %~dp0..
     exit /b 1
 )
 if not exist ".\build.py" (
     echo ERROR: build.py not found in %CD%
-    echo This .bat expects the vendored upstream source at <repo>\rustdesk
+    echo The vendored upstream source should sit at the repo root,
+    echo alongside build\ and server\.
     exit /b 1
 )
 

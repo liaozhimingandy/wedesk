@@ -22,7 +22,10 @@ bridge 生成、硬件编解码 ...），又能在编译前完成品牌与服务
 
 用法
 ----
-    python patch-ci.py --source <fork后的rustdesk目录> [--config ../build/custom.toml]
+    python patch-ci.py --source <仓库根目录> [--config build/custom.toml]
+
+  上游源码已扁平化到仓库根，--source 直接指向仓库根即可
+  （在本仓库里就是 build\\patch-ci.py --source ..）。
 
 之后：git add . && git commit && git push，去 GitHub Actions 页面手动触发。
 """
@@ -123,7 +126,7 @@ def insert_custom_step(text: str) -> "tuple[str, bool]":
 
 def main():
     ap = argparse.ArgumentParser(description="为 fork 的 RustDesk 注入 CI 定制步骤")
-    ap.add_argument("--source", required=True, help="fork 后的 rustdesk 源码根目录")
+    ap.add_argument("--source", required=True, help="仓库根目录（源码已扁平化在此）")
     ap.add_argument(
         "--config", default=None, help="custom.toml 路径，默认与本脚本同级目录"
     )

@@ -9,7 +9,7 @@
   1. 用 `git checkout-index` 从上游对象库导出一份"干净"的 v1.5.1 代码到临时目录
      （主仓一次 + libs/hbb_common 子模块一次，后者落到 libs/hbb_common/）
   2. 在干净副本上 `git apply` 定制补丁
-  3. 把结果和 wedesk/rustdesk 逐文件比对（归一化 CRLF 后比对字节）
+  3. 把结果和仓库根下的同名文件逐文件比对（归一化 CRLF 后比对字节）
      全部一致 => 补丁能完整重建当前定制状态，上游升级后可安全重放
 
 为什么这样写
@@ -119,10 +119,10 @@ def main() -> int:
     applied = out.count("Applied patch")
     print(f"      应用成功 ✓（{applied} 个文件）")
 
-    print(f"[4/4] 与 wedesk/rustdesk 比对 {len(CUSTOMIZED_FILES)} 个文件")
+    print(f"[4/4] 与仓库根比对 {len(CUSTOMIZED_FILES)} 个文件")
     ok = True
     for rel in CUSTOMIZED_FILES:
-        a, b = clean / rel, WEDESK / "rustdesk" / rel
+        a, b = clean / rel, WEDESK / rel
         if not (a.exists() and b.exists()):
             print(f"      ✗ {rel} (文件缺失)"); ok = False; continue
         same = norm(a.read_bytes()) == norm(b.read_bytes())

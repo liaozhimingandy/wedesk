@@ -1,8 +1,22 @@
 # =============================================================================
+# wedesk —— 扁平化仓库的忽略规则
+# =============================================================================
+# 合并了三套来源，顺序有意义：白名单必须写在粗粒度规则之后才生效。
+#   1. wedesk 自有规则（敏感数据、Python、编辑器）
+#   2. 上游 RustDesk 的构建产物规则
+#   3. 解禁白名单（写在最后，覆盖上面的 *png / *svg / *jpg）
+#
+# ！！ 这里刻意没有 /build 规则 ！！
+# 上游 .gitignore 第 1 行是 /build，但本仓库的 build/ 放的是构建脚本
+# （customize.py、build-local.bat…），加了就会被整个忽略掉。
+# 上游真正的产物目录是 flutter/build/（由 flutter/.gitignore 管）和 build-pkg/。
+# =============================================================================
+
+# =============================================================================
 # 敏感数据 —— 绝对不能进版本库
 # =============================================================================
 # server/data/ 里有 id_ed25519（私钥）和 id_ed25519.pub（公钥）。
-# 私钥一旦提交并被推送到远程，等同于服务器身份可被伪造，且 Git 历史里很难彻底清除。
+# 私钥一旦提交并推送，等同于服务器身份可被伪造，且 Git 历史里很难彻底清除。
 server/data/
 server/backup/
 
@@ -31,6 +45,79 @@ env/
 Thumbs.db
 
 # =============================================================================
-# RustDesk 源码 · bytecode 备份（customize.py 生成的 *.rd.bak）
+# Rust / Cargo 构建产物
 # =============================================================================
+/target
+examples/**/target/
+**/*.rs.bk
+
+# build.py / flutter_rust_bridge 生成的代码，每次构建自动产出
+src/version.rs
+src/ui/inline.rs
+src/bridge_generated.rs
+src/bridge_generated.io.rs
+flutter/lib/generated_bridge.dart
+flutter/lib/generated_bridge.freezed.dart
+
+# =============================================================================
+# vcpkg —— C++ 依赖（libvpx / aom / opus），体积以 GB 计且可再生
+# =============================================================================
+vcpkg_installed/
+vcpkg/
+
+# =============================================================================
+# 打包与分发产物
+# =============================================================================
+build-pkg/
+appimage/AppDir
+appimage/*.AppImage
+appimage/appimage-build
+appimage/*.xz
+flatpak/.flatpak-builder/**
+flatpak/ccache/**
+flatpak/build/**
+flatpak/repo/**
+flatpak/*.flatpak
+flutter/linux/build/**
+flutter/linux/cmake-build-debug/**
+flutter/web/
+*dmg
+*exe
+*tgz
+*deb
+**pdb
+cert.pfx
+sciter.dll
+libsciter-gtk.so
+libsciter.dylib
+*.cache
+extractor
+third_party/libdrmtap/
+
+# 备份与工作树
+*.bak
 *.rd.bak
+.worktrees/
+
+# 容器/远程开发（避免误提交本机配置）
+.gitconfig
+.vscode-server/
+.ssh
+.devcontainer/.*
+
+# =============================================================================
+# 解禁白名单 —— 必须放在本文件末尾
+# =============================================================================
+# 上游的 *png / *svg / *jpg 本意是过滤截图类临时文件，但同样会吞掉 UI 图标。
+# 在上游仓库里这些文件早已被 tracked，规则不生效、问题被掩盖；本仓库是全新
+# 仓库，所有文件都是 untracked，规则立刻生效 —— 122 个图标会被静默漏掉，
+# 其中包含 Windows 端构建必需的 res/ 与 flutter/assets/ 资源。
+# 下面按目录把品牌资源重新纳入版本控制。
+!res/**
+!flutter/assets/**
+!flutter/windows/runner/resources/**
+!flutter/macos/Runner/**
+!flutter/ios/Runner/**
+!flutter/android/app/src/main/res/**
+!fastlane/**
+!libs/**

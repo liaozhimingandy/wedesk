@@ -1,0 +1,81 @@
+# =============================================================================
+# RustDesk 自建服务器 (hbbs + hbbr) —— 团队私有化部署
+# =============================================================================
+# 端口映射写法（而非 network_mode: host），保证在 Linux 服务器、Windows Docker
+# Desktop、macOS 上都能直接跑起来。若要上生产 Linux 服务器，可参考文件末尾注释
+# 切换到 host 网络以获得真实来源 IP 与更低延迟。
+#
+# 使用前请把同目录下的 .env.example 复制为 .env，并填写 RELAY_HOST。
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # hbbs : ID 注册 / 心跳 / NAT 打洞协调
+  # ---------------------------------------------------------------------------
+  hbbs:
+    image: ${RD_IMAGE:-rustdesk/rustdesk-server:latest}
+    container_name: rd-hbbs
+    command: hbbs -r ${RELAY_HOST:-127.0.0.1}:${RELAY_PORT:-21117}
+    environment:
+      # 强制所有连接走中继。团队成员若分布在不同内网，开启可提高连通率，
+      # 代价是所有流量经过服务器消耗带宽。内网环境建议设为 N 走 P2P 直连。
+      - ALWAYS_USE_RELAY=${ALWAYS_USE_RELAY:-N}
+      # 允许中继到非本机地址（relay host 与 hbbs 不同机器时需要）
+      - ENFORCED_RELAY=${ENFORCED_RELAY:-N}
+      # 数据库保留天数：连接 / 审计日志留存周期，团队排障与合规审计的关键参数
+      - DB_URL=${DB_URL:-/root/db_v2.sqlite3}
+      - RUST_LOG=${RUST_LOG:-info}
+    volumes:
+      # 密钥(id_ed25519 / id_ed25519.pub)与 SQLite 数据库落在此目录，务必定期备份
+      - ./data:/root
+    ports:
+      - "${HBBS_TCP:-21115}:21115"      # NAT 类型探测
+      - "${HBBS_UDP:-21116}:21116"      # ID 注册 + 心跳  (UDP)
+      - "${HBBS_UDP:-21116}:21116/udp"  # 同上，必须同时开 TCP 与 UDP
+      - "${HBBS_TCP_HP:-21116}:21116"   # TCP 打洞与连接服务
+    depends_on:
+      - hbbr
+    restart: unless-stopped
+    networks:
+      - rd-net
+
+  # ---------------------------------------------------------------------------
+  # hbbr : 中继服务器。P2P 打洞失败时兜底转发画面数据
+  # ---------------------------------------------------------------------------
+  hbbr:
+    image: ${RD_IMAGE:-rustdesk/rustdesk-server:latest}
+    container_name: rd-hbbr
+    command: hbbr
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+    volumes:
+      - ./data:/root
+    ports:
+      - "${HBBR_TCP:-21117}:21117"      # 中继主端口
+    restart: unless-stopped
+    networks:
+      - rd-net
+      # -----------------------------------------------------------------------
+      # Web 客户端端口 21118 / 21119 默认【不开启】。
+      # 官方安全公告：开启后 hbbs/hbbr 会无条件信任 WebSocket 请求的
+      # X-Real-IP / X-Forwarded-For 头（不做校验），任何人直连这两个端口都能
+      # 伪造 IP，绕过 IP 限流/封禁并污染审计日志。
+      # 只有在前端挂了反向代理、且由代理统一写入该头时才可开启，并须用防火墙
+      # 限制仅反代 IP 可访问。此处保持关闭以满足团队"连接可审计"的安全基线。
+      # - "21118:21118"
+      # - "21119:21119"
+      # -----------------------------------------------------------------------
+
+networks:
+  rd-net:
+    name: rd-net
+    driver: bridge
+
+# =============================================================================
+# 上生产 Linux 服务器时，建议把 hbbs / hbbr 两处替换为 host 网络以获得真实 IP：
+#
+#     network_mode: "host"      # 删掉上面的 ports: 与 networks: 段
+#
+# 并在云平台安全组放行：TCP 21115/21116/21117 + UDP 21116
+# （--net=host 仅在 Linux 生效；Windows / macOS 请保持上面的端口映射写法）
+# =============================================================================

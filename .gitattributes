@@ -1,0 +1,21 @@
+# 统一换行符策略，避免 Windows 检出时 core.autocrlf 制造整文件 diff 噪声。
+# 规则：脚本与配置文件一律 LF；Windows 批处理脚本必须 CRLF 才能正常解析。
+
+* text=auto
+
+*.py            text eol=lf
+*.toml          text eol=lf
+*.md            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+
+# Windows 批处理对换行敏感，CMD 在部分语法下无法正确处理纯 LF
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# 二进制资源不做换行转换
+*.png           binary
+*.ico           binary
+*.zip           binary

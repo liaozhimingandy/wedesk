@@ -3,18 +3,24 @@ REM ============================================================================
 REM  Install vcpkg and build the C++ dependencies RustDesk needs.
 REM
 REM  This is the SLOWEST step (30-120 min): it compiles libvpx/aom from source.
-REM  You only need to run it once - the artifacts stay in C:\vcpkg and get
+REM  You only need to run it once - the artifacts stay in %VCPKG_ROOT% and get
 REM  reused by every later build.
+REM
+REM  Default location is D: on purpose: the vcpkg build tree runs to several GB
+REM  and C: is short on space. Override with:  set VCPKG_ROOT=X:\somewhere
+REM  (keep it in sync with build-local.bat, which defaults to the same place)
 REM
 REM  PREREQUISITE: Visual Studio Build Tools with "Desktop development with C++"
 REM ============================================================================
 setlocal
 
-set VCPKG_ROOT=C:\vcpkg
+if not defined VCPKG_ROOT set VCPKG_ROOT=D:\vcpkg
 set VCPKG_COMMIT=9e593bb18ea69cc5095e012465dcd675a822ed0d
 set TRIPLET=x64-windows-static
 
+echo vcpkg target: %VCPKG_ROOT%
 echo.
+
 echo === [1/4] Fetching vcpkg ===
 if exist "%VCPKG_ROOT%\vcpkg.exe" (
     echo vcpkg already present at %VCPKG_ROOT%, skipping clone.
@@ -33,6 +39,10 @@ if exist "%VCPKG_ROOT%\vcpkg.exe" (
 )
 
 cd /d "%VCPKG_ROOT%"
+if errorlevel 1 (
+    echo FAILED: cannot enter %VCPKG_ROOT%
+    exit /b 1
+)
 
 echo.
 echo === [2/4] Pinning to the commit the official CI uses ===
@@ -63,10 +73,10 @@ if errorlevel 1 (
 )
 
 echo.
-echo ============================================================
+echo ============================================================================
 echo  Dependencies ready.
 echo  Persisting VCPKG_ROOT for future shells...
-echo ============================================================
+echo ============================================================================
 setx VCPKG_ROOT "%VCPKG_ROOT%" >nul
 echo Done. VCPKG_ROOT=%VCPKG_ROOT%
 endlocal

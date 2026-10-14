@@ -15,6 +15,9 @@
 *.bat           text eol=crlf
 *.cmd           text eol=crlf
 
+*.patch        text eol=lf
+*.json        text eol=lf
+
 # 二进制资源不做换行转换
 *.png           binary
 *.ico           binary

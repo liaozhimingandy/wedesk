@@ -39,6 +39,7 @@ RustDesk 默认连官方服务器 rs-ny.rustdesk.com。团队私有化部署必�
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -51,6 +52,10 @@ except ImportError:
     tomllib = None
 
 BAK_SUFFIX = ".rd.bak"
+
+# 记录"上次注入进源码的值"，让脚本可以反复调整配置而不是一次性工具。
+# 随仓库一起提交，团队成员拿到的 state 与源码状态一致。
+STATE_FILE = Path(__file__).resolve().parent / ".custom-state.json"
 
 
 # ===========================================================================
@@ -321,12 +326,45 @@ def build_rules(c: dict) -> "list[Rule]":
 
 
 # ===========================================================================
+# 注入状态（支持反复调整配置）
+# ===========================================================================
+def load_state() -> dict:
+    if not STATE_FILE.exists():
+        return {}
+    try:
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        # 状态文件损坏不值得让整个定制流程失败，退回空状态即可，
+        # 代价是最多一次改不动旧值，脚本会给出明确提示。
+        return {}
+
+
+def save_state(state: dict) -> None:
+    if not state:
+        return
+    STATE_FILE.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+# ===========================================================================
 # 执行引擎
 # ===========================================================================
-def apply_rules(root: Path, rules, dry_run=False):
-    """返回 (hit, miss) 两个列表"""
+def apply_rules(root: Path, rules, dry_run=False, prev_state=None):
+    """
+    返回 (hit, miss, new_state)
+
+    prev_state 是上一次注入时记录的值，形如 {rule_key: 当时写入的字符串}。
+    它的作用是让脚本可以反复调整：每条精确匹配规则除了认上游原始值，
+    也认"上次写进去的那个值"，于是把公司名从 A 改成 B 时能正确找到 A。
+    没有它，第二次改配置就会满屏"未找到目标字符串"。
+    """
+    prev_state = prev_state or {}
     hit, miss = [], []
-    cache: dict[Path, str] = {}
+    new_state: dict[str, str] = {}
+    cache: dict[Path, str] = {}       # 应用规则后的内容
+    originals: dict[Path, str] = {}   # 磁盘上的原样，用来判断到底变没变
 
     for r in rules:
         fp = root / r.relpath
@@ -340,15 +378,46 @@ def apply_rules(root: Path, rules, dry_run=False):
         if text is None:
             text = fp.read_text(encoding="utf-8", errors="surrogateescape")
             cache[fp] = text
+            originals[fp] = text
+
+        key = "%s|%s" % (r.relpath, r.note)
 
         if r.is_regex:
             new_text, n = re.subn(r.old, r.new, text)
         else:
-            n = text.count(r.old)
-            new_text = text.replace(r.old, r.new) if n else text
+            # 依次尝试：上游原始值 -> 上次注入的值。
+            candidates = [r.old]
+            prev = prev_state.get(key)
+            if prev and prev not in candidates:
+                candidates.append(prev)
+
+            new_text, n = text, 0
+            for cand in candidates:
+                c = text.count(cand)
+                if c:
+                    new_text, n = text.replace(cand, r.new), c
+                    break
+
+        # 只要本条规则有明确目标值就记入状态，包括"值已在源码里、本次没动"
+        # 的情况 —— 这样下次改配置时仍能认出它。
+        if r.new:
+            new_state[key] = r.new
+
+        # 正则规则会"匹配成功但替换后内容一字未变"——例如版权行的年份和
+        # 公司名都没动。这时应算已命中，否则每次都假报"待修改 N 项"，
+        # 真实运行还会白白生成 .rd.bak 备份并重写文件。
+        if n and new_text == text:
+            hit.append((r, 0))
+            continue
 
         if n == 0:
-            miss.append((r, "未找到目标字符串（源码版本可能已变更）"))
+            # 幂等保护：匹配不到旧值，但新值已经在了 —— 说明这条之前注入过。
+            # 这种情况不算失败，否则重跑脚本（比如只改公司名）会满屏报"未命中"，
+            # 而且会误触发下面的 required 失败退出。
+            if not r.is_regex and r.new and r.new in text:
+                hit.append((r, 0))
+            else:
+                miss.append((r, "未找到目标字符串（源码版本可能已变更）"))
             continue
 
         cache[fp] = new_text
@@ -356,12 +425,16 @@ def apply_rules(root: Path, rules, dry_run=False):
 
     if not dry_run:
         for fp, text in cache.items():
+            # 只动真正发生变化的文件。否则"无需改动"的运行也会给每个文件
+            # 生成一份 .rd.bak 并重写一遍，白白制造噪音和误备份。
+            if text == originals.get(fp):
+                continue
             bak = fp.with_suffix(fp.suffix + BAK_SUFFIX)
             if not bak.exists():
                 shutil.copy2(fp, bak)
             fp.write_text(text, encoding="utf-8", errors="surrogateescape")
 
-    return hit, miss
+    return hit, miss, new_state
 
 
 def restore(root: Path, rules):
@@ -397,14 +470,25 @@ def main():
         description="RustDesk 源码品牌/服务器定制注入器",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--source", required=True, help="rustdesk 源码根目录")
-    ap.add_argument("--config", default="custom.toml", help="定制配置文件")
+    ap.add_argument(
+        "--source",
+        default=None,
+        help="rustdesk 源码根目录（省略则自动探测本仓库的 rustdesk/）",
+    )
+    ap.add_argument(
+        "--config",
+        default=None,
+        help="定制配置文件（省略则用与本脚本同级的 custom.toml）",
+    )
     ap.add_argument("--dry-run", action="store_true", help="只预览不写入")
     ap.add_argument("--restore", action="store_true", help="还原到定制前状态")
     args = ap.parse_args()
 
-    root = Path(args.source).resolve()
-    cfg_path = Path(args.config).resolve()
+    # 路径一律以本脚本位置为基准，这样从任何目录调用都能工作，
+    # 不必先 cd 到 build/ 再执行。
+    here = Path(__file__).resolve().parent
+    root = Path(args.source).resolve() if args.source else (here.parent / "rustdesk")
+    cfg_path = Path(args.config).resolve() if args.config else (here / "custom.toml")
 
     if not root.is_dir():
         print(f"{RED}[x]{RESET} 源码目录不存在: {root}")
@@ -430,10 +514,21 @@ def main():
             print(f"{YELLOW}[!]{RESET} {p}")
         print()
 
-    hit, miss = apply_rules(root, rules, dry_run=args.dry_run)
+    prev_state = load_state()
+    hit, miss, new_state = apply_rules(
+        root, rules, dry_run=args.dry_run, prev_state=prev_state
+    )
+    if not args.dry_run:
+        save_state(new_state)
+
+    changed = [r for r, n in hit if n]
+    alreadied = [r for r, n in hit if not n]
 
     for r, n in hit:
-        print(f"  {GREEN}✓{RESET} {r.note}  {DIM}({n} 处){RESET}")
+        if n:
+            print(f"  {GREEN}✓{RESET} {r.note}  {DIM}({n} 处){RESET}")
+        else:
+            print(f"  {GREEN}✓{RESET} {r.note}  {DIM}(已是目标值，跳过){RESET}")
     for r, why in miss:
         flag = RED if r.required else YELLOW
         print(f"  {flag}✗{RESET} {r.note}: {why}")
@@ -441,10 +536,18 @@ def main():
     print()
     failed_required = [r for r, _ in miss if r.required]
     if args.dry_run:
-        print(f"{BLUE}预演完成{RESET}: 将修改 {len(hit)} 项，未命中 {len(miss)} 项（未写入磁盘）")
+        print(
+            f"{BLUE}预演完成{RESET}: 将修改 {len(changed)} 项，"
+            f"已是目标值 {len(alreadied)} 项，未命中 {len(miss)} 项（未写入磁盘）"
+        )
     else:
-        print(f"{GREEN}定制完成{RESET}: 成功 {len(hit)} 项，未命中 {len(miss)} 项")
+        print(
+            f"{GREEN}定制完成{RESET}: 本次修改 {len(changed)} 项，"
+            f"已是目标值 {len(alreadied)} 项，未命中 {len(miss)} 项"
+        )
         print(f"{DIM}原文件已备份为 *{BAK_SUFFIX}，可用 --restore 还原{RESET}")
+    if not changed and not miss:
+        print(f"{DIM}源码已是最新定制状态，无需改动。{RESET}")
 
     if failed_required:
         print()

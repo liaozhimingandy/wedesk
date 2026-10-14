@@ -13,8 +13,9 @@ REM ============================================================================
 setlocal
 
 set FLUTTER_VERSION=3.24.5
-set FLUTTER_ROOT=C:\flutter
+if not defined FLUTTER_ROOT set FLUTTER_ROOT=c:\flutter
 set FLUTTER_ZIP=%~dp0flutter_sdk.zip
+echo Flutter target: %FLUTTER_ROOT%
 
 echo.
 echo === [1/4] Extracting Flutter SDK ===
@@ -76,7 +77,8 @@ echo Engine replaced.
 
 echo.
 echo === [4/4] Applying the Flutter 3.24 dropdown patch ===
-set FLUTTER_PATCH_SRC=%~dp0..\..\rustdesk\.github\patches\flutter_3.24.4_dropdown_menu_enableFilter.diff
+REM %~dp0 = <repo>\build\  ->  ..\rustdesk = <repo>\rustdesk
+set FLUTTER_PATCH_SRC=%~dp0..\rustdesk\.github\patches\flutter_3.24.4_dropdown_menu_enableFilter.diff
 if exist "%FLUTTER_PATCH_SRC%" (
     copy /Y "%FLUTTER_PATCH_SRC%" "%FLUTTER_ROOT%\" >nul
     cd /d "%FLUTTER_ROOT%"

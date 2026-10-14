@@ -7,18 +7,37 @@ REM    check-env.bat                verify nothing is missing
 REM    install-vcpkg-deps.bat       C++ dependencies (slow, once)
 REM    apply-rustdesk-engine.bat    Flutter + patched engine (once)
 REM
-REM  Output: D:\Git\rustdesk\flutter\build\windows\x64\runner\Release
+REM  Source:  <repo>\rustdesk      (vendored upstream, always relative to this .bat)
+REM  Output:  <repo>\rustdesk\flutter\build\windows\x64\runner\Release
+REM
+REM  Works from anywhere - every path is derived from %~dp0, so the repo can
+REM  live on any drive. No hardcoded D:\Git anywhere.
 REM ============================================================================
 setlocal
 
-set FLUTTER_ROOT=C:\flutter
-set VCPKG_ROOT=C:\vcpkg
+REM --- Tool locations -------------------------------------------------------
+REM Defaults match where things actually are on this machine. Override from
+REM outside without editing this file:
+REM     set FLUTTER_ROOT=D:\flutter && build-local.bat
+REM Flutter SDK lives on C: (already installed, ~1 GB).
+REM vcpkg goes to D: on purpose - its build tree is several GB and C: is tight.
+if not defined FLUTTER_ROOT set FLUTTER_ROOT=c:\flutter
+if not defined VCPKG_ROOT  set VCPKG_ROOT=d:\vcpkg
 set PATH=%FLUTTER_ROOT%\bin;%USERPROFILE%\.cargo\bin;%PATH%
 set VCPKG_DEFAULT_HOST_TRIPLET=x64-windows-static
 
-cd /d "%~dp0..\..\rustdesk"
+echo Flutter:  %FLUTTER_ROOT%
+echo vcpkg:    %VCPKG_ROOT%
+
+REM %~dp0 = <repo>\build\   ->  ..\rustdesk = <repo>\rustdesk
+cd /d "%~dp0..\rustdesk"
 if errorlevel 1 (
-    echo Cannot find source directory: D:\Git\rustdesk
+    echo Cannot find source directory: %~dp0..\rustdesk
+    exit /b 1
+)
+if not exist ".\build.py" (
+    echo ERROR: build.py not found in %CD%
+    echo This .bat expects the vendored upstream source at <repo>\rustdesk
     exit /b 1
 )
 

@@ -26,23 +26,57 @@
 
 ## 二、目录说明
 
+这是一个**自包含仓库**：`git clone` 一次即可构建，不需要 `--recurse-submodules`，
+也不依赖 GitHub。上游 RustDesk 源码已整体纳入 `rustdesk/`。
+
 ```
-rd-suite/
-├── server/                  自建服务器端
-│   ├── docker-compose.yml   hbbs(ID/注册) + hbbr(中继)
-│   ├── .env.example         配置项模板，复制为 .env 后填写
-│   └── rdctl.py             跨平台管理工具（启停/查公钥/备份）
+wedesk/                          ← 最终仓库，自主可控
 │
-├── build/                   客户端定制与构建
-│   ├── custom.toml          ★ 唯一需要你改的配置文件
-│   ├── customize.py         源码注入器（本地 source 定制用）
-│   ├── patch-ci.py          CI 补丁工具（GitHub Actions 云编译用）
-│   └── branding/            放你的图标、logo（替换客户端图标）
+├── rustdesk/                    ★ 上游源码 v1.5.1（已注入定制）
+│   ├── libs/hbb_common/         核心库，已实体化（不再是 submodule）
+│   ├── src/                     Rust 侧：被控端 / 控制端
+│   ├── flutter/                 Flutter UI
+│   └── .gitignore               已修复：解禁被上游规则吞掉的图标资源
+│
+├── server/                      自建服务器端
+│   ├── docker-compose.yml       hbbs(ID/注册) + hbbr(中继)
+│   ├── .env.example             配置项模板，复制为 .env 后填写
+│   └── rdctl.py                 跨平台管理工具（启停/查公钥/备份）
+│
+├── build/                       客户端定制与构建
+│   ├── custom.toml              ★ 唯一需要你改的配置文件
+│   ├── customize.py             注入器，可反复运行（改配置后重跑即可）
+│   ├── .custom-state.json       记录上次注入的值，自动维护
+│   ├── patch-ci.py              CI 补丁工具（GitHub Actions 云编译用）
+│   ├── check-env.bat            环境体检
+│   ├── install-vcpkg-deps.bat   vcpkg + C++ 依赖（30–120 min）
+│   ├── apply-rustdesk-engine.bat Flutter SDK + 替换自研 engine
+│   ├── build-local.bat          一键构建
+│   └── branding/                放你的图标、logo（替换客户端图标）
+│
+├── upstream/                    上游基线与升级
+│   ├── UPSTREAM.md              版本信息、改了什么、升级流程
+│   ├── custom.patch             定制改动的可重放补丁
+│   └── verify_patch.py          验证补丁仍能重建当前定制状态
 │
 └── docs/
-    ├── ARCHITECTURE.md      定制点原理图 —— 想改更多东西请看这里
-    └── IMPLEMENTATION.md    分阶段落地路线图
+    ├── ARCHITECTURE.md          定制点原理图 —— 想改更多东西请看这里
+    └── IMPLEMENTATION.md        分阶段落地路线图
 ```
+
+### 为什么把上游源码直接放进仓库
+
+| | vendored（当前） | submodule | subtree |
+| --- | --- | --- | --- |
+| clone 后直接构建 | ✅ 一次 clone 就够 | ❌ 漏参数就缺 hbb_common | ✅ |
+| 依赖 GitHub | ❌ 完全不依赖 | ✅ | ❌ |
+| 保留上游历史 | ❌ | ✅ | ✅ |
+
+选 vendored 的理由：这是最终交付仓库，第一诉求是"clone 下来就能构建"。
+历史丢失用 `upstream/custom.patch` + `UPSTREAM.md` 补偿。
+
+> ⚠️ **`libs/hbb_common` 已被实体化**（删掉了它的 `.git` 指针和 `.gitmodules`）。
+> 服务器地址、公钥、APP_NAME 都定义在这里。若误恢复成 submodule，定制会静默失效。
 
 ---
 
@@ -116,12 +150,13 @@ git add . && git commit -m "customize client" && git push
 
 ## 四、本地构建（当前主线）
 
-源码已克隆到 `D:\Git\rustdesk`（含子模块）并注入了定制。剩下的工作是补齐工具链。
+源码已整合到本仓库的 `rustdesk/` 目录，定制也已注入完成。
+剩下的是补齐工具链——目前卡在 MSVC（正在安装）。
 
 ### 4.1 必须先体检
 
 ```bat
-cd D:\Git\wedesk\build
+cd <repo>\build
 check-env.bat
 ```
 
@@ -153,10 +188,19 @@ check-env.bat
 装好 MSVC 后，按顺序执行（都是幂等的，重跑安全）：
 
 ```bat
+cd <repo>\build
 install-vcpkg-deps.bat        REM C++ 依赖，最慢 30-120 分钟
 apply-rustdesk-engine.bat     REM Flutter SDK + 替换官方自研 engine
 build-local.bat               REM 最终构建，20-40 分钟
 ```
+
+三个脚本的路径都基于脚本自身位置推导，仓库放在哪个盘都能跑。
+工具位置可用环境变量覆盖，默认值：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `FLUTTER_ROOT` | `c:\flutter` | Flutter SDK（已装好） |
+| `VCPKG_ROOT` | `d:\vcpkg` | vcpkg 放 D 盘，编译产物数 GB，C 盘吃紧 |
 
 ### 4.4 为什么必须替换 Flutter engine
 
@@ -177,24 +221,29 @@ Flutter/vcpkg 装到 D 盘 —— 改两个脚本里的路径即可）。
 
 ### 4.5 手动执行路线
 
-不想用 bat 的话，等效的原始命令：
+不想用 bat 的话，等效的原始命令（脚本会自动定位源码和配置，无需带参数）：
 
 ```bash
-# 1. 注入定制
-python D:\Git\wedesk\build\customize.py --source D:\Git\rustdesk --config D:\Git\wedesk\build\custom.toml
+# 1. 注入定制（可反复运行，改了 custom.toml 后重跑即可）
+python <repo>\build\customize.py --dry-run   # 先预览
+python <repo>\build\customize.py             # 再写入
 
 # 2. 构建
-cd D:\Git\rustdesk
+cd <repo>\rustdesk
 python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
 ```
 
-产物在 `D:\Git\rustdesk\flutter\build\windows\x64\runner\Release`。
+产物在 `<repo>\rustdesk\flutter\build\windows\x64\runner\Release`。
 
-想撤销定制：
+想撤销定制（还原到注入前，依赖 `*.rd.bak` 备份）：
 
 ```bash
-python customize.py --source D:\Git\rustdesk --config custom.toml --restore
+python <repo>\build\customize.py --restore
 ```
+
+> ⚠️ `--restore` 是回到**最初的上游原始值**（RustDesk / 官方服务器），
+> 不是回到上一次的定制值。想改公司名或服务器，直接改 `custom.toml` 后重跑即可，
+> 脚本认得"上次注入的值"，能正确迁移。
 
 ---
 
@@ -237,12 +286,62 @@ python customize.py --source D:\Git\rustdesk --config custom.toml --restore
 
 ## 七、验证状态
 
-本套件的定制锚点已对 RustDesk master 分支（v1.5.1）**实测验证**：
+定制锚点已对 RustDesk v1.5.1 源码**实测验证**（非占位、非推测）：
 
-- 17 项替换规则在真实源码上 **17/17 命中，0 失败**
-- `--restore` 回滚验证通过，8 个文件完整还原且备份自动清理
-- 生成的 GitHub Actions 配置经 YAML 解析器校验，语法有效
-- `docker-compose.yml` 通过 `docker compose config` 校验
+| 项目 | 结果 |
+| --- | --- |
+| 定制规则命中 | **18 / 18**，0 失败 |
+| 幂等性（连跑两次） | 第二次 0 修改、0 未命中 |
+| 改配置后迁移旧值 | ✅ 公司名 A→B→A 双向迁移正确 |
+| 补丁可重放性 | ✅ 干净上游 + `custom.patch` 逐字节重建 8 个文件 |
+| 图标资源入库 | ✅ 122 个 png/svg 已解除上游 `.gitignore` 的误伤 |
+| 子模块实体化 | ✅ hbb_common 已是普通目录，clone 无需 `--recursive` |
+| `docker-compose.yml` | 通过 `docker compose config` 校验，服务器已真实运行 |
 
-验证环境的实际源码哈希可能随上游更新变化，若某条规则未命中，
-`customize.py` 会明确报出**哪一项失败及原因**，不会静默放过。
+若某条规则未命中，`customize.py` 会明确报出**哪一项失败及原因**，不会静默放过。
+
+---
+
+## 八、上游升级
+
+上游信息、改了哪些文件、完整升级步骤见 **`upstream/UPSTREAM.md`**。
+
+核心思路：定制改动以补丁形式留存，升级 = 换源码 + 重放定制。
+
+```bash
+# 升级后务必跑一次，确认定制仍能完整重建
+python upstream/verify_patch.py
+```
+
+**最容易踩的坑**：上游更新会带走 `rustdesk/.gitignore` 里我们追加的资源白名单，
+导致图标再次被忽略。升级后检查该文件末尾是否还有 `wedesk 追加` 两段。
+
+---
+
+## 九、当前待办
+
+以下仍是**占位值**，需要你补齐后重新注入并构建：
+
+| 位置 | 当前占位 | 需要改成 |
+| --- | --- | --- |
+| `build/custom.toml` → `company_name` | `贵公司名称` | 你的真实公司名 |
+| `build/custom.toml` → `website` | `https://example.com` | 你的内网帮助站点 |
+| `build/branding/` | 空 | 你的图标、logo（替换客户端图标） |
+
+改完执行：
+
+```bash
+python build\customize.py --dry-run   # 预览
+python build\customize.py             # 写入
+```
+
+客户端图标目前仍是 RustDesk 原版。替换图标需要覆盖 `rustdesk/res/` 与
+`rustdesk/flutter/assets/` 下的对应文件，并重新构建。
+
+### 阻塞项
+
+- **MSVC 未安装**（正在安装）：Windows 编译 `x86_64-pc-windows-msvc` 必需，
+  需 VS Build Tools 2022 + 「使用 C++ 的桌面开发」
+- **Rust 工具链待修复**：`~/.cargo/bin` 下的转发壳此前被并发安装进程截断为 0 字节，
+  需串行重跑 `rustup`（一次只跑一个，严禁中途 kill）
+- **C 盘空间**：当前约 60 GB 可用，vcpkg 已安排在 D 盘，但仍建议留意

@@ -114,18 +114,87 @@ git add . && git commit -m "customize client" && git push
 
 ---
 
-## 四、在本地构建（可选）
+## 四、本地构建（当前主线）
 
-如果你确实想在本机构建：
+源码已克隆到 `D:\Git\rustdesk`（含子模块）并注入了定制。剩下的工作是补齐工具链。
 
-```bash
-python build/customize.py --source <rustdesk源码> --config custom.toml --dry-run   # 先预演
-python build/customize.py --source <rustdesk源码> --config custom.toml             # 正式写入
-python build/customize.py --source <rustdesk源码> --config custom.toml --restore    # 后悔了还原
+### 4.1 必须先体检
+
+```bat
+cd D:\Git\wedesk\build
+check-env.bat
 ```
 
-前置依赖（Windows）：Rust 1.75、Flutter 3.24.5、LLVM 15.0.6、vcpkg（commit `9e59...`）、MSVC。
-版本要求严，请以 `docs/IMPLEMENTATION.md` 为准。
+它会列出每一项依赖的状态，并明确告诉你哪些缺失、怎么装。
+**别跳过这步**——少一个组件会让构建在半小时后才失败。
+
+### 4.2 需要你亲自做的两件事
+
+我当前是非管理员会话，下面两件必须由你完成：
+
+**① 安装 Visual Studio Build Tools（管理员权限，必需）**
+
+这是 Windows 上唯一的硬阻塞项。Rust 编译到 `x86_64-pc-windows-msvc`
+依赖 `link.exe` 和 Windows SDK，没有 MSVC 就完全编不了。
+
+- 下载：https://visualstudio.microsoft.com/zh-hans/downloads/#build-tools-for-visual-studio-2022
+- 安装时务必勾选：**「使用 C++ 的桌面开发」**（会自带 Windows 10/11 SDK）
+- 约 20–40 分钟，装完重启终端
+
+> 不需要完整 Visual Studio IDE，只要 Build Tools。
+
+**②（可选）确认代理开启**
+
+本机 7890 端口有代理在用。GitHub/Google 下载走它会快很多，
+之前 Docker 拉镜像失败就是因为代理没开。
+
+### 4.3 一条命令装完剩下的
+
+装好 MSVC 后，按顺序执行（都是幂等的，重跑安全）：
+
+```bat
+install-vcpkg-deps.bat        REM C++ 依赖，最慢 30-120 分钟
+apply-rustdesk-engine.bat     REM Flutter SDK + 替换官方自研 engine
+build-local.bat               REM 最终构建，20-40 分钟
+```
+
+### 4.4 为什么必须替换 Flutter engine
+
+RustDesk 用的是**自研 Flutter engine**（`windows-x64-release`）。
+直接用官方 Flutter 的 engine 能编译过，但成品窗口行为是坏的。
+官方 CI 也做这个替换——这是最常见的本地构建失败原因之一。
+
+| 组件 | 磁盘占用 | 耗时（首次） |
+|---|---|---|
+| Rust 1.75 | ~1.5 GB | 5 min |
+| Flutter 3.24.5 | ~2.5 GB | 5 min |
+| vcpkg + C++ 依赖 | ~5 GB | 30–120 min |
+| Visual Studio Build Tools | ~8 GB | 20–40 min |
+| 构建产物 | ~10 GB | 20–40 min |
+
+**注意**：确认 C 盘空间充足（当前 60 GB 可用会比较紧张，建议清理或把
+Flutter/vcpkg 装到 D 盘 —— 改两个脚本里的路径即可）。
+
+### 4.5 手动执行路线
+
+不想用 bat 的话，等效的原始命令：
+
+```bash
+# 1. 注入定制
+python D:\Git\wedesk\build\customize.py --source D:\Git\rustdesk --config D:\Git\wedesk\build\custom.toml
+
+# 2. 构建
+cd D:\Git\rustdesk
+python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+```
+
+产物在 `D:\Git\rustdesk\flutter\build\windows\x64\runner\Release`。
+
+想撤销定制：
+
+```bash
+python customize.py --source D:\Git\rustdesk --config custom.toml --restore
+```
 
 ---
 

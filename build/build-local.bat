@@ -1,0 +1,94 @@
+@echo off
+REM ============================================================================
+REM  One-click local build of the customized RustDesk client.
+REM
+REM  Prerequisites - run these once first (see README.md "本地构建" section):
+REM    check-env.bat                verify nothing is missing
+REM    install-vcpkg-deps.bat       C++ dependencies (slow, once)
+REM    apply-rustdesk-engine.bat    Flutter + patched engine (once)
+REM
+REM  Output: D:\Git\rustdesk\flutter\build\windows\x64\runner\Release
+REM ============================================================================
+setlocal
+
+set FLUTTER_ROOT=C:\flutter
+set VCPKG_ROOT=C:\vcpkg
+set PATH=%FLUTTER_ROOT%\bin;%USERPROFILE%\.cargo\bin;%PATH%
+set VCPKG_DEFAULT_HOST_TRIPLET=x64-windows-static
+
+cd /d "%~dp0..\..\rustdesk"
+if errorlevel 1 (
+    echo Cannot find source directory: D:\Git\rustdesk
+    exit /b 1
+)
+
+echo.
+echo === Pre-flight checks ===
+where cargo >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: cargo not found in PATH.
+    echo Expected at: %USERPROFILE%\.cargo\bin
+    exit /b 1
+)
+where flutter >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: flutter not found in PATH.
+    echo Expected at: %FLUTTER_ROOT%\bin
+    exit /b 1
+)
+if not exist "%VCPKG_ROOT%\installed\x64-windows-static" (
+    echo ERROR: vcpkg dependencies not built.
+    echo Run install-vcpkg-deps.bat first.
+    exit /b 1
+)
+
+echo Source:  %CD%
+echo Rust toolchain:
+cargo --version
+echo Flutter:
+flutter --version
+echo.
+
+echo ============================================================
+echo  Starting build - expect 20 to 40 minutes.
+echo  First build compiles every dependency from scratch.
+echo ============================================================
+echo.
+
+python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+
+if errorlevel 1 (
+    echo.
+    echo ============================================================
+    echo  BUILD FAILED
+    echo.
+    echo  Checklist for the usual culprits:
+    echo   1. MSVC not installed - need VS Build Tools with
+    echo      "Desktop development with C++" workload. THIS IS THE
+    echo      MOST COMMON CAUSE. Requires admin to install.
+    echo   2. vcpkg deps missing      -^> install-vcpkg-deps.bat
+    echo   3. Flutter engine not swapped -^> apply-rustdesk-engine.bat
+    echo   4. Wrong Rust version      -^> rustup default 1.75
+    echo.
+    echo  Read the actual error above; it is usually specific.
+    echo ============================================================
+    exit /b 1
+)
+
+echo.
+echo ============================================================
+if exist ".\flutter\build\windows\x64\runner\Release" (
+    echo  BUILD SUCCEEDED
+    echo.
+    echo  Output folder:
+    echo     %CD%\flutter\build\windows\x64\runner\Release
+    echo.
+    echo  Your server address and public key are baked into the binary,
+    echo  so users do not have to configure anything.
+) else (
+    echo  Build exited 0 but Release folder was not found.
+    echo  Inspect the output above for where it actually landed.
+)
+echo ============================================================
+endlocal
+pause

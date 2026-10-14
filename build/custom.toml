@@ -10,15 +10,17 @@
 # ============================ 自建服务器 ============================
 # ID/注册服务器地址，可写域名或 IP。不带端口时自动使用 21116。
 #  !! 不要用环回地址，必须填客户端真正能连到的那个地址 !!
-rendezvous_host = "rd.your-company.com"
+rendezvous_host = "192.168.2.114"
 
 # 服务器公钥：hbbs 首次启动后生成的 id_ed25519.pub 内容。
 #  获取方式： cd ../server && python rdctl.py key
 #  !! 必须与你服务器上的公钥完全一致，否则所有连接都会被拒绝 !!
-key = ""
+#  当前值来自本机自建服务器 D:\Git\wedesk\server\data\id_ed25519.pub
+#  换服务器后务必重新获取并替换，然后重新构建客户端。
+key = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0="
 
 # 中继服务器地址。留空表示与 rendezvous_host 同机、使用 21117 默认端口。
-relay_host = ""
+relay_host = "192.168.2.114:21117"
 
 
 [brand]

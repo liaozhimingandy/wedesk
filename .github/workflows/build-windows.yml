@@ -837,8 +837,10 @@ jobs:
           if [ "${WANT}" = "true" ]; then push=true; fi
 
           # 3) latest 只在「推送 + 非预发布」时移动。
-          #    放 shell 里判而不是写 ${{ }} —— GH 表达式的 ! 取反与 && 优先级
-          #    在不同版本 runner 上出现过差异，布尔运算还是交给 sh 最稳。
+          #    放 shell 里判，而不是写成 GH 行内表达式 —— GH 表达式的 ! 取反
+          #    与 && 优先级在不同版本 runner 上出现过差异，布尔运算交给 sh 最稳。
+          #    （注释里千万别照抄 GH 表达式的字面写法当示例：runner 会在编译期
+          #     连 run 脚本一起做语法校验，空表达式会让整个工作流失效）
           latest=false
           if [ "${push}" = "true" ] && [ "${IS_PRERELEASE}" != "true" ]; then
             latest=true

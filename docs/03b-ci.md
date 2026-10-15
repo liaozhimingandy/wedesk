@@ -32,7 +32,7 @@ preflight (10s)  ─┐
 - `wedesk-windows-x64` —— 便携版目录，解压即用（Artifact，保存 14 天）
 - `wedesk-windows-x64-msi` —— MSI 安装包（手动触发时勾选，或打标签时自动构建）
 - `wedesk-server-linux-x64` —— hbbs / hbbr / rustdesk-utils + systemd 单元 + zip
-- `liaozhiming/wedesk-server` —— 服务端镜像（仅 tag / 手动触发时推送）
+- `liaozhiming/wedesk-server` —— 服务端镜像（tag / 手动触发 / 推送到 main 时推送）
 - GitHub Release —— 打 `v*` 标签时发布，长期保存，适合分发给员工
 
 ### 为什么拆成多个 job

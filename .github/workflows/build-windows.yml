@@ -792,16 +792,28 @@ jobs:
       # 结果分三态：
       #   want=true  + 凭据齐 → push=true   正常发布
       #   want=true  + 凭据缺 → 硬失败       该发版却发不出去，必须让人看见
-      #   want=false + 凭据缺 → 只构建不推送 日常提交仍验证 Dockerfile 没改坏
+      #   want=false          → 只构建不推送 说明"为什么没推"，不许含糊其辞
+      #
+      # 修过的一个坑：这三个分支都曾共用一句"未配置 ${missing:-凭据}"。
+      # want=false 而凭据其实齐全时，它会打印出兜底词"凭据"，变成
+      # "未配置 凭据"，把人引向"密钥没配上"的错误方向 —— 实际密钥是好的，
+      # 只是这次事件类型不该推送。现在两种原因分开说。
       # -------------------------------------------------------------------
       - name: 计算是否推送镜像
         id: plan
         env:
           DH_USER: ${{ secrets.DOCKER_USERNAME }}
           DH_PASS: ${{ secrets.DOCKER_PASSWORD }}
-          WANT: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
+          # 触发推送的三种事件：打标签发布、手动触发、推送到 main
+          WANT: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          # 预发布标签（v1.2.3-rc1 / -beta.1）不抢 latest
+          IS_PRERELEASE: ${{ github.ref_type == 'tag' && contains(github.ref_name, '-') }}
         run: |
           set -e
+
+          # 1) 凭据缺什么
           missing=""
           if [ -z "${DH_USER}" ]; then missing="DOCKER_USERNAME"; fi
           if [ -z "${DH_PASS}" ]; then
@@ -812,23 +824,44 @@ jobs:
             fi
           fi
 
-          if [ "${WANT}" = "true" ] && [ -n "${missing}" ]; then
-            echo "::error::本次要发布镜像（打标签或手动触发），但仓库缺少 secrets：${missing}"
+          echo "事件：${EVENT}   ref：${REF}"
+          if [ -n "${missing}" ]; then
+            echo "::error::仓库缺少 secrets：${missing}"
             echo "::error::到 Settings → Secrets and variables → Actions 添加后重跑本 workflow。"
             exit 1
           fi
+          echo "✓ DOCKER_USERNAME / DOCKER_PASSWORD 均已配置"
 
+          # 2) 该不该推
           push=false
           if [ "${WANT}" = "true" ]; then push=true; fi
 
-          if [ "${push}" != "true" ]; then
-            echo "::warning::未配置 ${missing:-凭据} —— 本次只构建镜像做验证，不推送。"
+          # 3) latest 只在「推送 + 非预发布」时移动。
+          #    放 shell 里判而不是写 ${{ }} —— GH 表达式的 ! 取反与 && 优先级
+          #    在不同版本 runner 上出现过差异，布尔运算还是交给 sh 最稳。
+          latest=false
+          if [ "${push}" = "true" ] && [ "${IS_PRERELEASE}" != "true" ]; then
+            latest=true
+          fi
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+          if [ "${push}" = "true" ]; then
+            echo "✓ 本次将推送镜像到 ${DH_NAMESPACE}/${DH_REPO}"
+            if [ "${latest}" != "true" ]; then
+              echo "  （预发布标签，不移动 latest）"
+            fi
+          else
+            echo "::warning::本次不是发布场景（事件=${EVENT}，ref=${REF}）。"
+            echo "::warning::只构建镜像做验证，不推送。要发布镜像请："
+            echo "::warning::  1) 推送 v* 标签（推荐，见 build\\tag-release.bat），或"
+            echo "::warning::  2) 推送到 main 分支，或"
+            echo "::warning::  3) Actions 页面手动 workflow_dispatch 触发。"
           fi
 
           # 命名空间必须是登录账号本人（或其所属组织），否则 push 会被 Docker Hub
           # 拒绝并报「denied: requested access to the resource is denied」。
           # 这里只告警：用组织令牌等场景登录名可以不同于命名空间，不能一刀切判死。
-          if [ -n "${DH_USER}" ] && [ "${DH_USER}" != "${DH_NAMESPACE}" ]; then
+          if [ "${DH_USER}" != "${DH_NAMESPACE}" ]; then
             echo "::warning::DOCKER_USERNAME=${DH_USER} 与镜像前缀 ${DH_NAMESPACE}/ 不同 ——"
             echo "::warning::若 ${DH_USER} 不属于 ${DH_NAMESPACE} 这个组织，push 会被拒绝。"
           fi
@@ -857,11 +890,13 @@ jobs:
         with:
           images: ${{ env.DH_NAMESPACE }}/${{ env.DH_REPO }}
           tags: |
-            # 正式标签才抢 latest；预发布（v1.2.3-rc1）不动它
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            # latest 只在「本次会推送 且 非预发布」时才移动
+            type=raw,value=latest,enable=${{ steps.plan.outputs.latest }}
+            # v* 标签本身
             type=ref,event=tag
-            # 非发版场景给个 commit sha 标签，便于回溯某次构建
-            type=sha,format=long,prefix=sha-,enable=${{ github.ref_type != 'tag' }}
+            # commit sha 标签：始终生成，保证 tags 不为空（buildx 不接受空 tags），
+            # 也便于把某台服务器上的镜像精确回溯到某次提交
+            type=sha,format=long,prefix=sha-,enable=${{ steps.plan.outputs.push }}
 
       # 只有发版和手动触发才真正推送。
       # push=false 时 build-push-action 依然会完整构建 —— 日常提交也能验证
@@ -887,8 +922,13 @@ jobs:
             echo "| 项目 | 值 |"
             echo "|---|---|"
             echo "| 镜像 | \`${{ env.DH_NAMESPACE }}/${{ env.DH_REPO }}\` |"
+            echo "| 触发事件 | ${{ github.event_name }}（ref=${{ github.ref }}） |"
             echo "| 是否推送 | ${{ steps.plan.outputs.push }} |"
-            echo "| 标签 | \`${{ github.ref_type == 'tag' && github.ref_name || 'sha-<commit>' }}\` |"
+            echo "| 是否移动 latest | ${{ steps.plan.outputs.latest }} |"
+            echo ""
+            echo "\`\`\`"
+            echo "${{ steps.meta.outputs.tags }}"
+            echo "\`\`\`"
             echo ""
             echo "拉取：\`docker pull ${{ env.DH_NAMESPACE }}/${{ env.DH_REPO }}:latest\`"
           } >> "$GITHUB_STEP_SUMMARY"

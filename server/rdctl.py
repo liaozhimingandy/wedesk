@@ -277,6 +277,25 @@ def check_env_legacy():
         print("    既不是你自己编的二进制，也没有我们关掉的版本检查补丁。")
         print("    要用本地自编译镜像，把这一行删掉或改成 #RD_IMAGE=wedesk-server:latest。")
 
+    # ------------------------------------------------------------------
+    # data/.env 是静默陷阱，必须拦住
+    # ------------------------------------------------------------------
+    # hbbs 与 hbbr 启动时都会读【工作目录】下的 .env，并把里面的键当成
+    # 服务端参数（src/common.rs 的 init_args()、src/hbbr.rs）。
+    # 而容器的 WORKDIR 是 /root，正是挂载 ./data:/root 的地方。
+    # 于是只要 data/.env 存在，它的键就被静默变成服务端参数：
+    #   PORT=5188      → hbbr 改听 5189（PORT 会被 +1），撞上 hbbs 的 WS 端口
+    #   RELAY_HOST=x   → 覆盖 command 里的 -r，客户端被指到别处
+    # 这些全都不报错，只是"端口开着但连不上"，且启动日志看不出异常。
+    # ------------------------------------------------------------------
+    data_env = DATA_DIR / ".env"
+    if data_env.exists():
+        err(f"发现 {data_env} —— 它会被两个容器当成服务端配置文件读！")
+        print("    hbbs / hbbr 启动时会读工作目录（/root = ./data）下的 .env，")
+        print("    并把里面的键静默变成服务端参数，覆盖默认行为。")
+        print("    最典型的事故：PORT=5188 会让 hbbr 改听 5189，撞上 hbbs 的 WebSocket 端口。")
+        print("    处理：确认这个文件是你有意放的；否则请移出 data/ 目录。")
+
 
 def cmd_ports(args):
     """打印当前端口规划，方便对照防火墙/安全组。"""
@@ -592,8 +611,15 @@ def cmd_status(args):
 
 def cmd_logs(args):
     check_docker_running()
-    svc = ["hbbs"] if "hbbs" in args else (["hbrr"] if "hbrr" in args else ["hbbs", "hbbr"])
-    svc = ["rd-hbbs"] if "hbbs" in args else (["rd-hbbr"] if "hbbr" in args else [])
+    # 只跟一个容器时传服务名（compose logs 用服务名而不是容器名）。
+    # 注意别写成容器名 rd-hbbs —— compose logs 收服务名，写容器名会报
+    # "no such service"，而且报错信息看不出是名字用错了。
+    if "hbbs" in args:
+        svc = ["hbbs"]
+    elif "hbbr" in args:
+        svc = ["hbbr"]
+    else:
+        svc = []
     try:
         subprocess.run(COMPOSE + ["logs", "-f", "--tail", "100"] + svc, cwd=str(HERE))
     except KeyboardInterrupt:

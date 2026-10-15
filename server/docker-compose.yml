@@ -54,7 +54,11 @@ services:
       - ALWAYS_USE_RELAY=${ALWAYS_USE_RELAY:-N}
       # 允许中继到非本机地址（relay host 与 hbbs 不同机器时需要）
       - ENFORCED_RELAY=${ENFORCED_RELAY:-N}
-      # 数据库保留天数：连接 / 审计日志留存周期，团队排障与合规审计的关键参数
+      # 数据库文件路径（不是"保留天数"，见下）。
+      # 里面只有一张 peer 表 —— ID → uuid / 公钥 / 备注 / 注册信息。
+      # hbbs【不记录任何连接与审计日志】：谁连了谁、连了多久、走了中继还是 P2P，
+      # 服务端一概不落库，只能从容器日志看零星几行。要做合规审计，
+      # 得自己在前面加反向代理或流量镜像，别指望这个数据库。
       - DB_URL=${DB_URL:-/root/db_v2.sqlite3}
       # 默认 warn 而非 info：hbbs 在 info 级别下每注册/心跳都落一行日志，
       # 长期运行的磁盘写入与格式化开销是可观测的，而排障时临时调高即可。

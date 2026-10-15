@@ -93,6 +93,43 @@ git push
 > 长时间迭代调试时可以这样省机时，出正式版时记得勾回来。
 > 各参数的完整取舍见 [08 性能调优](./08-performance.md)。
 
+### 坑：push 触发时 input 的默认值不生效
+
+`inputs` context **只在手动触发（`workflow_dispatch`）时才有值**。
+push 触发时 `inputs.hwcodec` 是空的，而 `if: ${{ inputs.hwcodec }}` 对空值判 false
+—— 于是 input 里写的 `default: true` **完全不生效**。
+
+后果远不止"几个步骤被跳过"，而是一整条静默降级链：
+
+| 位置 | push 触发时的实际行为 |
+|---|---|
+| Verify FFmpeg headers | 跳过，缺失不会被发现 |
+| vcpkg host triplet | 退回 `x64-windows` → **FFmpeg 被静默跳过** |
+| `build.py` | 拿不到 `--hwcodec` → **产物是软件编码版** |
+| 流水线状态 | **依然全绿** |
+
+构建成功但产物不是想要的——这比构建失败更难发现。
+
+解决办法是 job 级 env 显式兜底，让非手动触发时按设计意图走：
+
+```yaml
+env:
+  ENABLE_HWCODEC: ${{ github.event_name != 'workflow_dispatch' || inputs.hwcodec == true }}
+  BUILD_MSI: ${{ github.event_name == 'workflow_dispatch' && inputs.build_msi == true }}
+```
+
+**还有第二个坑**：env 里存的是**字符串** `"true"` / `"false"`，
+而 Actions 中非空字符串一律 truthy —— **`"false"` 也是真**。
+所以判断必须写成：
+
+```yaml
+if: ${{ env.ENABLE_HWCODEC == 'true' }}    # 对
+if: ${{ env.ENABLE_HWCODEC }}              # 错：值为 "false" 时仍然执行
+```
+
+另外，step 自己定义的 `env` 在它自己的 `if` 里**取不到**，
+所以兜底变量必须放在 job 级。
+
 ---
 
 ## 三、关键设计点（改之前请读）

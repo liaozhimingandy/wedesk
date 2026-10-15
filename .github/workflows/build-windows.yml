@@ -51,9 +51,9 @@ on:
         type: boolean
         default: false
       build_msi:
-        description: "额外构建 MSI 安装包（较慢，失败不阻断主产物）"
+        description: "额外构建 MSI 安装包（较慢，有 continue-on-error 保护，失败不阻断便携版）"
         type: boolean
-        default: false
+        default: true
 
 # 显式收敛权限：本流水线只上传 artifact，不需要写仓库
 permissions:
@@ -222,6 +222,26 @@ jobs:
     needs: [preflight, generate-bridge]
     runs-on: windows-2022
 
+    # ---- inputs 兜底（本流水线最容易踩的坑，改动前请先读完） --------------
+    # `inputs` context 只在 workflow_dispatch 触发时才有值。
+    # push 触发时 inputs.hwcodec 是空的，而 `if: ${{ inputs.hwcodec }}` 对空值
+    # 判 false —— 于是 input 里写的 default: true 完全不生效。
+    #
+    # 后果远不止"步骤被跳过"：
+    #   1. Verify FFmpeg headers 不跑，缺失不会被发现
+    #   2. vcpkg 的 host triplet 退回 x64-windows → FFmpeg 被静默跳过
+    #   3. build.py 拿不到 --hwcodec → 产物是软件编码版
+    #   4. 流水线依然全绿 —— 这是静默降级，比构建失败更难发现
+    #
+    # 所以在 job 级显式兜底，让非手动触发时按设计意图走。
+    #
+    # 另一个坑：env 里存的是字符串 "true"/"false"，而 Actions 中非空字符串
+    # 一律 truthy（"false" 也是真）。因此下面每处判断都必须写成 == 'true'，
+    # 绝不能简写成 if: ${{ env.ENABLE_HWCODEC }}。
+    env:
+      ENABLE_HWCODEC: ${{ github.event_name != 'workflow_dispatch' || inputs.hwcodec == true }}
+      BUILD_MSI: ${{ github.event_name == 'workflow_dispatch' && inputs.build_msi == true }}
+
     steps:
       # vcpkg 的 x-gha 二进制缓存后端需要这两个运行时变量，
       # 不导出的话 vcpkg 会静默退化成不用缓存，构建时间直接翻倍。
@@ -328,7 +348,9 @@ jobs:
           # 字符串写死而非引用 env.VCPKG_TRIPLET：step 级 env 里引用 env context
           # 的求值顺序不够可靠，而这里两个值必须严格可预测。
           # 改动时记得与上面的 VCPKG_TRIPLET 保持同步。
-          VCPKG_DEFAULT_HOST_TRIPLET: ${{ inputs.hwcodec && 'x64-windows-static' || 'x64-windows' }}
+          # 用 env.ENABLE_HWCODEC 而非 inputs.hwcodec —— 后者在 push 触发时为空，
+          # 会让这里静默退回 x64-windows，FFmpeg 因此被跳过。
+          VCPKG_DEFAULT_HOST_TRIPLET: ${{ env.ENABLE_HWCODEC == 'true' && 'x64-windows-static' || 'x64-windows' }}
         shell: bash
         run: |
           set -e
@@ -350,7 +372,8 @@ jobs:
       # 与其让 FFmpeg 缺失以几十条 C1083 的形式暴露在 cargo 日志里，
       # 不如在这里直接说清楚缺什么、为什么会缺。
       - name: Verify FFmpeg headers (hwcodec only)
-        if: ${{ inputs.hwcodec }}
+        # 必须写成 == 'true'：env 里是字符串，"false" 在 Actions 中也是 truthy
+        if: ${{ env.ENABLE_HWCODEC == 'true' }}
         shell: bash
         run: |
           set -e
@@ -397,7 +420,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          HWCODEC="${{ inputs.hwcodec && '--hwcodec' || '' }}"
+          HWCODEC="${{ env.ENABLE_HWCODEC == 'true' && '--hwcodec' || '' }}"
+          echo "硬件编解码: ${HWCODEC:-关闭}"
+          echo "硬件编解码: ${HWCODEC:-关闭}" >> "$GITHUB_STEP_SUMMARY"
           echo "build.py 参数: --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}"
           python ./build.py --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}
           mkdir -p rustdesk
@@ -444,7 +469,7 @@ jobs:
           retention-days: 14
 
       - name: Build MSI installer (optional)
-        if: ${{ inputs.build_msi }}
+        if: ${{ env.BUILD_MSI == 'true' }}
         continue-on-error: true
         shell: pwsh
         run: |
@@ -458,10 +483,43 @@ jobs:
           Move-Item $msi.FullName ./msi-out/wedesk-x64.msi -Force
 
       - name: Upload MSI
-        if: ${{ inputs.build_msi }}
+        if: ${{ env.BUILD_MSI == 'true' }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: wedesk-windows-x64-msi
           path: ./msi-out
           retention-days: 14
+
+      # 把"这次到底产出了什么"摊开写进摘要。
+      # 上面修过的静默降级说明了一件事：流水线可能全绿，但产物不是想要的
+      # —— hwcodec 关着、MSI 没构建，而日志里查不到任何失败。
+      # 所以这里把关键开关和产物清单一并列出，扫一眼就能确认，
+      # 不用去翻几千行日志找 --hwcodec 到底传没传。
+      - name: Build summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "## Wedesk Windows 构建结果"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 触发方式 | \`${{ github.event_name }}\` |"
+            echo "| 硬件编解码 hwcodec | ${{ env.ENABLE_HWCODEC }} |"
+            echo "| MSI 安装包 | ${{ env.BUILD_MSI }} |"
+            echo "| vcpkg host triplet | \`${{ env.ENABLE_HWCODEC == 'true' && 'x64-windows-static' || 'x64-windows' }}\` |"
+            echo ""
+            echo "### 产物 —— 在本页底部 Artifacts 区域，保留 14 天"
+            echo ""
+            echo "- **wedesk-windows-x64** — 便携版，解压即可运行"
+            if [ "${{ env.BUILD_MSI }}" = "true" ]; then
+              echo "- **wedesk-windows-x64-msi** — MSI 安装包"
+            else
+              echo "- MSI 未构建（本次未启用 build_msi）"
+            fi
+            echo ""
+            echo "> 产物是 Actions Artifact，不是 GitHub Release —— 本流水线不建 Release。"
+            echo ""
+            echo "若上表 hwcodec 为 false 却期望开启，检查是否手动触发时取消了勾选。"
+          } >> "$GITHUB_STEP_SUMMARY"

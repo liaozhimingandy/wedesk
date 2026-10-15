@@ -113,9 +113,17 @@ echo.
 set BUILD_EXTRA=--hwcodec --vram
 if "%NO_HWCODEC%"=="1" set BUILD_EXTRA=--vram
 echo Codec args: %BUILD_EXTRA%
-python client\build.py --portable --flutter --skip-portable-pack %BUILD_EXTRA%
-
-if errorlevel 1 (
+REM build.py 必须【在 client\ 里】跑：它主流程全用相对路径
+REM （os.chdir('flutter')、os.chdir('libs/virtual_display/dylib')、
+REM   target/release\...、res\），REPO_ROOT 只用于少数绝对路径。
+REM 在仓库根调 python client\build.py 会在第一处 os.chdir 就
+REM FileNotFoundError，日志里只有一行 traceback，看不出是 cwd 用错。
+REM pushd/popd 把 cd 限制在这一段内；失败时由下面的 errorlevel 分支兜住。
+pushd "%CD%\client"
+python build.py --portable --flutter --skip-portable-pack %BUILD_EXTRA%
+set "BUILD_RC=%ERRORLEVEL%"
+popd
+if not "%BUILD_RC%"=="0" (
     echo.
     echo ============================================================
     echo  BUILD FAILED

@@ -9,8 +9,10 @@
   1. 用 `git checkout-index` 从上游对象库导出一份"干净"的 v1.5.1 代码到临时目录
      （主仓一次 + libs/hbb_common 子模块一次，后者落到 libs/hbb_common/）
   2. 在干净副本上 `git apply` 定制补丁
-  3. 把结果和仓库根下的同名文件逐文件比对（归一化 CRLF 后比对字节）
+  3. 把结果和 client/ 下的同名文件逐文件比对（归一化 CRLF 后比对字节）
      全部一致 => 补丁能完整重建当前定制状态，上游升级后可安全重放
+     （客户端已迁到 client/，CUSTOMIZED_FILES 仍是上游相对路径，
+       仓库侧查找统一拼 CLIENT 前缀，见下面的 CLIENT 常量说明）
 
 为什么这样写
 ------------
@@ -43,6 +45,12 @@ import tempfile
 
 GIT = r"C:\Program Files\Git\cmd\git.exe"
 WEDESK = pathlib.Path(__file__).resolve().parent.parent
+# 客户端 vendored 源码所在：重构后 client/ 下才是 crate 根。
+# CUSTOMIZED_FILES 里的路径【保持上游相对】（与 custom.patch 里的路径一致），
+# 只有"往本仓库取文件"时才需要拼上这个前缀。两边混用会同时踩两个坑：
+#   仓库侧不加前缀 -> 所有文件都"不存在"，脚本静默跳过全部比对
+#   上游侧加了前缀 -> git apply 找不到路径，输出 Skipped 后仍返回 0
+CLIENT = WEDESK / "client"
 PATCH = WEDESK / "upstream" / "custom.patch"
 # 这份清单 = customize.py 的规则覆盖文件 ∩ 需要第三方 Git 初检的文件。
 #
@@ -116,9 +124,11 @@ def regen(upstream: pathlib.Path) -> int:
     print(f"[3/4] 用当前仓库的 {len(CUSTOMIZED_FILES)} 个文件覆盖（换行统一 LF）")
     staged = []
     for rel in CUSTOMIZED_FILES:
-        src_file = WEDESK / rel
+        # 仓库侧：rel 是上游相对路径，要拼 client/ 才是本仓库里的真实位置。
+        # 干净侧：clean 是上游树的副本，用 rel 原样（补丁路径也是这个形式）。
+        src_file = CLIENT / rel
         if not src_file.exists():
-            print(f"      ! 跳过（仓库里不存在）: {rel}")
+            print(f"      ! 跳过（{CLIENT / rel} 不存在）: {rel}")
             continue
         dst = clean / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -194,12 +204,12 @@ def main() -> int:
     applied = out.count("Applied patch")
     print(f"      应用成功 ✓（{applied} 个文件）")
 
-    print(f"[4/4] 与仓库根比对 {len(CUSTOMIZED_FILES)} 个文件")
+    print(f"[4/4] 与 {CLIENT} 比对 {len(CUSTOMIZED_FILES)} 个文件")
     ok = True
     for rel in CUSTOMIZED_FILES:
-        a, b = clean / rel, WEDESK / rel
+        a, b = clean / rel, CLIENT / rel
         if not (a.exists() and b.exists()):
-            print(f"      ✗ {rel} (文件缺失)"); ok = False; continue
+            print(f"      ✗ {rel} (文件缺失: {b})"); ok = False; continue
         same = norm(a.read_bytes()) == norm(b.read_bytes())
         ok &= same
         print(f"      {'✓' if same else '✗'} {rel}")

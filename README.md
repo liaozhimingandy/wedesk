@@ -464,7 +464,7 @@ python build\client\customize.py --dry-run   # 预览
 python build\client\customize.py             # 写入
 ```
 
-客户端图标目前仍是 RustDesk 原版。替换图标需要覆盖仓库根的 `client/res/` 与
+客户端图标目前仍是 RustDesk 原版。替换图标需要覆盖 `client/res/` 与
 `client/flutter/assets/` 下的对应文件，并重新构建。主要几个：
 
 | 用途 | 文件 |

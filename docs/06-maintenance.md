@@ -178,15 +178,21 @@ E 还要保证新旧客户端协议兼容（否则老客户端连不上）。
 ### 3.1 核心原则
 
 ```
-上游的东西：client/libs/ client/src/ client/flutter/ client/res/ client/examples/ client/fastlane/ client/flatpak/ client/appimage/
-            .github/patches/ Cargo.toml Cargo.lock build.py build.rs
-            Dockerfile entrypoint.sh vcpkg.json LICENCE docs/upstream/
+上游的东西：client/（整棵树 —— libs/ src/ flutter/ res/ examples/ fastlane/ flatpak/ appimage/
+                    Cargo.toml Cargo.lock build.py build.rs Dockerfile entrypoint.sh
+                    vcpkg.json LICENCE）
+            .github/patches/ docs/upstream/
             → 可以覆盖
 
 我们的东西：build/ server/ upstream/ docs/(自建部分) README.md
             .gitignore .gitattributes .github/workflows/
             → 永不覆盖
 ```
+
+> 注：客户端已从"仓库根扁平化"改为"收进 `client/`"，但 `client/` **内部**保持上游原样
+> （`Cargo.toml`、`build.py`、`libs/`、`src/`、`flutter/` 的相对关系不变），
+> 所以覆盖时按 `client/` 为根对照即可。`build.py` 也必须**在 `client/` 里**执行 ——
+> 它主流程全用相对路径（`os.chdir('flutter')`、`target/release/`、`res/`）。
 
 ### 3.2 流程
 

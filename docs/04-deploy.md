@@ -215,7 +215,7 @@ RustDesk 是 **AGPL-3.0**，衍生作品必须沿用同一许可证：
 | **只把 exe 发给外部客户、不给源码** | ⚠️ **违反 AGPL §13** |
 | 团队内部私有仓库 | ❌ 不触发 |
 
-仓库根目录的 `LICENCE` 就是 AGPL-3.0（英式拼写，GitHub 能正常识别）。
+`client/LICENCE` 就是 AGPL-3.0（英式拼写，GitHub 能正常识别）。
 **不要删它，也不要改成 Apache/MIT。**
 
 ---

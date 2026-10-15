@@ -119,9 +119,11 @@ sequenceDiagram
 
 ## 四、目录职责速查
 
-### 仓库根（源码根 = 仓库根）
+### `client/`（客户端源码根 = crate 根）
 
-上游源码已经**扁平化到仓库根**，`Cargo.toml`、`build.py` 都在最外层，**没有 `rustdesk/` 子目录**。
+上游源码**整棵树收在 `client/` 下**，`Cargo.toml`、`build.py` 都在 `client/` 最外层，
+内部**没有 `rustdesk/` 子目录**（当初就是为了免掉一层目录换算）。所有相对路径
+以 `client/` 为根 —— 包括 `build.py`，它必须在 `client/` 里执行。
 
 | 路径 | 是什么 | 升级上游时要不要覆盖 |
 |---|---|---|
@@ -129,10 +131,12 @@ sequenceDiagram
 | `client/libs/` | Rust 内核依赖库（含 `hbb_common`） | ✅ 覆盖 |
 | `client/flutter/` | Flutter UI 全部代码 | ✅ 覆盖 |
 | `client/res/` | 图标、安装包素材、构建辅助脚本 | ✅ 覆盖 |
-| `Cargo.toml` / `Cargo.lock` / `build.py` / `build.rs` | 构建定义 | ✅ 覆盖 |
-| `.github/` | CI 工作流（我们自己那份在 workflows/） | ⚠️ 只覆盖 `patches/` |
+| `client/Cargo.toml` / `client/Cargo.lock` / `client/build.py` / `client/build.rs` | 构建定义 | ✅ 覆盖 |
+| `client/vcpkg.json` / `client/Dockerfile` / `client/entrypoint.sh` / `client/LICENCE` | 依赖清单 / Linux 构建镜像 | ✅ 覆盖 |
+| `.github/patches/` | Flutter engine 补丁 | ⚠️ 只覆盖这一个子目录 |
+| `docs/upstream/` | 上游自带的多语言文档 | ✅ 覆盖 |
 | **`build/`** | **我们的脚本与配置（customize.py 等）** | ❌ **永不覆盖** |
-| **`server/`** | **服务端 Docker 编排 + rdctl.py** | ❌ **永不覆盖** |
+| **`server/`** | **服务端源码 + Docker 编排 + rdctl.py** | ❌ **永不覆盖** |
 | **`upstream/`** | **上游基线记录 + 定制补丁** | ❌ **永不覆盖** |
 | **`docs/`** | **我们的文档** | ❌ **永不覆盖** |
 | `README.md` / `.gitignore` / `.gitattributes` | 自有文件 | ❌ **永不覆盖** |
@@ -185,7 +189,7 @@ flowchart LR
 
     E["② 注入品牌<br/>build/client/customize.py<br/>按 custom.toml 改 13 个文件"] --> F
 
-    F["③ 编译<br/>python build.py --portable --flutter"] --> G
+    F["③ 编译<br/>cd client &amp;&amp; python build.py<br/>--portable --flutter"] --> G
     G["client/flutter/build/windows/x64/runner/Release/<br/>nethelper.exe + DLL + data/"]
 
     style C fill:#fff4e6,stroke:#d9822b

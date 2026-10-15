@@ -1,9 +1,9 @@
 # =============================================================================
 # 服务端运行镜像 —— 从【已编译好的二进制】装配
 # =============================================================================
-# 与 server/Dockerfile 的区别：
-#   Dockerfile        —— 在容器内从源码编译（本机没有 Rust 环境时用这个）
-#   Dockerfile.prebuilt —— 直接 COPY 已编译的二进制（CI 里用这个）
+# 与 server/deploy/Dockerfile 的区别：
+#   server/deploy/Dockerfile        —— 在容器内从源码编译（本机没有 Rust 环境时用这个）
+#   server/deploy/Dockerfile.prebuilt —— 直接 COPY 已编译的二进制（CI 里用这个）
 #
 # 为什么要分两个：CI 里 build-server job 已经编译出 musl 静态二进制，
 # 若再用源码 Dockerfile 就要在容器里重编一遍十几分钟，白烧两次机时。

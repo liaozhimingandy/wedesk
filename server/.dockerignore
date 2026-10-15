@@ -7,6 +7,29 @@
 data/
 backup/
 
+# -----------------------------------------------------------------------------
+# 【必须留在上下文里的两个文件，别加排除规则】
+#
+#   src/db_v2.sqlite3  —— sqlx 的编译期校验库。hbbs 的 database.rs 里有 4 个
+#                         query!/query_as! 宏，编译阶段要连一个真实 SQLite 库
+#                         校验 SQL（peer 表的 9 个列都在里面）。少了它编译直接
+#                         报 "could not compile hbbs (lib) due to 4 previous
+#                         errors" —— 4 就是 4 个宏，一个都跑不掉。
+#                         build-musl.sh 靠 DATABASE_URL 指向它。
+#                         ⚠️ 重构时曾因漏移这个文件让 CI 连挂三次。
+#
+#   src/.env           —— 上游 vendored 树的一部分，内容只有
+#                         DATABASE_URL=sqlite://./db_v2.sqlite3。
+#                         它是给"直接 cargo build 忘了设 DATABASE_URL"的人兜底
+#                         的；build-musl.sh 自己会 export 同一个值，所以有没有
+#                         它都能编。它只存在于 builder 阶段（COPY src/ ./），
+#                         ⚠️ 不会进运行镜像 —— 阶段 2 只 COPY 三个二进制，
+#                         运行时 WORKDIR 是 /root（挂载 data/），读不到它。
+#
+# 下面这条 .env 排的是【上下文根】的 server/.env（本地覆盖配置），
+# 不要因为看到 ".env" 就以为 src/.env 也被排掉了而改规则 —— 两者的命运不同。
+# -----------------------------------------------------------------------------
+
 # 本机 cargo/Rust 的编译产物,有几个 GB,且 Alpine 里编译环境与本机不同/ABI 不兼容。
 # 让它漏进去会让构建上下文变大几十倍,甚至导致容器内编译失败。
 src/target/
@@ -20,5 +43,5 @@ src/**/target/
 Thumbs.db
 __pycache__/
 
-# 本地环境配置
+# 本地环境配置（仅上下文根的 server/.env；src/.env 是 vendored 文件，见上）
 .env

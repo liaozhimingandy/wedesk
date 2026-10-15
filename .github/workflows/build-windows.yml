@@ -197,6 +197,55 @@ jobs:
           done
           echo "✓ 客户端与服务端依赖均已实体化"
 
+      # -------------------------------------------------------------------
+      # 编译期必需的非源码文件 —— 漏一个就要等十几分钟 musl 编译后才暴露
+      # -------------------------------------------------------------------
+      # 2026-10-16 实测：重构提交把 db_v2.sqlite3 漏移了，CI 连挂三次，
+      # 每次都要跑到 musl 容器里编译十几分钟才报
+      #     error: could not compile `hbbs` (lib) due to 4 previous errors
+      # 那 4 个错误就是 database.rs 里 4 个 sqlx query! 宏 —— 它们编译期要连
+      # 一个真实 SQLite 库校验 SQL（peer 表的 9 个列）。DATABASE_URL 指向它。
+      # 这类"文件在但不在 git 里"的漏移，在这里几秒钟就能查出来。
+      - name: 确认编译期必需文件在位
+        run: |
+          set -e
+          for f in \
+            ${{ env.SERVER_DIR }}/db_v2.sqlite3 \
+            ${{ env.SERVER_DIR }}/Cargo.lock \
+            client/vcpkg.json \
+            client/build.py \
+            client/flutter/pubspec.yaml; do
+            if [ ! -f "$f" ]; then
+              echo "::error::编译期必需文件缺失: $f"
+              echo "::error::若是重构/迁移漏移，用 git log --diff-filter=D -- <路径> 找回。"
+              exit 1
+            fi
+            echo "  [OK] $f"
+          done
+          # db_v2.sqlite3 还得真的是个能打开的 SQLite 库、且含 peer 表。
+          # 只查"文件存在"不够：空文件/占位文件/文本文件同样会让 sqlx 宏在编译期炸，
+          # 而那要等十几分钟 musl 编译后才报 4 个看不懂的错误。
+          python - "${{ env.SERVER_DIR }}/db_v2.sqlite3" <<'PY'
+          import sqlite3, sys
+          path = sys.argv[1]
+          try:
+              con = sqlite3.connect(path)
+              tables = {r[0] for r in con.execute(
+                  "select name from sqlite_master where type='table'")}
+          except sqlite3.DatabaseError as e:
+              sys.exit(f"[x] {path} 打不开或不是 SQLite 库: {e}")
+          if "peer" not in tables:
+              sys.exit(f"[x] {path} 里没有 peer 表（实际表: {sorted(tables) or '空'}）"
+                       " —— sqlx 宏编译期校验会失败")
+          cols = {r[1] for r in con.execute("pragma table_info(peer)")}
+          need = {"guid", "id", "uuid", "pk", "created_at", "user", "status", "note", "info"}
+          missing = need - cols
+          if missing:
+              sys.exit(f"[x] peer 表缺列: {sorted(missing)}")
+          print(f"  [OK] {path}: peer 表含全部 {len(need)} 个列")
+          PY
+          echo "✓ 编译期必需文件均在位"
+
       - name: 品牌注入预演（不写盘）
         run: |
           set -e
@@ -439,6 +488,13 @@ jobs:
       # vcpkg 就会跳过 FFmpeg（它最慢，源码编译动辄 40 分钟以上），
       # 默认构建因此能快很多。
       - name: Install vcpkg dependencies
+        # manifest 在 client/vcpkg.json（客户端整棵树迁进 client/ 之后），
+        # 而 vcpkg 只认【当前工作目录】的 vcpkg.json —— 没有这一行它会在仓库根
+        # 找不到 manifest，退化成 classic 模式后立刻报错退出，且 buildtrees
+        # 一个都不会建，于是下面那段"输出全部 buildtree 日志"的兜底诊断也跟着
+        # 报 `find: 'C:\vcpkg/buildtrees': No such file or directory`，
+        # 真正的失败原因反被盖住。2026-10-16 CI 连挂三次就是这个。
+        working-directory: client
         env:
           # 字符串写死而非引用 env.VCPKG_TRIPLET：step 级 env 里引用 env context
           # 的求值顺序不够可靠，而这里两个值必须严格可预测。
@@ -449,16 +505,25 @@ jobs:
         shell: bash
         run: |
           set -e
+          echo "工作目录: $PWD"
+          ls -l vcpkg.json
           echo "VCPKG_DEFAULT_HOST_TRIPLET=$VCPKG_DEFAULT_HOST_TRIPLET"
           echo "VCPKG_DEFAULT_HOST_TRIPLET=$VCPKG_DEFAULT_HOST_TRIPLET" >> "$GITHUB_STEP_SUMMARY"
           if ! "$VCPKG_ROOT/vcpkg" install \
               --triplet ${{ env.VCPKG_TRIPLET }} \
               --x-install-root="$VCPKG_ROOT/installed"; then
             echo "===== vcpkg 失败，输出全部 buildtree 日志 ====="
-            find "$VCPKG_ROOT/buildtrees" -name "*.log" | while read -r f; do
-              echo "--- $f ---"
-              cat "$f"
-            done
+            # buildtrees 可能压根没建（manifest 解析就失败时），
+            # 所以先探一下再 find，别让兜底诊断自己变成报错的主角。
+            if [ -d "$VCPKG_ROOT/buildtrees" ]; then
+              find "$VCPKG_ROOT/buildtrees" -name "*.log" | while read -r f; do
+                echo "--- $f ---"
+                cat "$f"
+              done
+            else
+              echo "($VCPKG_ROOT/buildtrees 不存在 —— vcpkg 在建任何东西之前就失败了，"
+              echo " 优先怀疑 manifest 没找到：本步骤的 working-directory 必须是 client/)"
+            fi
             exit 1
           fi
           # FFmpeg 是这条链路上最脆弱的一环，即使成功也留一份构建日志备查
@@ -519,7 +584,13 @@ jobs:
           echo "硬件编解码: ${HWCODEC:-关闭}"
           echo "硬件编解码: ${HWCODEC:-关闭}" >> "$GITHUB_STEP_SUMMARY"
           echo "client/build.py 参数: --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}"
-          python client/build.py --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}
+          # 必须在 client/ 里跑：build.py 全程用相对路径（os.chdir('flutter')、
+          # os.chdir('libs/virtual_display/dylib')、target/release/...、res/），
+          # 它靠 REPO_ROOT 只解析少数绝对路径，主流程的 cwd 必须就是 crate 根。
+          # 从仓库根调 `python client/build.py` 会在第一处 os.chdir 就
+          # FileNotFoundError —— 而那时日志里只有一行 traceback，看不出是 cwd 错。
+          # 用括号包成子 shell，cd 只在这一行内生效，不影响后面的 mkdir/cp。
+          (cd client && python build.py --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }})
           mkdir -p rustdesk
           cp -rf client/flutter/build/windows/x64/runner/Release/. ./rustdesk/
           ls -l ./rustdesk

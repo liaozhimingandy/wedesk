@@ -8,11 +8,14 @@
 
 [server]
 # ============================ 自建服务器 ============================
-# ID/注册服务器地址，可写域名或 IP。不带端口时自动使用 21116（TCP 打洞 + UDP 注册/心跳）。
+# ID/注册服务器地址，可写域名或 IP。不带端口时自动使用 5187。
+#  !! 端口必须显式写出来 !!
+#  客户端内置的兜底端口是 21116，而我们服务端跑在 5187。不写端口的话，
+#  客户端会去连 wedesk.alsoapp.com:21116 —— 表现是"ID 一直显示未就绪"。
 #  填域名时的前提：客户端所在网络的 DNS 能解析它；解析到的是 hbbs 那台机器。
-#  端口若服务端改过，这里要显式写成 "wedesk.alsoapp.com:xxxx"。
+#  服务端端口定义见 ../docs/10-ports.md：hbbs 主端口 5187，hbbr 主端口 5188。
 #  !! 不要用环回地址，必须填客户端真正能连到的那个地址 !!
-rendezvous_host = "wedesk.alsoapp.com"
+rendezvous_host = "wedesk.alsoapp.com:5187"
 
 # 服务器公钥：hbbs 首次启动后生成的 id_ed25519.pub 内容。
 #  获取方式： cd ../server && python rdctl.py key
@@ -22,9 +25,10 @@ rendezvous_host = "wedesk.alsoapp.com"
 #       公钥也会变，客户端必须跟着改。
 key = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0="
 
-# 中继服务器地址。留空表示与 rendezvous_host 同机、使用 21117 默认端口。
-# 这里写域名 + 显式端口：hbbr 与 hbbs 监听端口不同，不带端口会被当成 21116。
-relay_host = "wedesk.alsoapp.com:21117"
+# 中继服务器地址。必须带端口：hbbr 与 hbbs 主端口不同（5188 vs 5187），
+# 省略端口会被客户端当成 hbbs 的端口去连，中继握手必然失败。
+# 留空表示与 rendezvous_host 同机、端口由客户端按内置默认值推导 —— 我们不走这条路。
+relay_host = "wedesk.alsoapp.com:5188"
 
 
 [brand]

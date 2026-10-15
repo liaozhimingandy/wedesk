@@ -11,8 +11,8 @@
 ```mermaid
 flowchart TB
     subgraph INTRANET["你的服务器（内网或云主机）"]
-        HBBS["hbbs 容器<br/>TCP 21115 · TCP+UDP 21116"]
-        HBBR["hbbr 容器<br/>TCP 21117"]
+        HBBS["hbbs 容器<br/>TCP 5186 · TCP+UDP 5187"]
+        HBBR["hbbr 容器<br/>TCP 5188"]
         DATA[("server/data/<br/>id_ed25519 密钥对<br/>db_v2.sqlite3 数据库")]
         HBBS --- DATA
         HBBR --- DATA
@@ -44,7 +44,7 @@ flowchart TB
 
 - Docker + Docker Compose
 - 一台能被所有客户端访问到的主机（内网服务器或云主机）
-- 放行端口：**TCP 21115、TCP 21116、UDP 21116、TCP 21117**
+- 放行端口：**TCP 5186、TCP 5187、UDP 5187、TCP 5188**
 
 ### 2.2 三步启动
 
@@ -84,7 +84,7 @@ python rdctl.py key         # 打印公钥 —— 记下来，客户端要用
 | `ALWAYS_USE_RELAY` | `N` | `N`=优先 P2P（内网推荐）；`Y`=强制走中继（跨公网、提高连通率，耗带宽） |
 | `RD_IMAGE` | `wedesk-server:latest` | 本地源码构建的镜像。想用 CI 推的远端镜像改这里（如 `ghcr.io/<owner>/wedesk-server:latest`）；<br>改回 `rustdesk/rustdesk-server:latest` 则用官方镜像（**会失去本地化补丁**） |
 | `RUST_LOG` | `info` | 排障时调 `debug` |
-| `HBBS_NAT` / `HBBS_TCP` / `HBBS_UDP` / `HBBR_TCP` | 21115/21116/21116/21117 | **主机侧**端口映射，冲突时才改。<br>容器内端口由 hbbs/hbbr 命令行决定，不在这组变量里 |
+| `HBBS_PORT` / `HBBS_NAT_PORT` / `HBBR_PORT` | 5187/5186/5188 | 整体平移时才改。<br>必须满足 `HBBS_NAT_PORT = HBBS_PORT - 1`，`rdctl.py start` 会校验 |
 
 ### 2.5 端口清单
 
@@ -93,13 +93,13 @@ python rdctl.py key         # 打印公钥 —— 记下来，客户端要用
 
 | 端口 | 协议 | 用途 | 必须开放 |
 |---|---|---|---|
-| 21115 | TCP | NAT 类型探测 | ✅ |
-| 21116 | TCP | TCP 打洞与连接服务 | ✅ |
-| 21116 | UDP | ID 注册 + 心跳 | ✅ |
-| 21117 | TCP | 中继 | ✅ |
-| 21118 / 21119 | TCP | WebSocket（进程默认会监听，compose 未 publish） | ❌ **别开** |
+| 5186 | TCP | NAT 类型探测 | ✅ |
+| 5187 | TCP | TCP 打洞与连接服务 | ✅ |
+| 5187 | UDP | ID 注册 + 心跳 | ✅ |
+| 5188 | TCP | 中继 | ✅ |
+| 5189 / 5190 | TCP | WebSocket（进程默认会监听，compose 未 publish） | ❌ **别开** |
 
-> **为什么不能开 21118/21119**：这两个端口不是"关着"的 —— hbbs/hbbr 进程**在容器里一直听着**，
+> **为什么不能开 5189/5190**：这两个端口不是"关着"的 —— hbbs/hbbr 进程**在容器里一直听着**，
 > 只是 compose 没有把它们映射到宿主。而 WebSocket 分支会**无条件信任**请求里的
 > `X-Real-IP` / `X-Forwarded-For` 头而不做校验（上游 issue #634）。
 > 任何人直连都能伪造 IP，绕过 IP 限流与封禁，还会污染审计日志。
@@ -115,11 +115,11 @@ network_mode: "host"
 `--net=host` 能拿到**真实来源 IP**（端口映射模式下所有来源都显示成网关 IP），
 对审计很重要。**仅 Linux 生效**，Windows/macOS 保持端口映射写法。
 
-切到 host 网络后，在云平台安全组放行 TCP 21115/21116/21117 + UDP 21116。
+切到 host 网络后，在云平台安全组放行 TCP 5186/5187/5188 + UDP 5187。
 
-> ⚠️ **切 host 之前先在防火墙 DROP 21118 / 21119**。
+> ⚠️ **切 host 之前先在防火墙 DROP 5189 / 5190**。
 > 端口映射带来的隔离会一并消失，容器里那两个未被 publish 的 WebSocket 端口
-> 会原样暴露到宿主网络栈。具体原因与命令见 [10 端口与网络规划 → 第 3 节](10-ports.md#3-三个必须先知道的坑)。
+> 会原样暴露到宿主网络栈。具体原因与命令见 [10 端口与网络规划 → 第 4 节](10-ports.md#4-三个必须先知道的坑)。
 
 ---
 
@@ -222,7 +222,7 @@ RustDesk 是 **AGPL-3.0**，衍生作品必须沿用同一许可证：
 服务端
 □ Docker 与 Compose 可用
 □ .env 的 RELAY_HOST 已改成实际 IP
-□ 四个端口已放行（TCP 21115/21116/21117 + UDP 21116）
+□ 端口已放行（TCP 5186/5187/5188 + UDP 5187）
 □ rdctl.py status 显示健康
 □ 公网 key 已备份到异地
 

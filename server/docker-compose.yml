@@ -1,11 +1,32 @@
 # =============================================================================
-# RustDesk 自建服务器 (hbbs + hbbr) —— 团队私有化部署
+# WeDesk 自建服务器 (hbbs + hbbr) —— 团队私有化部署
 # =============================================================================
 # 端口映射写法（而非 network_mode: host），保证在 Linux 服务器、Windows Docker
 # Desktop、macOS 上都能直接跑起来。若要上生产 Linux 服务器，可参考文件末尾注释
 # 切换到 host 网络以获得真实来源 IP 与更低延迟。
 #
 # 使用前请把同目录下的 .env.example 复制为 .env，并填写 RELAY_HOST。
+# =============================================================================
+# 【端口是怎么定下来的 —— 改之前务必先看这段】
+#
+# 这里的端口不是一张可以随便编的清单，而是从两个"主端口"推导出来的：
+#
+#   hbbs 主端口 P = 5187   →  UDP P(5187)   注册 / 心跳
+#                             TCP P(5187)   TCP 打洞与连接
+#                             TCP P-1(5186) NAT 类型探测
+#                             TCP P+2(5189) WebSocket ** 容器内始终监听，不 publish **
+#   hbbr 主端口 R = 5188   →  TCP R(5188)   中继数据
+#                             TCP R+2(5190) WebSocket ** 容器内始终监听，不 publish **
+#
+# 源码位置：hbbs 见 src/rendezvous_server.rs 的 nat_port = port - 1 / ws_port = port + 2；
+#          hbbr 见 src/relay_server.rs 的 port2 = port + 2。它们没有开关可关。
+#
+# 所以要塞进 5186-5189 这四个号，P 只能取 5187（P-1=5186、P+2=5189 都在范围内），
+# R 只能取 5188。这也是为什么下面每条映射的左右两侧用同一个变量：
+#   左侧是宿主机端口，右侧是容器内端口，而容器端口由 command 里的 -p 决定，
+#   两者必须永远相等 —— 改成 9000:5187 只会得到"端口开着但连不上"。
+# 想整体平移，就改 HBBS_PORT / HBBR_PORT / HBBS_NAT_PORT 三个值并保持
+# HBBS_NAT_PORT == HBBS_PORT-1（rdctl.py start 会校验这个关系）。
 # =============================================================================
 
 services:
@@ -21,7 +42,12 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: rd-hbbs
-    command: hbbs -r ${RELAY_HOST:-127.0.0.1}:${RELAY_PORT:-21117}
+    # -p  : 主端口，派生出 NAT(P-1) 与 WS(P+2)。写成变量是为了让下面 ports 段
+    #       能跟着一起变，避免"一边改一边没改"这种最难查的错。
+    # -r  : 告诉客户端中继在哪台机器上。**必须带端口**，否则 hbbs 会按默认的
+    #       21117 拼出来 src/rendezvous_server.rs 的第 1322 行），
+    #       客户端会被指到一个没人监听的端口，表现为"能注册但连不上桌面"。
+    command: hbbs -p ${HBBS_PORT:-5187} -r ${RELAY_HOST:-127.0.0.1}:${HBBR_PORT:-5188}
     environment:
       # 强制所有连接走中继。团队成员若分布在不同内网，开启可提高连通率，
       # 代价是所有流量经过服务器消耗带宽。内网环境建议设为 N 走 P2P 直连。
@@ -37,20 +63,21 @@ services:
       # 密钥(id_ed25519 / id_ed25519.pub)与 SQLite 数据库落在此目录，务必定期备份
       - ./data:/root
     ports:
-      # 端口写成 "主机:容器" 是为了后面能用 .env 覆盖主机侧，避免与宿主已有服务冲突。
+      # 5186 / 5187 是客户端真正要连的三个口子（5186 TCP、5187 TCP + UDP）。
+      # 5187 同时用 TCP 与 UDP，Docker 里 "5187:5187" 只 publish TCP，
+      # UDP 必须单独写一条 "/udp" —— 下面看着像重复，实际是同一端口的两种协议，
+      # 缺了 UDP 那条，客户端的注册就永远超时。
+      - "${HBBS_NAT_PORT:-5186}:${HBBS_NAT_PORT:-5186}"   # NAT 类型探测 (TCP) = P-1
+      - "${HBBS_PORT:-5187}:${HBBS_PORT:-5187}"           # 注册/心跳 + TCP 打洞 (TCP)
+      - "${HBBS_PORT:-5187}:${HBBS_PORT:-5187}/udp"       # 注册 + 心跳 (UDP)
       #
-      # 注意 21118 / 21119 **没有**出现在这里 —— 这不是因为它们不存在：
-      # hbbs/hbbr 进程在容器内部其实默认就监听 P+2 / R+2 这两个 WebSocket 端口，
-      # 只是没有被 publish 出来，所以从宿主机外面扫不到。
-      # 千万不要手贱加上这两行，也不要在没有防火墙的前提下改用 network_mode: host
-      # —— host 网络会把容器里所有监听原样暴露到宿主 TCP 栈上，21118/21119 会一起
-      # 对外开放，绕过下面的隔离。详见 docs/10-ports.md。
-      # 21116 同时用 TCP 与 UDP，且必须是宿主同一端口号两侧一致；
-      # Docker 里 "21116:21116" 只 publish TCP，UDP 要单独写一条 "/udp"，
-      # 所以下面看着像重复，实际是同一端口的两种协议，缺一不可。
-      - "${HBBS_NAT:-21115}:21115"       # NAT 类型探测        (TCP)
-      - "${HBBS_TCP:-21116}:21116"       # ID 注册/心跳 + TCP 打洞 (TCP)
-      - "${HBBS_UDP:-21116}:21116/udp"   # ID 注册 + 心跳      (UDP)
+      # 5189 = hbbs 的 WebSocket 端口，【刻意没有 publish】。
+      # 注意它不是"没开"：容器内 hbbs 进程始终在 5189 上监听，只是外部摸不到。
+      # 不能开的原因：上游确认 WebSocket 分支会无条件信任 X-Real-IP /
+      # X-Forwarded-For 头，且不校验来源。任何人直连都能伪造 IP，绕过 IP
+      # 限流/封禁并污染审计日志。只有在前面挂了反向代理、由代理统一覆写该头
+      # 时才可 publish，且必须用防火墙限制仅反代 IP 可访问。
+      # 详见 docs/10-ports.md。
     depends_on:
       - hbbr
     restart: unless-stopped
@@ -77,19 +104,19 @@ services:
     image: ${RD_IMAGE:-wedesk-server:latest}
     build: *wedesk-build
     container_name: rd-hbbr
-    command: hbbr
+    # -p  : 中继主端口。注意是【命令行 -p】而不是环境变量 PORT ——
+    #       hbbr.rs 里环境变量 PORT 会被 +1 之后再使用（历史包袱），
+    #       写成 PORT=5188 它就去监听 5189，正好撞上 hbbs 的 WebSocket 端口。
+    command: hbbr -p ${HBBR_PORT:-5188}
     environment:
       - RUST_LOG=${RUST_LOG:-warn}
     volumes:
       - ./data:/root
     ports:
-      # hbbr 的容器侧还有一种"隐藏监听"：进程会顺带在 端口+2 (默认 21119) 上监听
-      # WebSocket 中继。这里没有 publish 出去，所以外部不可达 —— 这是刻意的。
-      # 原因见上游 issue #634：WebSocket 分支会无条件信任 X-Real-IP / X-Forwarded-For，
-      # 且不校验来源。任何人直连该端口都能伪造 IP，绕过 IP 限流/封禁并污染审计日志。
-      # 只有在前面挂了反向代理、由代理统一覆写该头时才可 publish，
-      # 且必须用防火墙限制仅反代 IP 可访问。
-      - "${HBBR_TCP:-21117}:21117"      # 中继主端口 (TCP)
+      - "${HBBR_PORT:-5188}:${HBBR_PORT:-5188}"      # 中继主端口 (TCP)
+      #
+      # 5190 = hbbr 的 WebSocket 中继端口（= 5188+2），同样刻意不 publish，
+      # 原因与 hbbs 的 5189 相同 —— 信任 X-Real-IP / X-Forwarded-For 且不做校验。
     restart: unless-stopped
     networks:
       - rd-net
@@ -117,12 +144,12 @@ networks:
 #     network_mode: "host"      # 删掉上面的 ports: 与 networks: 段
 #
 # ⚠️ 一旦切 host，上面"只在容器内监听、没 publish"的保护就消失了：
-#    hbbs 的 21118、hbbr 的 21119 会直接暴露到宿主网络栈。
-#    所以切之前必须先在防火墙里显式拒绝这两个端口（只放行 21115/21116/21117）：
+#    hbbs 的 5189、hbbr 的 5190 会直接暴露到宿主网络栈。
+#    所以切之前必须先在防火墙里显式拒绝这两个端口（只放行 5186/5187/5188）：
 #
 #       # 云安全组/iptables 都要做，按实际网卡与顺序调整
-#       iptables -I INPUT -p tcp --dport 21118 -j DROP
-#       iptables -I INPUT -p tcp --dport 21119 -j DROP
+#       iptables -I INPUT -p tcp --dport 5189 -j DROP
+#       iptables -I INPUT -p tcp --dport 5190 -j DROP
 #
 #    端口全景与规划建议见 docs/10-ports.md。
 #    （--net=host 仅在 Linux 生效；Windows / macOS 请保持上面的端口映射写法）

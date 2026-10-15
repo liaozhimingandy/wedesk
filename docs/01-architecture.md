@@ -60,21 +60,22 @@ flowchart TB
     FFI --> CORE
 
     subgraph SERVER["自建服务端（Docker）"]
-        HBBS["hbbs :21115/:21116<br/>ID 注册 · 心跳 · 打洞协调"]
-        HBBR["hbbr :21117<br/>中继转发"]
+        HBBS["hbbs :5186/:5187<br/>ID 注册 · 心跳 · 打洞协调"]
+        HBBR["hbbr :5188<br/>中继转发"]
         DB[("data/<br/>id_ed25519 + db_v2.sqlite3")]
         HBBS --- DB
     end
 
-    REN <-->|"TCP 21116 注册/打洞<br/>UDP 21116 心跳"| HBBS
-    SRV <-->|"P2P 直连 或 经 21117 中继"| HBBR
-    CLI <-->|"P2P 直连 或 经 21117 中继"| HBBR
+    REN <-->|"TCP 5187 注册/打洞<br/>UDP 5187 心跳"| HBBS
+    SRV <-->|"P2P 直连 或 经 5188 中继"| HBBR
+    CLI <-->|"P2P 直连 或 经 5188 中继"| HBBR
 ```
 
 **要点**：
 
 - 控制端和被控端**在同一个二进制里**。同一个 exe，发起连接时它是 client，被连接时它是 server。所以 `src/client/` 和 `src/server/` 是两套并列逻辑，不是一个 C/S 程序的两端。
-- **服务端（hbbs/hbbr）不在本仓库**。本仓库只放 Docker 编排（`server/`），服务端是官方镜像。
+- **服务端（hbbs/hbbr）源码就在本仓库** `server/rustdesk-server/`，镜像是本地编译出来的，
+  与官方镜像无关。升级/自编译见 [09 服务端自编译](09-server-build.md)。
 - Flutter 侧**不存在任何网络代码**。要找"连接是怎么建立的"，去 `src/rendezvous_mediator.rs`。
 
 ---

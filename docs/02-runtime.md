@@ -23,7 +23,7 @@
 ```mermaid
 sequenceDiagram
     participant App as 客户端
-    participant HBBS as hbbs :21116
+    participant HBBS as hbbs :5187
     participant Disk as 本地配置
 
     App->>Disk: 读已有 id / enc_id
@@ -58,8 +58,8 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant C as 控制端（发起方）
-    participant HBBS as hbbs :21116
-    participant HBBR as hbbr :21117
+    participant HBBS as hbbs :5187
+    participant HBBR as hbbr :5188
     participant S as 被控端（接受方）
 
     C->>HBBS: ① 请求连接目标 ID

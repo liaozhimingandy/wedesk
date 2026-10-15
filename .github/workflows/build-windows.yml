@@ -86,11 +86,14 @@ env:
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
 
   # ---- 服务端（server/rustdesk-server 是独立 workspace，工具链单独定） ----
-  # 不用客户端的 1.75：服务端 Cargo.lock 是 lockfile v4，cargo < 1.78 读不了；
-  # 且它的依赖（axum 0.5 / sqlx 0.6 / tokio 1.44+）普遍要求较新的编译器。
-  # 客户端锁 1.75 是为了 sciter/bridge 的 i128 ABI，两个 workspace 互不干扰。
-  SERVER_RUST_VERSION: "stable"
-  SERVER_TARGET: "x86_64-unknown-linux-musl"
+  # 服务端 Cargo.lock 是 lockfile v4，cargo < 1.78 读不了；它的依赖
+  # （sqlx 0.6 / tokio 1.44+ / git 上游包）也普遍要求较新的编译器。
+  # 客户端之所以锁 1.75 是 sciter/bridge 的 i128 ABI 之故，两个 workspace 互不干扰。
+  #
+  # 编译器版本不再在这里写 —— 它由 SERVER_BUILD_IMAGE 决定：服务端在 musl 容器里
+  # 本机编译（见 build-server job 的说明），容器内自带 Rust，不再依赖 runner 上
+  # 安装的工具链。要换版本就把这里和 server/Dockerfile 的 ARG RUST_IMAGE 一起改。
+  SERVER_BUILD_IMAGE: "rust:1.90-alpine"
   SERVER_DIR: "server/rustdesk-server"
 
 jobs:
@@ -633,18 +636,28 @@ jobs:
         with:
           persist-credentials: false
 
-      # musl-gcc：静态链接 libc 需要 musl 头文件与链接器
-      - name: Install musl toolchain
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y musl-tools
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.SERVER_RUST_VERSION }}
-          targets: ${{ env.SERVER_TARGET }}
-
+      # -------------------------------------------------------------------
+      # 为什么要在 musl 容器里编译，而不是在 runner 上交叉编译
+      # -------------------------------------------------------------------
+      # runner 是 glibc 环境。 `cargo build --target x86_64-unknown-linux-musl`
+      # 会让 openssl-sys 去找【目标平台】的 OpenSSL，glibc 上的 libssl-dev 对
+      # musl 无效，于是报：
+      #
+      #     Could not find directory of OpenSSL installation, and this `-sys`
+      #     crate cannot proceed without this knowledge. ... set OPENSSL_DIR
+      #
+      # 手工给 musl 再喂一份 OpenSSL 并设 OPENSSL_DIR 当然能过，但那套路径绑死
+      # 宿主发行版与 runner 镜像版本，一个 update 就失效。换成本机编译：容器的
+      # host triple 本身就是 musl，alpine 的 openssl-dev/sqlite-dev 天生是给
+      # musl 编的，pkg-config 一查即中，产物照样是 musl 静态二进制。
+      #
+      # 编译命令不在这里 —— 它在 server/build-musl.sh，与 server/Dockerfile
+      # 共用同一份。两份配方一旦各自漂移，就会出现「CI 绿但本机 docker build 红」
+      # 这种最难复盘的故障。
+      #
+      # 挂载 $HOME/.cargo/registry 是为了让 rust-cache 管到依赖包缓存；
+      # 挂 target 则直接落回仓库里，下一个 job/step 照原路径取用。
+      # -------------------------------------------------------------------
       # workspaces 必须显式指定：
       # rust-cache 默认按仓库根推断 target，而服务端是独立 workspace + 非默认 target，
       # 不写这一行就缓存不命中，每次都从零重编十几个依赖包。
@@ -652,22 +665,21 @@ jobs:
         with:
           workspaces: ${{ env.SERVER_DIR }} -> target/${{ env.SERVER_TARGET }}
 
-      # DATABASE_URL 是 sqlx 的编译期要求：
-      # hbbs 里的 SQL 查询宏会在编译阶段连一个真实 SQLite 库做校验，
-      # 上游为此把一个 db_v2.sqlite3 模板库放进了仓库根目录。
-      # 少了这个变量会报 "DATABASE_URL must be set"。
-      # 不能用 workflow 级 env 写死绝对路径：它依赖仓库名，
-      # 而仓库是可能被 fork / 改名的。这里在 run 里按 $PWD 现算。
-      - name: Build hbbs / hbbr / rustdesk-utils
-        working-directory: ${{ env.SERVER_DIR }}
+      - name: Build hbbs / hbbr / rustdesk-utils in musl container
         run: |
           set -e
-          export DATABASE_URL="sqlite://$PWD/db_v2.sqlite3"
-          cargo build --locked --release --target ${{ env.SERVER_TARGET }} \
-              --bin hbbs --bin hbbr --bin rustdesk-utils
-          ls -lh target/${{ env.SERVER_TARGET }}/release/hbbs \
-                 target/${{ env.SERVER_TARGET }}/release/hbbr \
-                 target/${{ env.SERVER_TARGET }}/release/rustdesk-utils
+          mkdir -p "$HOME/.cargo/registry" "${SERVER_DIR}/target"
+          docker run --rm \
+            --volume "$PWD/${SERVER_DIR}:/src" \
+            --volume "$PWD/server/build-musl.sh:/build-musl.sh:ro" \
+            --volume "$HOME/.cargo/registry:/usr/local/cargo/registry" \
+            --env TARGET="${SERVER_TARGET}" \
+            "${SERVER_BUILD_IMAGE}" \
+            sh /build-musl.sh
+          # 容器里是 root，写出来 target/ 与 registry 缓存都归 root；
+          # 后面的 upload-artifact 与 rust-cache 由 runner 用户执行会读不到。
+          sudo chown -R "$(id -u):$(id -g)" \
+            "$HOME/.cargo/registry" "${SERVER_DIR}/target"
 
       - name: Package server binaries
         id: pack

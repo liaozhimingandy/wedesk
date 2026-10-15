@@ -48,9 +48,10 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 │   ├── rustdesk-server/         ★ 服务端源码（hbbs/hbbr），上游另一仓库，已 vendor
 │   ├── Dockerfile               容器内从源码编译 → 自有镜像
 │   ├── Dockerfile.prebuilt      CI 用：直接装已编译二进制
+│   ├── build-musl.sh            ★ 编译脚本 —— Dockerfile 与 CI 共用这一份
 │   ├── docker-compose.yml       hbbs(ID/注册) + hbbr(中继)，默认本地构建
 │   ├── .env.example             配置项模板，复制为 .env 后填写
-│   └── rdctl.py                 跨平台管理工具（构建/启停/查公钥/备份）
+│   └── rdctl.py                 跨平台管理工具（构建/启停/端口/查公钥/备份）
 │
 ├── build/                       客户端定制与构建
 │   ├── custom.toml              ★ 唯一需要你改的配置文件
@@ -133,7 +134,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 | **拿到一个 exe** | [03b GitHub Actions 云构建](docs/03b-ci.md)（推荐）或 [03 本地构建](docs/03-build.md) |
 | **发一个正式版本** | `build\tag-release.bat` —— 打标签即自动构建并发布 Release（见 [03b](docs/03b-ci.md)）<br>一次产出：客户端便携版 / MSI + **服务端 hbbs/hbbr** + GHCR 镜像 |
 | **上线给用户用** | [04 部署指南](docs/04-deploy.md) |
-| **端口怎么规划 / 上公网怎么配防火墙** | [10 端口与网络规划](docs/10-ports.md)<br>对外只要 3 个：TCP 21115/21116 + UDP 21116 + TCP 21117 |
+| **端口怎么规划 / 上公网怎么配防火墙** | [10 端口与网络规划](docs/10-ports.md)<br>对外只要 3 个：TCP 5186/5187 + UDP 5187 + TCP 5188 |
 | **不想用官方服务端镜像，要自己编译 hbbs/hbbr** | [09 服务端自编译](docs/09-server-build.md) |
 | **换 Logo、改服务器、砍功能** | [05 定制指南](docs/05-customize.md) |
 | **加一个新功能** | [06 维护手册](docs/06-maintenance.md) |
@@ -173,15 +174,18 @@ python rdctl.py start
 ```
 
 > **⚠️ 端口与防火墙**：必须在服务器/防火墙放行
-> `TCP 21115, 21116, 21117` 和 `UDP 21116`。
+> `TCP 5186, 5187, 5188` 和 `UDP 5187`。
 > 只开 TCP 不开 UDP 会导致"ID 能注册但连不上"——这是最常见的坑。
 
 ### 第 2 步：改配置（`build/custom.toml`）
 
 ```toml
 [server]
-rendezvous_host = "你的域名或IP"        # 客户端真正能连到的地址
-key            = "上一步拿到的公钥"      # 必须完全一致，否则连不上
+# 端口必须对得上：`rendezvous_host` 是 5187（hbbs），relay 是 5188（hbbr）。
+# 客户端内置的兜底端口是 21116，所以这里不写端口就等于没改。
+rendezvous_host = "你的域名或IP:5187"   # 客户端真正能连到的地址
+relay_host      = "你的域名或IP:5188"
+key             = "上一步拿到的公钥"     # 必须完全一致，否则连不上
 
 [brand]
 app_name  = "企业网管助手"
@@ -200,8 +204,8 @@ git add build/custom.toml && git commit -m "chore: 更新服务器地址与品�
 git push
 ```
 
-推送会自动触发 `Build Windows Client` 工作流。也可以手动触发：
-仓库 → **Actions** → `Build Windows Client` → **Run workflow**。
+推送会自动触发 `Build Wedesk (Client + Server)` 工作流。也可以手动触发：
+仓库 → **Actions** → `Build Wedesk (Client + Server)` → **Run workflow**。
 
 手动触发时可以临时覆盖品牌而不改源码：
 
@@ -379,7 +383,7 @@ python <repo>\build\customize.py --restore
 `server.key` 与服务器上 `data/id_ed25519.pub` 必须逐字节一致。用 `python rdctl.py key` 重新取。
 
 **ID 能注册但连接失败**
-99% 是 UDP 21116 没放行，或 relay 地址配错，检查 `server/.env` 的 `RELAY_HOST`。
+99% 是 UDP 5187 没放行，或 relay 地址配错，检查 `server/.env` 的 `RELAY_HOST`。
 
 **定制没生效**
 检查 `git clone` 是否带了 `--recursive`；再看 CI 日志里是否有定制步骤的输出。

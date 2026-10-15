@@ -15,36 +15,31 @@
 #   Docker Desktop 的默认平台跟本机走，给 Linux 服务器用时显式指定：
 #     docker build --platform linux/amd64 -t wedesk-server:latest .
 #
-# 产出的二进制是 musl 静态链接，任意 Linux 发行版都能跑，不依赖 glibc 版本。
+# 真正的编译命令不在这里，在 build-musl.sh —— 那份脚本同时被 CI 使用，
+# 保证"本机 docker build"与"CI 编出来的二进制"是同一套配方。
 # =============================================================================
+ARG RUST_IMAGE=rust:1.90-alpine
 
 # ---------------------------------------------------------------------------
 # 阶段 1：编译
 # ---------------------------------------------------------------------------
 # rust:alpine 的 host triple 就是 musl，产物天然静态。
 # 固定大版本便于复现；要换编译器版本：
-#   docker build --build-arg RUST_IMAGE=rust:1.87-alpine .
-ARG RUST_IMAGE=rust:1.90-alpine
+#   docker build --build-arg RUST_IMAGE=rust:alpine .
 FROM ${RUST_IMAGE} AS builder
 
-# build-base : gcc/make —— libsodium(sqlx 之外的加密) 与 sqlite3(sqlx bundled) 要现场编 C
-# musl-dev   : musl 头文件，静态链接 libc
-# perl       : ring(TLS) 的构建脚本用 perl 生成汇编，缺了会报 "perl: not found"
-# pkgconfig  : 部分 *-sys 包用它探测系统库
-RUN apk add --no-cache \
-        build-base \
-        musl-dev \
-        perl \
-        pkgconfig \
-        cmake
+# 编译目标。传给 build-musl.sh，决定产物落在 target/$TARGET/release 下。
+# 这里显式写出来（而不是依赖 host 默认值）是为了让路径可预期：
+# cargo 只有在传了 --target 时才会用 target/<triple>/ 子目录。
+ARG TARGET=x86_64-unknown-linux-musl
+ENV TARGET=$TARGET
 
 WORKDIR /src
 
 # sqlx 的查询宏在【编译期】就要连一个真实 SQLite 库来校验 SQL，上游为此在仓库里
-# 塞了 db_v2.sqlite3。不设这个变量会报 `DATABASE_URL` 未设置。
-# 它只参与编译期校验，不会进运行镜像。
-ENV DATABASE_URL=sqlite:///src/db_v2.sqlite3
-
+# 塞了 db_v2.sqlite3。所需的 DATABASE_URL 由 build-musl.sh 内部设置。
+# 依赖包安装同样在脚本里 —— 与 CI 共用一份，避免两边配方漂移。
+COPY build-musl.sh /build-musl.sh
 COPY rustdesk-server/ ./
 
 # 两条 cache mount：
@@ -55,8 +50,7 @@ COPY rustdesk-server/ ./
 # --locked：Cargo.lock 不允许被悄悄改写，依赖有变动应当显式失败。
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --locked --release \
-        --bin hbbs --bin hbbr --bin rustdesk-utils
+    sh /build-musl.sh
 
 # ---------------------------------------------------------------------------
 # 阶段 2：运行镜像
@@ -67,9 +61,10 @@ FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=builder /src/target/release/hbbs           /usr/bin/hbbs
-COPY --from=builder /src/target/release/hbbr           /usr/bin/hbbr
-COPY --from=builder /src/target/release/rustdesk-utils /usr/bin/rustdesk-utils
+ARG TARGET=x86_64-unknown-linux-musl
+COPY --from=builder /src/target/${TARGET}/release/hbbs           /usr/bin/hbbs
+COPY --from=builder /src/target/${TARGET}/release/hbbr           /usr/bin/hbbr
+COPY --from=builder /src/target/${TARGET}/release/rustdesk-utils /usr/bin/rustdesk-utils
 
 # 密钥（id_ed25519 / id_ed25519.pub）与 SQLite 数据库的工作目录。
 # hbbs 默认把文件写在 $HOME 下，容器内 HOME 是 /root —— 与 docker-compose.yml
@@ -77,7 +72,11 @@ COPY --from=builder /src/target/release/rustdesk-utils /usr/bin/rustdesk-utils
 VOLUME /root
 WORKDIR /root
 
-EXPOSE 21115 21116 21116/udp 21117
+# 声明仅为文档用途：真正能访问到的是 docker-compose.yml 里 publish 出来的端口。
+# 5186 = hbbs NAT 探测，5187 = hbbs 主端口（TCP 打洞 + UDP 注册心跳），
+# 5188 = hbbr 中继。容器内还监听 5189(hbbs WS) 与 5190(hbbr WS)，刻意不列出
+# 也不 publish —— 它们无条件信任 X-Real-IP 头，见 docker-compose.yml 的说明。
+EXPOSE 5186 5187 5187/udp 5188
 
 # 不设 ENTRYPOINT：让 docker-compose 的 command（hbbs -r xxx / hbbr）直接生效。
 # CMD 给个默认值，单独 docker run 时也能起来。

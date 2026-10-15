@@ -60,6 +60,9 @@ build\tag-release.bat        # 打标签并推送（版本自动取自根 Cargo.
 ```
 
 流水线里的 `build-server` job 会编译 musl 静态二进制，`server-image` job 把镜像推到 GHCR。
+
+那个 job **不是在 runner 上直接 `cargo build --target musl`**，而是起一个 `rust:alpine` 容器、
+在里面本机编译（`server/build-musl.sh`）。原因见第 6 节那条 OpenSSL 报错的说明。
 跑完后同一个 GitHub Release 里同时有：
 
 | 产物 | 形态 | 用途 |
@@ -87,8 +90,12 @@ cd server
 docker build --platform linux/amd64 -t wedesk-server:latest -f Dockerfile .
 ```
 
-> **`--platform linux/amd64` 别省**：在 Windows / Apple Silicon 的 Docker Desktop 上，
+> `--platform linux/amd64` 别省：在 Windows / Apple Silicon 的 Docker Desktop 上，
 > 默认平台是本机架构，编出来的镜像丢到 x86 Linux 服务器上会跑不起来。
+>
+> 这条命令和 CI 里的 `build-server` job 走的是**同一份脚本** `server/build-musl.sh`。
+> 所以改编译环境（加系统依赖、加 feature、换 target）只改那一处，
+> 不要单独给 CI 写一套 —— 两套配方迟早漂移成"CI 绿但本机 docker build 红"。
 
 ### 2.3 路径 ③ —— 本机 cargo 编译 Windows exe
 
@@ -214,12 +221,75 @@ build\build-server.bat
 | 报错 / 现象 | 原因 | 处理 |
 |---|---|---|
 | `lock file version 4 requires -Znext-lockfile-bump` | cargo < 1.78 | 用 stable toolchain：`RUSTUP_TOOLCHAIN=stable` |
-| `DATABASE_URL must be set` / `No such file or directory: db_v2.sqlite3` | sqlx 宏编译期要连 SQLite | 设 `DATABASE_URL=sqlite://<绝对路径>/db_v2.sqlite3` |
+| `Could not find directory of OpenSSL installation ... set the OPENSSL_DIR` | 在 glibc 机器上交叉编译到 musl，openssl-sys 找不到**目标平台**的 OpenSSL | 改在 musl 容器里本机编译（`server/build-musl.sh`）。<br>详情见下方第 6.1 节 |
+| `DATABASE_URL must be set` / `No such file or directory: db_v2.sqlite3` | sqlx 宏编译期要连 SQLite | 脚本里已设 `DATABASE_URL=sqlite:///src/db_v2.sqlite3`；<br>手动编译时需自己设，路径必须是**绝对**的 |
 | 容器内 `hbbs: not found` | 二进制是 glibc 版，却拷进了 alpine | 必须用 musl 静态编译；检查 target 是否为 `*-unknown-linux-musl` |
-| `perl: not found`（Dockerfile 构建阶段） | ring(TLS) 的构建脚本依赖 perl | Dockerfile 里装 perl；别精简掉 `build-base musl-dev perl` |
-| 启动就报端口占用 | 本机已有 hbbs/hbbr 进程 | `python rdctl.py stop` 后再起，或改 `.env` 里的端口映射 |
+| `perl: not found`（构建阶段） | ring(TLS) 的构建脚本依赖 perl | `build-musl.sh` 里已装 perl；别精简掉 `build-base musl-dev perl` |
+| 构建阶段 `git: command not found` | Cargo.lock 钉了 7 个 git 依赖（reqwest/confy/sysinfo 等），cargo 要现场 clone | 容器内装 git（脚本里已装） |
+| 启动就报端口占用 | 本机已有进程占着派生端口 | `python rdctl.py stop` 后再起，或整体平移 `HBBS_PORT` / `HBBR_PORT`。<br>**别只改主端口** —— P-1 与 P+2 也要一并挪开，见 [10 端口规划](10-ports.md) |
 | 客户端连不上，日志无报错 | 两端公钥不一致 | 核对 `rdctl.py key` 与 `build/custom.toml` 的 key 是否相同 |
 | `docker build` 卡在 crates.io 下载 | 容器内网络慢 | 重试一次即可；CI 里有 cargo registry 缓存，本机建议 `--platform` 保持一致以复用层缓存 |
+
+### 6.1 OpenSSL 报错：为什么不在 runner 上交叉编译
+
+原始错误信息长这样：
+
+```
+Could not find directory of OpenSSL installation, and this `-sys` crate cannot
+proceed without this knowledge. ... you can set the `OPENSSL_DIR` environment
+variable for the compilation process.
+$HOST = x86_64-unknown-linux-gnu
+$TARGET = x86_64-unknown-linux-musl
+openssl-sys = 0.9.104
+```
+
+**为什么会发生**：`hbbs` 的依赖链里有 `native-tls → openssl → openssl-sys`
+（`hbbs → hbb_common → tokio-native-tls → native-tls → openssl-sys`，以及
+`hbbs → reqwest → hyper-tls → native-tls → openssl-sys` 两条路）。
+openssl-sys 的构建脚本会按 **target triple** 去找 OpenSSL。runner 是 glibc 环境，
+就算装了 `libssl-dev`，那也是给 glibc 编的 —— 链接 musl 目标时格式不匹配，
+于是它报告"没找到安装"。
+
+#### 修法一（不推荐）：手工给 musl 编一份 OpenSSL
+
+```bash
+# 大致如此，细节随发行版与版本浮动
+export CC=musl-gcc
+./Configure linux-x86_64 no-shared --prefix=/opt/openssl-musl
+make && make install
+export OPENSSL_DIR=/opt/openssl-musl
+export OPENSSL_STATIC=1
+```
+
+能过，但这条路的问题在于：编出来的东西绑死宿主机的发行版与 runner 镜像版本，
+GitHub 换一次 runner image、本机换一台机器就重新失效；而且 OpenSSL 全量编译本身就要几分钟。
+
+#### 修法二（本仓库采用）：在 musl 容器里本机编译
+
+```bash
+docker run --rm \
+  -v "$PWD/server/rustdesk-server:/src" \
+  -v "$PWD/server/build-musl.sh:/build-musl.sh:ro" \
+  -e TARGET=x86_64-unknown-linux-musl \
+  rust:1.90-alpine sh /build-musl.sh
+```
+
+容器的 host triple 本身就是 `x86_64-unknown-linux-musl`，容器里 `apk add openssl-dev`
+拿到的就是给 musl 编好的 OpenSSL，pkg-config 一查即中，零配置。
+
+代价：runner 上必须有 Docker（GitHub 托管的 Linux runner 自带）。
+收益：与本机 `docker build` 用的是同一份脚本，两边结果必然一致。
+
+脚本里另外做了两件小事，都是为了跨环境可复现：
+
+- `export OPENSSL_STATIC=1` + 逐个安装 `*-static` 子包 —— 让产物真正静态。
+  缺某个 `-static` 包时只降级成动态链接并告警，不至于让整次构建失败；
+- 末尾用 `file` 打印每个二进制的链接方式，让"到底静不静态"看得见 ——
+  真出现"Docker 里能跑、裸二进制起不来"，先来看这里。
+
+> 注意 **hbbs/hbbr 的端口不写在源码里**，是靠 `docker-compose.yml` 的
+> `command: hbbs -p 5187` / `hbbr -p 5188` 传入的。重新编译不会改变端口。
+> 端口推导规则见 [10 端口规划](10-ports.md)。
 
 ---
 

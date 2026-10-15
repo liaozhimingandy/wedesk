@@ -143,7 +143,7 @@ echo.
 echo 运行方式（两个进程要同时起）：
 echo     cd /d server\bin
 echo     hbbr.exe
-echo     hbbs.exe -r ^<本机IP^>:21117
+echo     hbbs.exe -p 5187 -r ^<本机IP^>:5188
 echo.
 echo 首次运行会在当前目录生成 id_ed25519 / id_ed25519.pub，
 echo 公钥内容要填进客户端叠置服务器配置（或直接烧进 libs/hbb_common 的 RS_PUB_KEY）。

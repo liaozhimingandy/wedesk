@@ -11,6 +11,7 @@ rdctl.py —— RustDesk 自建服务器跨平台管理工具
     python rdctl.py stop       停止并保留数据
     python rdctl.py restart    重启
     python rdctl.py status     查看容器状态与已注册设备概况
+    python rdctl.py ports     打印当前端口规划（对照防火墙/安全组时用）
     python rdctl.py key       打印服务器公钥（客户端定制要用）
     python rdctl.py logs      查看实时日志（Ctrl+C 退出）
     python rdctl.py backup    备份密钥与数据库到 ./backup/<时间戳>/
@@ -134,23 +135,132 @@ def read_key():
     return KEY_PUB.read_text(encoding="utf-8").strip()
 
 
-def compose_image_name():
-    """读取 .env 里的 RD_IMAGE，未设置则用 compose 里的默认值。"""
+def read_env():
+    """读 .env 为 dict。缺文件返回空表 —— 此时 compose 会用自己的默认值。"""
+    values = {}
     env_file = HERE / ".env"
-    default = "wedesk-server:latest"
     if not env_file.exists():
-        return default
+        return values
     try:
         for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line.startswith("#") or "=" not in line:
                 continue
             k, v = line.split("=", 1)
-            if k.strip() == "RD_IMAGE" and v.strip():
-                return v.strip()
+            values[k.strip()] = v.strip()
     except OSError:
         pass
-    return default
+    return values
+
+
+def compose_image_name():
+    """读取 .env 里的 RD_IMAGE，未设置则用 compose 里的默认值。"""
+    img = read_env().get("RD_IMAGE")
+    return img if img else "wedesk-server:latest"
+
+
+# --- 端口规划 --------------------------------------------------------------
+# 端口是从【主端口】推导出来的，不是一张随意的清单：
+#   hbbs 主端口 P → UDP P / TCP P / TCP P-1(NAT 探测) / TCP P+2(WebSocket)
+#   hbbr 主端口 R → TCP R      / TCP R+2(WebSocket)
+# 所以 hbbs 一动就是三个端口跟着动。下面的默认值必须与 docker-compose.yml
+# 里的 ${...:-5187} 保持一致，任何一处改了，另一处也要跟着改。
+DEFAULT_PORTS = {"HBBS_PORT": 5187, "HBBS_NAT_PORT": 5186, "HBBR_PORT": 5188}
+
+
+def resolve_ports():
+    env = read_env()
+    ports = {}
+    for k, default in DEFAULT_PORTS.items():
+        raw = env.get(k, "")
+        ports[k] = int(raw) if raw.lstrip("-").isdigit() else default
+    return ports
+
+
+def check_ports(ports, fatal=False):
+    """校验端口推导关系。
+
+    这里检查的是"半通不通"最容易出错的两个点：
+      1. NAT 端口必须 = 主端口-1，否则 compose 映射的是一个没有进程监听的端口，
+         表面上三个口都开着，实际客户端注册永远超时；
+      2. 派生出来的 WebSocket 端口（P+2 / R+2）不能被别的服务占用 —— hbbs/hbbr
+         无条件监听它们，起不来会直接崩，报的是含糊的 "Address already in use"。
+    """
+    p = ports["HBBS_PORT"]
+    nat = ports["HBBS_NAT_PORT"]
+    r = ports["HBBR_PORT"]
+    problems = []
+
+    if nat != p - 1:
+        problems.append(
+            f"HBBS_NAT_PORT({nat}) ≠ HBBS_PORT({p}) - 1。\n"
+            f"        hbbs 会在 {p - 1} 上监听 NAT 探测端口，把 {nat} 映射出去等于指向空气。"
+        )
+
+    derived = [(p, "hbbs 主"), (nat, "hbbs NAT"), (p + 2, "hbbs WebSocket"),
+               (r, "hbbr 主"), (r + 2, "hbbr WebSocket")]
+    seen = {}
+    for port, what in derived:
+        if port in seen:
+            problems.append(f"{what}端口 {port} 与 {seen[port]}端口撞车")
+        seen[port] = what
+        if not (0 < port < 65536):
+            problems.append(f"{what}端口 {port} 超出合法范围")
+
+    if problems:
+        for m in problems:
+            (err if fatal else warn)(m)
+        return False
+    return True
+
+
+def print_ports(ports):
+    p, nat, r = ports["HBBS_PORT"], ports["HBBS_NAT_PORT"], ports["HBBR_PORT"]
+    print()
+    info("端口规划（P-1 / P / P+2 与 R / R+2 由 hbbs、hbbr 自行派生）：")
+    print(f"""
+      {nat}  TCP    hbbs NAT 类型探测          = P-1
+      {p}  TCP    hbbs TCP 打洞与连接        = P
+      {p}  UDP    hbbs ID 注册 + 心跳        = P
+      {r}  TCP    hbbr 中继数据              = R
+      {p + 2}  TCP    hbbs WebSocket  容器内监听，未 publish
+      {r + 2}  TCP    hbbr WebSocket  容器内监听，未 publish
+""")
+    print("    防火墙只需放行：5186/tcp、5187/tcp、5187/udp、5188/tcp。")
+    print("    WebSocket 两个端口为什么不能对外开，见 docs/10-ports.md。")
+    print()
+
+
+# 旧 .env 里用过的键名（端口改成派生表之后已废弃，保留检测是为了提示迁移）
+LEGACY_KEYS = ["HBBS_TCP", "HBBS_UDP", "HBBR_TCP", "RELAY_PORT", "HBBS_TCP_HP", "HBBS_NAT"]
+
+
+def check_env_legacy():
+    """提示 .env 里已经失效的写法。
+
+    这些键在新版 compose 里不再被读取，留着不会报错、但会让人以为改了生效；
+    更麻烦的是 RD_IMAGE 若仍指向官方镜像，跑起来的就不是我们自己编的二进制。
+    """
+    env = read_env()
+    legacy = [k for k in LEGACY_KEYS if k in env]
+    if legacy:
+        warn(".env 里有已废弃的端口变量：" + "、".join(legacy))
+        print("    现在只认 HBBS_PORT / HBBS_NAT_PORT / HBBR_PORT 三个，"
+              "旧的会被引擎静默忽略。")
+        print("    直接覆盖即可: copy .env.example .env（然后重填 RELAY_HOST）")
+    img = env.get("RD_IMAGE", "")
+    if img.startswith("rustdesk/rustdesk-server"):
+        warn(f".env 里 RD_IMAGE={img} —— 这会拉【官方镜像】启动，")
+        print("    既不是你自己编的二进制，也没有我们关掉的版本检查补丁。")
+        print("    要用本地自编译镜像，把这一行删掉或改成 #RD_IMAGE=wedesk-server:latest。")
+
+
+def cmd_ports(args):
+    """打印当前端口规划，方便对照防火墙/安全组。"""
+    check_env_legacy()
+    ports = resolve_ports()
+    print_ports(ports)
+    check_ports(ports, fatal=False)
 
 
 def image_exists(tag):
@@ -167,6 +277,8 @@ def cmd_build(args):
     """
     check_docker_running()
     ensure_env_file()
+    check_env_legacy()
+    check_ports(resolve_ports(), fatal=True)
     image = compose_image_name()
     step(f"从源码构建镜像 {image} ...")
     info("首次构建较慢：容器内要编译 musl 静态二进制（约 15-25 分钟）")
@@ -181,6 +293,12 @@ def cmd_start(args):
     check_docker_running()
     ensure_env_file()
     DATA_DIR.mkdir(exist_ok=True)
+
+    # 端口关系错了宁可不启动：三个口都开着但连不上的状态，比直接报错难查得多
+    check_env_legacy()
+    ports = resolve_ports()
+    check_ports(ports, fatal=True)
+    print_ports(ports)
 
     # 镜像来自本仓库源码，本地还没有的话要先构建。
     # 不直接 `compose up --build` 是为了避免每次重启都触发一次重新编译。
@@ -315,7 +433,7 @@ def cmd_uninstall(args):
 
 def usage():
     print(__doc__)
-    print("可用命令: build / start / stop / restart / status / key / logs / backup / uninstall")
+    print("可用命令: build / start / stop / restart / status / ports / key / logs / backup / uninstall")
 
 
 def main():
@@ -332,6 +450,7 @@ def main():
         "down": cmd_stop,
         "restart": cmd_restart,
         "status": cmd_status,
+        "ports": cmd_ports,
         "key": cmd_key,
         "logs": cmd_logs,
         "backup": cmd_backup,

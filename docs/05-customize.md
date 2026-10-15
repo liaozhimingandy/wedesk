@@ -30,11 +30,9 @@
 
 ```toml
 [server]
-rendezvous_host = "wedesk.alsoapp.com"                          # hbbs 域名或 IP
-                                                                # 不带端口 → 客户端用 21116
+rendezvous_host = "wedesk.alsoapp.com:5187"                      # hbbs —— 端口必须写全
 key             = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0="  # RS_PUB_KEY
-relay_host      = "wedesk.alsoapp.com:21117"                    # hbbr 域名/IP:端口
-                                                                # 端口不是默认 → 必须写全
+relay_host      = "wedesk.alsoapp.com:5188"                      # hbbr —— 一致性记录，见下方说明
 
 [brand]
 app_name     = "企业网管助手"           # 给用户看的产品名，可中文
@@ -44,10 +42,19 @@ company_name = "贵公司名称"             # ⚠️ 占位值，务必替换
 website      = "https://wedesk.alsoapp.com"
 ```
 
-> **`rendezvous_host` 不带端口时，客户端默认用 21116；`relay_host` 必须写端口**，
-> 因为 hbbr 用的是另一个端口（默认 21117），不带端口会被当成 21116 → 中继永远连不上。
-> 服务端改了端口时这里必须跟着改，并**重新编译客户端**。端口推导规则见
+> **`rendezvous_host` 必须写端口。**
+> 客户端内置的兜底端口是 `21116`（`libs/hbb_common/src/config.rs` 的 `RENDEZVOUS_PORT`，
+> 本文第 3.3 节），而服务端跑在 **5187** —— 不带端口时客户端会去连 `wedesk.alsoapp.com:21116`，
+> 表现是"ID 一直显示未就绪"，抓包才会发现方向就不对。
+> 服务端改端口时这里必须跟着改，并**重新编译客户端**。端口推导规则见
 > [10 端口与网络规划](10-ports.md)。
+
+> **`relay_host` 不会被注入到源码里**，它只是一致性记录。
+> 客户端的中继地址永远来自 hbbs 握手时下发的内容；只有在 hbbs **没有**给的时候，
+> 才会按 `rendezvous 端口 + 1` 兜底（见 `src/rendezvous_mediator.rs` 的 `get_relay_server`）。
+> 所以本仓库把 hbbr 定在 `hbbs + 1`（5188）是刻意的 —— 它让这条兜底路径自动成立。
+> `customize.py` 会校验 `relay_host 端口 == rendezvous_host 端口 + 1`，
+> 不满足就告警提醒你去给 hbbs 加 `-r host:port`。
 
 **`app_name` 与 `product_name` 为什么要分开**：前者会写进标题栏、安装目录名、
 用户配置目录（中文完全没问题）；后者只用于**必须是 ASCII / 文件名安全**的场合 ——
@@ -135,12 +142,22 @@ String get appName {
 
 ### 3.3 端口号
 
+客户端 `libs/hbb_common/src/config.rs` 里这四个常量**我们没有改动**：
+
 ```rust
-pub const RENDEZVOUS_PORT:     i32 = 21116;  // ID 注册/心跳(UDP) + TCP 打洞(TCP)
-pub const RELAY_PORT:          i32 = 21117;  // 中继
-pub const WS_RENDEZVOUS_PORT:  i32 = 21118;  // Web 客户端（默认不启用）
-pub const WS_RELAY_PORT:       i32 = 21119;  // Web 客户端中继（默认不启用）
+pub const RENDEZVOUS_PORT:     i32 = 21116;  // 地址不带端口时的兜底值
+pub const RELAY_PORT:          i32 = 21117;  // 同上（用于 -r 只给主机名时补全）
+pub const WS_RENDEZVOUS_PORT:  i32 = 21118;  // 客户端"IP 直连"的监听端口 = 21116+2
+pub const WS_RELAY_PORT:       i32 = 21119;
 ```
+
+**为什么不动它们**：改变服务端端口只需要把端口号写进 `rendezvous_host`（第 2.1 节），
+而这个常量同时决定了客户端"IP 直连"的监听端口（`RENDEZVOUS_PORT + 2`）。
+跟着改成 5187 的话，每台装了客户端的电脑就会去监听 5189 —— 正好和 hbbs 的
+WebSocket 端口撞上（hbbs 必然监听 P+2）。两害相权，这里保持原值。
+
+服务端那四个端口（5186/5187/5188/5189）在 **服务端源码**里也没写死，
+是靠 `hbbs -p 5187` / `hbbr -p 5188` 命令行参数传入的 —— 见 `server/docker-compose.yml`。
 
 改端口属于"有成套要做的事"（compose 映射、防火墙、客户端同步），**一般不建议动**。
 

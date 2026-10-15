@@ -537,14 +537,47 @@ def restore(root: Path, rules):
 def validate(c: dict):
     problems = []
     srv = c.get("server", {})
-    if not srv.get("rendezvous_host"):
+    host = srv.get("rendezvous_host", "").strip()
+    relay = srv.get("relay_host", "").strip()
+    if not host:
         problems.append("server.rendezvous_host 未填写 —— 客户端将仍连官方服务器")
     key = srv.get("key", "").strip()
     if not key:
         problems.append("server.key 未填写 —— 公钥不匹配会导致无法连接")
     elif key == "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=":
         problems.append("server.key 仍是官方默认值 —— 必须换成你自己的 hbbs 公钥")
+
+    # ---- 端口检查 ----------------------------------------------------------
+    # 客户端内置兜底端口是 21116（libs/hbb_common/src/config.rs 的 RENDEZVOUS_PORT，
+    # 我们没改这个常量 —— 改了会连带把"IP 直连"监听端口抬高到 5189）。
+    # 服务端跑在 5187，所以地址里必须显式带端口，否则客户端会去敲 21116。
+    if host and ":" not in host.rsplit("]", 1)[-1]:
+        problems.append(
+            "server.rendezvous_host 没有写端口，客户端会按内置的 21116 去连 —— "
+            "服务端不在 21116 时必须写成 \"域名:端口\""
+        )
+
+    # relay_host 只做一致性记录：它【不会】被注入到源码里 ——
+    # 客户端的中继地址是 hbbs 在握手时下发的，或 hbbs 没给时按
+    # "rendezvous 端口 + 1" 兜底（src/rendezvous_mediator.rs 的 get_relay_server）。
+    # 正是因为这个兜底，hbbr 端口维持 rel = rs port + 1 才最省心；
+    # 一旦 hbbr 跑在别的端口/别的机器，就必须给 hbbs 加 `-r <host>:<port>`。
+    if host and relay:
+        p1 = _port_of(host)
+        p2 = _port_of(relay)
+        if p1 and p2 and p2 != p1 + 1:
+            problems.append(
+                f"relay_host 端口({p2}) ≠ rendezvous_host 端口({p1})+1："
+                "hbbs 必须显式加 -r 参数告诉客户端中继地址，"
+                "否则客户端会按 \"rendezvous 端口+1\" 推导，中继握手必然失败"
+            )
     return problems
+
+
+def _port_of(addr: str):
+    """取 "host:port" 里的 port（IPv6 用 [::1]:5187 形式，取最后一段）。"""
+    tail = addr.rsplit("]", 1)[-1]
+    return int(tail.rsplit(":", 1)[1]) if ":" in tail and tail.rsplit(":", 1)[1].isdigit() else None
 
 
 def apply_overrides(c: dict, overrides):

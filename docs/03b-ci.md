@@ -23,12 +23,16 @@ preflight (10s)  ─┐
 | `preflight` | ubuntu-latest | 判断是否需要构建、校验子模块已实体化、品牌已注入 | ~10 s |
 | `generate-bridge` | ubuntu-22.04 | 生成 flutter-rust-bridge 胶水代码 | ~10 min |
 | `build-windows` | windows-2022 | vcpkg 依赖 → 品牌注入 → 编译 → 打包 | 40–60 min |
+| `build-server` | ubuntu-latest | **容器内 musl 本机编译** hbbs/hbbr/rustdesk-utils | 15–25 min |
+| `server-image` | ubuntu-latest | 把上一步的二进制装成镜像推到 GHCR | ~3 min |
 | `release` | ubuntu-latest | **仅 `v*` 标签**：打包 zip、算校验和、发布 Release | ~2 min |
 
 产物：
 
 - `wedesk-windows-x64` —— 便携版目录，解压即用（Artifact，保存 14 天）
 - `wedesk-windows-x64-msi` —— MSI 安装包（手动触发时勾选，或打标签时自动构建）
+- `wedesk-server-linux-x64` —— hbbs / hbbr / rustdesk-utils + systemd 单元 + zip
+- `ghcr.io/<owner>/wedesk-server` —— 服务端镜像（仅 tag / 手动触发时推送）
 - GitHub Release —— 打 `v*` 标签时发布，长期保存，适合分发给员工
 
 ### 为什么拆成多个 job
@@ -97,7 +101,7 @@ Release 里会有：
 
 ### 手动触发
 
-仓库 → **Actions** → `Build Windows Client` → **Run workflow**，可填：
+仓库 → **Actions** → `Build Wedesk (Client + Server)` → **Run workflow**，可填：
 
 | 输入项 | 说明 |
 |---|---|

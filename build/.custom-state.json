@@ -17,7 +17,7 @@
   "libs/hbb_common/src/config.rs|应用名（Flutter UI 经 mainGetAppNameSync 动态读取，改此处全局生效）": "pub static ref APP_NAME: RwLock<String> = RwLock::new(\"企业网管助手\".to_owned());",
   "libs/hbb_common/src/config.rs|文档首页链接常量": "pub const LINK_DOCS_HOME: &str = \"https://wedesk.alsoapp.com\";",
   "libs/hbb_common/src/config.rs|服务器公钥（校验核心，必须与你的 hbbs 一致）": "pub const RS_PUB_KEY: &str = \"bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0=\";",
-  "libs/hbb_common/src/config.rs|服务器地址（兜底默认值）": "pub const RENDEZVOUS_SERVERS: &[&str] = &[\"wedesk.alsoapp.com\"];",
+  "libs/hbb_common/src/config.rs|服务器地址（兜底默认值）": "pub const RENDEZVOUS_SERVERS: &[&str] = &[\"wedesk.alsoapp.com:5187\"];",
   "res/msi/Package/Language/Package.en-us.wxl|MSI 界面文案（开始菜单/服务显示名/卸载项）": "\\1WeDesk\\2",
   "res/msi/preprocess.py|MSI - 帮助在线链接": "\"v\": \"https://wedesk.alsoapp.com\",",
   "res/msi/preprocess.py|MSI - 技术支持联系链接": "\"v\": \"https://wedesk.alsoapp.com\",",

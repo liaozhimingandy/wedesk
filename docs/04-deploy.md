@@ -52,17 +52,22 @@ flowchart TB
 cd server
 cp .env.example .env        # 复制配置模板
 # 编辑 .env，把 RELAY_HOST 改成服务器的实际 IP 或域名
-python rdctl.py start
+python rdctl.py start       # 没有本地镜像时会先自动从源码构建（首次约 15-25 分钟）
 python rdctl.py key         # 打印公钥 —— 记下来，客户端要用
 ```
 
 `rdctl.py key` 输出的这串 Base64 就是 `RS_PUB_KEY`，需要填进 `build/custom.toml`。
 
+> **容器里的二进制是自己编译出来的**，不是 `rustdesk/rustdesk-server` 官方镜像。
+> 源码就在 `server/rustdesk-server/`，编译过程见 [09 服务端自编译](09-server-build.md)。
+> 想手工重新构建：`python rdctl.py build`（等价于 `docker compose build`）。
+
 ### 2.3 常用命令
 
 | 命令 | 作用 |
 |---|---|
-| `python rdctl.py start` | 启动（首次会自动生成密钥对） |
+| `python rdctl.py build` | 从本仓库源码构建服务端镜像（改过服务端源码后必须跑） |
+| `python rdctl.py start` | 启动（首次自动生成密钥对；本地无镜像会先构建） |
 | `python rdctl.py stop` | 停止 |
 | `python rdctl.py restart` | 重启 |
 | `python rdctl.py status` | 查看运行状态与容器健康 |
@@ -77,7 +82,7 @@ python rdctl.py key         # 打印公钥 —— 记下来，客户端要用
 |---|---|---|
 | `RELAY_HOST` | `127.0.0.1` | **必须改成实际 IP/域名**，客户端靠它找中继 |
 | `ALWAYS_USE_RELAY` | `N` | `N`=优先 P2P（内网推荐）；`Y`=强制走中继（跨公网、提高连通率，耗带宽） |
-| `RD_IMAGE` | `latest` | **生产建议锁版本**，如 `rustdesk/rustdesk-server:1.1.14` |
+| `RD_IMAGE` | `wedesk-server:latest` | 本地源码构建的镜像。想用 CI 推的远端镜像改这里（如 `ghcr.io/<owner>/wedesk-server:latest`）；<br>改回 `rustdesk/rustdesk-server:latest` 则用官方镜像（**会失去本地化补丁**） |
 | `RUST_LOG` | `info` | 排障时调 `debug` |
 | `HBBS_TCP` / `HBBS_UDP` / `HBBR_TCP` | 21115/21116/21117 | 主机端口映射，冲突时才改 |
 

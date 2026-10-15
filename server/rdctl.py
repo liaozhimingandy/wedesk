@@ -6,10 +6,11 @@ rdctl.py —— RustDesk 自建服务器跨平台管理工具
 零第三方依赖，只用标准库。Windows / Linux / macOS 通用。
 
 命令:
-    python rdctl.py start     启动 hbbs + hbbr（首次自动等待并打印服务器公钥）
-    python rdctl.py stop      停止并保留数据
-    python rdctl.py restart   重启
-    python rdctl.py status    查看容器状态与已注册设备概况
+    python rdctl.py build      用本仓库源码编译服务端镜像（换过源码后要跑）
+    python rdctl.py start      启动 hbbs + hbbr（首次自动等待并打印服务器公钥）
+    python rdctl.py stop       停止并保留数据
+    python rdctl.py restart    重启
+    python rdctl.py status     查看容器状态与已注册设备概况
     python rdctl.py key       打印服务器公钥（客户端定制要用）
     python rdctl.py logs      查看实时日志（Ctrl+C 退出）
     python rdctl.py backup    备份密钥与数据库到 ./backup/<时间戳>/
@@ -133,12 +134,67 @@ def read_key():
     return KEY_PUB.read_text(encoding="utf-8").strip()
 
 
+def compose_image_name():
+    """读取 .env 里的 RD_IMAGE，未设置则用 compose 里的默认值。"""
+    env_file = HERE / ".env"
+    default = "wedesk-server:latest"
+    if not env_file.exists():
+        return default
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() == "RD_IMAGE" and v.strip():
+                return v.strip()
+    except OSError:
+        pass
+    return default
+
+
+def image_exists(tag):
+    rc, _, _ = run(["docker", "image", "inspect", tag])
+    return rc == 0
+
+
+def cmd_build(args):
+    """用本仓库源码构建服务端镜像。
+
+    docker-compose.yml 里写了 build 段（源码在 rustdesk-server/），
+    所以镜像是本地编译出来的，与 rustdesk/rustdesk-server 官方镜像无关。
+    首次构建会在容器内编译 musl 静态二进制，约 15-25 分钟。
+    """
+    check_docker_running()
+    ensure_env_file()
+    image = compose_image_name()
+    step(f"从源码构建镜像 {image} ...")
+    info("首次构建较慢：容器内要编译 musl 静态二进制（约 15-25 分钟）")
+    rc, out, errout = run(COMPOSE + ["build"])
+    if rc != 0:
+        err(f"镜像构建失败:\n{errout}")
+        sys.exit(1)
+    info(f"镜像 {image} 构建完成")
+
+
 def cmd_start(args):
     check_docker_running()
     ensure_env_file()
     DATA_DIR.mkdir(exist_ok=True)
 
-    step("拉取/更新镜像并启动容器 ...")
+    # 镜像来自本仓库源码，本地还没有的话要先构建。
+    # 不直接 `compose up --build` 是为了避免每次重启都触发一次重新编译。
+    image = compose_image_name()
+    if not image_exists(image):
+        step(f"本地没有镜像 {image}，先用本仓库源码构建（首次约 15-25 分钟）...")
+        rc, out, errout = run(COMPOSE + ["build"])
+        if rc != 0:
+            err(f"镜像构建失败:\n{errout}")
+            print("    也可以先手动构建看完整日志: build\\build-server-image.bat")
+            sys.exit(1)
+        info("镜像构建完成")
+
+    step("启动容器 ...")
     rc, out, errout = run(COMPOSE + ["up", "-d"])
     if rc != 0:
         err(f"启动失败:\n{errout}")
@@ -259,7 +315,7 @@ def cmd_uninstall(args):
 
 def usage():
     print(__doc__)
-    print("可用命令: start / stop / restart / status / key / logs / backup / uninstall")
+    print("可用命令: build / start / stop / restart / status / key / logs / backup / uninstall")
 
 
 def main():
@@ -269,6 +325,7 @@ def main():
     c = sys.argv[1].lower()
     extra = sys.argv[2:]
     table = {
+        "build": cmd_build,
         "start": cmd_start,
         "up": cmd_start,
         "stop": cmd_stop,

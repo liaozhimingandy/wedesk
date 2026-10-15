@@ -1,0 +1,235 @@
+# 09 · 服务端自编译指南（hbbs / hbbr）
+
+**结论先说：服务端不用官方镜像，源码已经在仓库里，你完全可以自己编译。**
+
+> 如果你之前翻遍仓库只找到客户端（exe / MSI）产物，那不是你漏了：
+> 上游把服务端拆成了**另一个仓库** `rustdesk/rustdesk-server`，
+> 客户端仓库里那条 `src/hbbs_http.rs` 只是"客户端访问服务器 API"的代码，不是服务端本身。
+> 本仓库已把服务端源码实体化（vendored）到 `server/rustdesk-server/`，之后两者同版发布。
+
+---
+
+## 一、源码在哪
+
+```
+server/
+├── Dockerfile              # 容器内从源码编译 → 运行镜像（本机零 Rust 环境时用这个）
+├── Dockerfile.prebuilt     # 直接 COPY 已编译二进制（CI 里用这个）
+├── .dockerignore           # 关键：把 data/ 私钥挡在镜像之外
+├── docker-compose.yml      # 已改为 build 到本地镜像，不再拉官方镜像
+├── rustdesk-server/        # ← 服务端源码（独立 Cargo workspace）
+│   ├── Cargo.toml / Cargo.lock
+│   ├── src/                # hbbs、hbbr、rustdesk-utils 三个 bin
+│   ├── libs/hbb_common/    # 上游的 submodule，已实体化
+│   ├── db_v2.sqlite3       # 不是运行数据！是 sqlx 编译期校验 SQL 用的模板库
+│   └── systemd/            # 裸机部署的 service 文件
+```
+
+两个 Dockerfile 的分工：
+
+| 文件 | 输入 | 用在哪 | 首次耗时 |
+|---|---|---|---|
+| `Dockerfile` | 源码 | 本机构建（有 Docker 就行，不用装 Rust） | 15–25 分钟 |
+| `Dockerfile.prebuilt` | 编译好的二进制 | CI：上一个 job 刚编完，直接装包 | 约 10 秒 |
+
+---
+
+## 二、三条获得产物的路径
+
+```mermaid
+flowchart LR
+    A["server/rustdesk-server/<br/>源码（本仓库内）"] --> B1["① CI：push/tag 触发"]
+    A --> B2["② 本机 Docker 构建"]
+    A --> B3["③ 本机 cargo 编译"]
+    B1 --> C1["GitHub Release<br/>hbbs / hbbr zip + 裸二进制"]
+    B1 --> C2["GHCR 镜像<br/>ghcr.io/&lt;owner&gt;/wedesk-server"]
+    B2 --> C3["本地镜像<br/>wedesk-server:latest"]
+    B3 --> C4["Windows exe<br/>server/bin/*.exe"]
+    C2 --> D["docker compose up -d"]
+    C3 --> D
+    C1 --> E["Linux 裸机 / systemd"]
+    C4 --> F["Windows Server 直接跑"]
+```
+
+### 2.1 路径 ① —— CI 自动编译（推荐，最省心）
+
+推送标签即触发，与客户端在同一次发版里产出：
+
+```bash
+build\tag-release.bat        # 打标签并推送（版本自动取自根 Cargo.toml）
+```
+
+流水线里的 `build-server` job 会编译 musl 静态二进制，`server-image` job 把镜像推到 GHCR。
+跑完后同一个 GitHub Release 里同时有：
+
+| 产物 | 形态 | 用途 |
+|---|---|---|
+| `wedesk-server-<ver>-linux-x64-musl.zip` | zip | 拷到 Linux 服务器上解压即用 |
+| `hbbs` / `hbbr` / `rustdesk-utils` | 裸二进制 | 直接扔进 `/usr/bin` |
+| `ghcr.io/<owner>/wedesk-server:latest` | 容器镜像 | `docker pull` 后用于 compose |
+
+> **为什么服务端编译要和客户端放在同一条流水线**：两条流水线都往同一个 Release 传文件，
+> 必然出现竞态——谁先跑完谁创建 Release，后到的要么覆盖要么失败。合并是根治办法。
+
+### 2.2 路径 ② —— 本机 Docker 构建镜像
+
+没有 Rust、没有 musl、没有 MSVC 也能做，编译全在容器里：
+
+```bash
+build\build-server-image.bat                 # → wedesk-server:latest (linux/amd64)
+build\build-server-image.bat 1.1.17          # 指定标签
+```
+
+等价于手动执行：
+
+```bash
+cd server
+docker build --platform linux/amd64 -t wedesk-server:latest -f Dockerfile .
+```
+
+> **`--platform linux/amd64` 别省**：在 Windows / Apple Silicon 的 Docker Desktop 上，
+> 默认平台是本机架构，编出来的镜像丢到 x86 Linux 服务器上会跑不起来。
+
+### 2.3 路径 ③ —— 本机 cargo 编译 Windows exe
+
+想直接得到 `hbbs.exe` / `hbbr.exe`（例如部署到 Windows Server）：
+
+```bash
+build\build-server.bat                      # → server\bin\*.exe
+build\build-server.bat --debug              # 排障版，编译更快
+```
+
+这条路径有两个硬要求，脚本会先检查再动手：
+
+| 要求 | 原因 | 不满足的表现 |
+|---|---|---|
+| MSVC（`cl.exe` 在 PATH） | 服务端带 C 依赖（libsodium / sqlite） | link 阶段 `LINK : fatal error LNK1181` |
+| Rust ≥ **1.78** | 服务端 `Cargo.lock` 是 lockfile **v4** | `lock file version 4 requires -Znext-lockfile-bump` |
+
+> **客户端锁 1.75、服务端必须 ≥1.78，两边不会打架。**
+> 客户端锁版本是为了 sciter/bridge 的 i128 ABI；服务端是独立 workspace，
+> 脚本会自动切到 stable toolchain（`RUSTUP_TOOLCHAIN=stable`）。
+> 所谓"同一套 Rust 版本更省心"在这里是错的，硬统一反而两边都编不过。
+
+---
+
+## 三、我们改了服务端什么
+
+改动极小，且**可以退回上游行为**：
+
+| 文件 | 改动 | 理由 |
+|---|---|---|
+| `src/common.rs` | `check_software_update()` 默认直接返回 | 上游会常驻一个线程，每 24 小时向 `https://api.rustdesk.com/version/latest` POST 一次 |
+
+完整 diff 在 [`upstream/server.patch`](../upstream/server.patch)，可 `git apply` 校验。
+需要恢复原行为（比如要跟踪上游版本）时，给容器加环境变量即可，**不用重新编译**：
+
+```yaml
+environment:
+  - WEDESK_CHECK_UPDATE=1
+```
+
+除此之外服务端源码保持上游原样 —— 这是刻意的：私有化部署的关键在于"能编译、能用、能升级"，
+改动越少，将来跟进上游越安全。
+
+---
+
+## 四、部署方式
+
+### 4.1 容器（推荐）
+
+```bash
+cd server
+cp .env.example .env          # 编辑 RELAY_HOST = 服务器 IP
+python rdctl.py build         # 从源码构建镜像（首次）
+python rdctl.py start         # 启动，并打印服务器公钥
+python rdctl.py key           # 再打印一次公钥（填进客户端 custom.toml）
+```
+
+`docker-compose.yml` 里 hbbs / hbbr 都是 `image: ${RD_IMAGE:-wedesk-server:latest}` + `build:` 组合：
+本地有镜像就用本地的，没有就先构建。**`RD_IMAGE` 改回 `rustdesk/rustdesk-server:latest` 可以瞬间回到官方镜像**
+（会同时失去上面那条本地化补丁）。
+
+### 4.2 Linux 裸机（不用 Docker）
+
+CI 产出的二进制是 **musl 静态链接**，任意发行版直接跑，不挑 glibc 版本：
+
+```bash
+sudo install -m 0755 hbbs hbbr rustdesk-utils /usr/bin/
+sudo cp systemd/* /etc/systemd/system/     # 解压 zip 后 systemd/ 就在同级目录
+sudo mkdir -p /var/lib/rustdesk-server /var/log/rustdesk-server
+sudo systemctl enable --now rustdesk-hbbr rustdesk-hbbs
+```
+
+上游的 service 单元里 `WorkingDirectory=/var/lib/rustdesk-server/`，
+密钥与数据库都会落在这里，迁移主机时整个目录拷走即可。
+`User=` / `Group=` 两行是空的（默认 root），需要降权运行时记得同时改目录属主。
+
+> 单元文件若被检出成了 CRLF，systemd 会静默忽略整份文件 —— 服务起不来且不报错。
+> 本仓库 `.gitattributes` 已把 `server/**/*.service` 钉成 LF，若仍异常请先确认换行。
+
+### 4.3 密钥必须两端一致
+
+这是"服务端起来了但客户端连不上"的头号原因。服务器公钥（`/root/id_ed25519.pub`
+或 `server/data/id_ed25519.pub`）必须等于客户端内置的 `RS_PUB_KEY`：
+
+| 端 | 位置 |
+|---|---|
+| 服务端 | 首次启动自动生成于工作目录；已有密钥请整体拷贝，不要重新生成 |
+| 客户端 | `libs/hbb_common/src/config.rs` 的 `RS_PUB_KEY`，由 `build/custom.toml` 注入 |
+
+---
+
+## 五、升级上游服务端
+
+跟进上游安全修复时的流程：
+
+```bash
+# 1. 改新版本的 commit sha 并重跑导出（会整包覆盖 rustdesk-server/）
+python build/vendor-server.py --server-rev <新commit>
+
+# 2. 先确认补丁还能重放。这一步必须在 apply 之前 ——
+#    已经 apply 过再 --check 会因为"改动已存在"而失败，那是假阴性。
+git apply --check upstream/server.patch
+
+# 3. 重放改动
+git apply upstream/server.patch
+
+# 4. 本地验证能编译
+build\build-server.bat
+```
+
+第 2 步失败说明上游改了我们打补丁的那段代码。这时要人工看
+`src/common.rs` 的 `check_software_update()` 现状重新做补丁，
+并把新 diff 写回 `upstream/server.patch`。
+
+脚本会把锁定的两个 sha 写进 `build/server-vendor.json`（服务端自身 + 它的 hbb_common），
+下次升级有据可查。**不要手工去修改 `rustdesk-server/` 里的文件**
+——它下次会被整包覆盖，改动会静默消失；要改就走补丁 + 登记。
+
+---
+
+## 六、常见报错速查
+
+| 报错 / 现象 | 原因 | 处理 |
+|---|---|---|
+| `lock file version 4 requires -Znext-lockfile-bump` | cargo < 1.78 | 用 stable toolchain：`RUSTUP_TOOLCHAIN=stable` |
+| `DATABASE_URL must be set` / `No such file or directory: db_v2.sqlite3` | sqlx 宏编译期要连 SQLite | 设 `DATABASE_URL=sqlite://<绝对路径>/db_v2.sqlite3` |
+| 容器内 `hbbs: not found` | 二进制是 glibc 版，却拷进了 alpine | 必须用 musl 静态编译；检查 target 是否为 `*-unknown-linux-musl` |
+| `perl: not found`（Dockerfile 构建阶段） | ring(TLS) 的构建脚本依赖 perl | Dockerfile 里装 perl；别精简掉 `build-base musl-dev perl` |
+| 启动就报端口占用 | 本机已有 hbbs/hbbr 进程 | `python rdctl.py stop` 后再起，或改 `.env` 里的端口映射 |
+| 客户端连不上，日志无报错 | 两端公钥不一致 | 核对 `rdctl.py key` 与 `build/custom.toml` 的 key 是否相同 |
+| `docker build` 卡在 crates.io 下载 | 容器内网络慢 | 重试一次即可；CI 里有 cargo registry 缓存，本机建议 `--platform` 保持一致以复用层缓存 |
+
+---
+
+## 七、版本对应关系
+
+| 组件 | 版本来源 | 说明 |
+|---|---|---|
+| 客户端 | 仓库根 `Cargo.toml`（当前 1.5.1） | `build\tag-release.bat` 取的就是它 |
+| 服务端 | `server/rustdesk-server/Cargo.toml`（当前 1.1.17） | 与客户端版本各自演进，互不绑定 |
+| 容器镜像标签 | 沿用 Release 标签 | `ghcr.io/<owner>/wedesk-server:<tag>` |
+
+两者没有版本号必须对齐的要求 —— 只要**交互协议兼容**即可。
+升级时建议先升客户端看是否正常，再升服务端，出问题好二分定位。

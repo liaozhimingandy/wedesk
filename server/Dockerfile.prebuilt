@@ -1,0 +1,35 @@
+# =============================================================================
+# 服务端运行镜像 —— 从【已编译好的二进制】装配
+# =============================================================================
+# 与 server/Dockerfile 的区别：
+#   Dockerfile        —— 在容器内从源码编译（本机没有 Rust 环境时用这个）
+#   Dockerfile.prebuilt —— 直接 COPY 已编译的二进制（CI 里用这个）
+#
+# 为什么要分两个：CI 里 build-server job 已经编译出 musl 静态二进制，
+# 若再用源码 Dockerfile 就要在容器里重编一遍十几分钟，白烧两次机时。
+#
+# 构建上下文（context）必须是一个含 hbbs / hbbr / rustdesk-utils 的目录：
+#     docker build -f ../Dockerfile.prebuilt -t wedesk-server:latest .
+#
+# 注意：这里假设二进制是 musl 静态链接的。用 glibc 编译出来的二进制
+#       拷进 alpine 会立刻 `not found`（动态链接器路径不同）。
+# =============================================================================
+
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY hbbs           /usr/bin/hbbs
+COPY hbbr           /usr/bin/hbbr
+COPY rustdesk-utils /usr/bin/rustdesk-utils
+
+# 密钥（id_ed25519 / id_ed25519.pub）与 SQLite 数据库的工作目录。
+# hbbs 默认把文件写在 $HOME 下，容器内 HOME 是 /root ——
+# 与 docker-compose.yml 里的 `./data:/root` 挂载点对得上。
+VOLUME /root
+WORKDIR /root
+
+EXPOSE 21115 21116 21116/udp 21117
+
+# 不设 ENTRYPOINT：让 docker-compose 的 command（hbbs -r xxx / hbbr）直接生效
+CMD ["hbbs"]

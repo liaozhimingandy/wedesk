@@ -23,9 +23,11 @@
 | 03 | [本地构建](03-build.md) | 怎么在本机编译出 exe？依赖怎么装？ |
 | 03b | [GitHub Actions 云构建](03b-ci.md) | 不想装工具链，怎么在云端编译？ |
 | 04 | [部署指南](04-deploy.md) | 服务端怎么起？密钥怎么管？客户端怎么发给员工？ |
+| 09 | [服务端自编译](09-server-build.md) | 服务端源码在哪？怎么自己编译 hbbs/hbbr？ |
 
 > **没有工具链或不想折腾环境** → 走 03b（云构建）。
 > **要频繁调试、改代码** → 走 03（本地构建）。
+> **不想用官方服务端镜像** → 走 09，源码已在本仓库里，一次 `docker build` 就有自己的镜像。
 
 ---
 
@@ -48,8 +50,9 @@
 | 文档 | 内容 |
 |---|---|
 | [`../upstream/UPSTREAM.md`](../upstream/UPSTREAM.md) | 上游基线与改动登记。**升级上游前必读** |
-| [`../upstream/custom.patch`](../upstream/custom.patch) | 定制的完整 diff，可从干净上游重放 |
-| [`../upstream/verify_patch.py`](../upstream/verify_patch.py) | 验证补丁仍可完整重建定制状态 |
+| [`../upstream/custom.patch`](../upstream/custom.patch) | 客户端定制的完整 diff，可从干净上游重放 |
+| [`../upstream/server.patch`](../upstream/server.patch) | 服务端定制 diff（关闭官方版本检查） |
+| [`../upstream/verify_patch.py`](../upstream/verify_patch.py) | 验证客户端补丁仍可完整重建定制状态 |
 | [`upstream/`](upstream/) | 上游的 AI 指令文件（AGENTS.md 等）与上游 README |
 | [`upstream-i18n/`](upstream-i18n/) | 上游的 60 份多语言 README/CONTRIBUTING 等，**与本项目无关**，仅留档 |
 
@@ -78,7 +81,9 @@ python build/customize.py --dry-run        # 看品牌注入命中情况
 python build/generate-bridge.py --check    # bridge 是否就绪
 python upstream/verify_patch.py            # 补丁是否仍可重放
 cd server && python rdctl.py status        # 服务端状态
+python rdctl.py build         # 服务端：从源码构建镜像（首次）
 
 build\tag-release.bat --dry                # 预演发版（看将要打什么标签）
 build\tag-release.bat                      # 发版：打标签 → CI 自动发布 Release
+                                           #        同时产出客户端 exe/MSI 与服务端 hbbs/hbbr
 ```

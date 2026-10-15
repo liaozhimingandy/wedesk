@@ -9,6 +9,13 @@
 #   3. 构建前会执行 build/customize.py 做品牌/服务器注入，
 #      唯一输入是仓库里的 build/custom.toml（可用 workflow_dispatch 输入覆盖）。
 #   4. 不签名。产物以 Artifact 供日常下载；推送 v* 标签时额外发布 GitHub Release。
+#   5. 服务端 hbbs/hbbr 由 build-server job 在同一条流水线里编译 —— 文件名沿用
+#      build-windows.yml 是为了保留既有的 Actions 连接与 badge，但这个文件现在
+#      产出的是「客户端 + 服务端」两套产物，一次发版两样都有。
+#
+#      为什么不拆成第二条流水线：两条流水线都要往同一个 GitHub Release 传文件，
+#      而发布 job 分属两个 workflow 就必然出现竞态 —— 谁先跑完谁创建 Release，
+#      后到的要么覆盖、要么失败。合并进同一条流水线是这个竞态的根治手段。
 #
 # 流水线为什么是两个 job：
 #   bridge_generated.rs / generated_bridge.dart 是 flutter_rust_bridge 生成的，
@@ -23,7 +30,7 @@
 #   既保住"改文档不烧 40 分钟机时"的收益，又保证 tag 一定能触发。
 # =============================================================================
 
-name: Build Windows Client
+name: Build Wedesk (Client + Server)
 
 on:
   push:
@@ -77,6 +84,14 @@ env:
   # x-gha 让 vcpkg 用 GitHub Actions Cache 当二进制缓存，
   # 少了这个每次都要重编译 aom/libvpx/ffmpeg，单次 40 分钟以上
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+  # ---- 服务端（server/rustdesk-server 是独立 workspace，工具链单独定） ----
+  # 不用客户端的 1.75：服务端 Cargo.lock 是 lockfile v4，cargo < 1.78 读不了；
+  # 且它的依赖（axum 0.5 / sqlx 0.6 / tokio 1.44+）普遍要求较新的编译器。
+  # 客户端锁 1.75 是为了 sciter/bridge 的 i128 ABI，两个 workspace 互不干扰。
+  SERVER_RUST_VERSION: "stable"
+  SERVER_TARGET: "x86_64-unknown-linux-musl"
+  SERVER_DIR: "server/rustdesk-server"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -151,14 +166,22 @@ jobs:
             echo "::error::检测到 .gitmodules —— 本仓库应已 vendored 全部子模块"
             exit 1
           fi
-          missing=0
-          for f in libs/hbb_common/src/lib.rs libs/scrap/Cargo.toml libs/enigo/Cargo.toml; do
+          # 上游 rustdesk-server 的 libs/hbb_common 也是 submodule。
+          # 它要是空的，服务端编译会以"找不到 crate hbb_common"告终，
+          # 而日志里看不出"其实是忘了初始化子模块"——所以在这里显式查。
+          for f in \
+            libs/hbb_common/src/lib.rs \
+            libs/scrap/Cargo.toml \
+            libs/enigo/Cargo.toml \
+            ${{ env.SERVER_DIR }}/Cargo.toml \
+            ${{ env.SERVER_DIR }}/src/main.rs \
+            ${{ env.SERVER_DIR }}/libs/hbb_common/src/lib.rs; do
             if [ ! -f "$f" ]; then
               echo "::error::子模块未实体化: $f"
-              missing=1
+              exit 1
             fi
           done
-          [ $missing -eq 0 ] && echo "✓ 子模块已实体化"
+          echo "✓ 客户端与服务端依赖均已实体化"
 
       - name: 品牌注入预演（不写盘）
         run: |
@@ -590,7 +613,178 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # 3. 发布 GitHub Release（仅 v* 标签）
+  # 3. 服务端 hbbs / hbbr —— Linux musl 静态二进制
+  #
+  #    服务端是独立 Rust workspace（server/rustdesk-server），与客户端互不影响，
+  #    所以能在同一条流水线里并行编译，互不污染 target 与工具链。
+  #
+  #    产物选择 musl 而非 glibc：静态链接的二进制可以扔到任意发行版上直接跑，
+  #    不用管目标机器的 glibc 版本 —— 也是它能被 COPY 进 alpine 的原因。
+  # ---------------------------------------------------------------------------
+  build-server:
+    name: hbbs/hbbr (linux musl)
+    # PR 与「仅文档变更」同样跳过；逻辑与 generate-bridge 保持一致
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' }}
+    needs: [preflight]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # musl-gcc：静态链接 libc 需要 musl 头文件与链接器
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.SERVER_RUST_VERSION }}
+          targets: ${{ env.SERVER_TARGET }}
+
+      # workspaces 必须显式指定：
+      # rust-cache 默认按仓库根推断 target，而服务端是独立 workspace + 非默认 target，
+      # 不写这一行就缓存不命中，每次都从零重编十几个依赖包。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.SERVER_DIR }} -> target/${{ env.SERVER_TARGET }}
+
+      # DATABASE_URL 是 sqlx 的编译期要求：
+      # hbbs 里的 SQL 查询宏会在编译阶段连一个真实 SQLite 库做校验，
+      # 上游为此把一个 db_v2.sqlite3 模板库放进了仓库根目录。
+      # 少了这个变量会报 "DATABASE_URL must be set"。
+      # 不能用 workflow 级 env 写死绝对路径：它依赖仓库名，
+      # 而仓库是可能被 fork / 改名的。这里在 run 里按 $PWD 现算。
+      - name: Build hbbs / hbbr / rustdesk-utils
+        working-directory: ${{ env.SERVER_DIR }}
+        run: |
+          set -e
+          export DATABASE_URL="sqlite://$PWD/db_v2.sqlite3"
+          cargo build --locked --release --target ${{ env.SERVER_TARGET }} \
+              --bin hbbs --bin hbbr --bin rustdesk-utils
+          ls -lh target/${{ env.SERVER_TARGET }}/release/hbbs \
+                 target/${{ env.SERVER_TARGET }}/release/hbbr \
+                 target/${{ env.SERVER_TARGET }}/release/rustdesk-utils
+
+      - name: Package server binaries
+        id: pack
+        working-directory: ${{ env.SERVER_DIR }}
+        run: |
+          set -e
+          V="$(grep -m1 -E '^version = ' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          DIST="$GITHUB_WORKSPACE/out-server"
+          mkdir -p "$DIST"
+          BIN="target/${{ env.SERVER_TARGET }}/release"
+          for b in hbbs hbbr rustdesk-utils; do cp "$BIN/$b" "$DIST/"; done
+          # systemd 单元带上：不用 Docker 的部署方式直接落到 /etc/systemd/system 即可
+          [ -d systemd ] && cp -r systemd "$DIST/systemd"
+          (cd "$DIST" && sha256sum hbbs hbbr rustdesk-utils > SHA256SUMS.txt)
+          (cd "$DIST" && zip -q -r "$DIST/wedesk-server-${V}-linux-x64-musl.zip" \
+              hbbs hbbr rustdesk-utils systemd SHA256SUMS.txt)
+          echo "=== 服务端产物 ==="
+          ls -lh "$DIST"
+
+      - name: Upload server binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: wedesk-server-linux-x64
+          path: out-server
+          retention-days: 14
+
+      - name: Server build summary
+        working-directory: ${{ env.SERVER_DIR }}
+        run: |
+          {
+            echo "## Wedesk 服务端构建结果"
+            echo ""
+            echo "- hbbs / hbbr / rustdesk-utils：**musl 静态二进制**，任意 Linux 发行版可直接运行"
+            echo "- 版本：\`${{ steps.pack.outputs.version }}\`（取自 server/rustdesk-server/Cargo.toml）"
+            echo "- 含 systemd 单元，不用 Docker 也能部署"
+            echo "- 镜像版本由下一个 \`Push server image\` job 推送到 GHCR"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 4. 服务端容器镜像 —— 推到自己账号的 GHCR，与官方镜像再无关系
+  #
+  #    这里刻意用 Dockerfile.prebuilt 而不是 server/Dockerfile：
+  #    后者在容器里从源码编译（方便本机零 Rust 环境构建），
+  #    而 CI 里二进制刚在上一个 job 编完，直接 COPY 进去即可，
+  #    否则同一个 workspace 要在容器里再编译一遍十几分钟。
+  # ---------------------------------------------------------------------------
+  server-image:
+    name: Push server image (GHCR)
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' }}
+    needs: [build-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download server binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-server-linux-x64
+          path: dist-server
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/wedesk-server
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=ref,event=tag
+
+      # 只有发版和手动触发才真正推送。
+      # push=false 时 build-push-action 依然会完整构建 —— 日常提交也能验证
+      # Dockerfile 没被改坏，这是它比"干脆不跑"值钱的地方。
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./dist-server
+          file: ./server/Dockerfile.prebuilt
+          platforms: linux/amd64
+          push: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          cache-from: type=gha,scope=wedesk-server-image
+          cache-to: type=gha,scope=wedesk-server-image,mode=max
+
+      - name: Image summary
+        run: |
+          {
+            echo "## 服务端镜像"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 镜像 | \`ghcr.io/${{ github.repository_owner }}/wedesk-server\` |"
+            echo "| 是否推送 | ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }} |"
+            echo "| 标签 | \`${{ github.ref_type == 'tag' && github.ref_name || 'sha' }}\` |"
+            echo ""
+            echo "拉取：\`docker pull ghcr.io/${{ github.repository_owner }}/wedesk-server:latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 5. 发布 GitHub Release（仅 v* 标签）
   #
   #    为什么单独一个 job 而不在 build-windows 里顺手做：
   #    发布需要 contents: write 权限。单独一个 job 能把权限收敛到最小范围，
@@ -598,8 +792,11 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: Publish Release
-    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
-    needs: [build-windows]
+    # 服务端编译失败不应阻断客户端发布 —— 两者是独立产物，
+    # 用户仍可拿到客户端；服务端缺失会在 Release Notes 里标注。
+    # 但如果客户端本身没成功，就什么都不发：没有客户端的 Release 没有意义。
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && needs.build-windows.result == 'success' }}
+    needs: [build-windows, build-server]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -664,6 +861,14 @@ jobs:
           name: wedesk-windows-x64-msi
           path: dist/msi
 
+      # 服务端缺失不阻断发布：它是 continue-on-error 的兄弟产物
+      - name: 下载服务端（若构建）
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-server-linux-x64
+          path: dist/server
+
       - name: 打包并生成校验和
         id: pack
         shell: bash
@@ -683,6 +888,17 @@ jobs:
             echo "has_msi=false" >> "$GITHUB_OUTPUT"
             echo "::warning::未找到 MSI，本次 Release 只含便携版"
           fi
+          # 服务端：CI 已经打好了 zip，这里原样带过去不再二次压缩，
+          # 免得 Release 里的 zip 与 CI artifact 的 SHA256 对不上
+          has_server=false
+          if [ -f dist/server/hbbs ]; then
+            cp -f dist/server/*.zip out/ 2>/dev/null || true
+            cp -f dist/server/hbbs dist/server/hbbr dist/server/rustdesk-utils out/
+            has_server=true
+          else
+            echo "::warning::未找到服务端产物（build-server job 可能失败或被跳过）"
+          fi
+          echo "has_server=$has_server" >> "$GITHUB_OUTPUT"
           cd out
           sha256sum ./* > SHA256SUMS.txt
           echo "=== 待发布文件 ==="
@@ -699,12 +915,13 @@ jobs:
           EXE="${{ steps.pack.outputs.exe }}"
           REPO="${{ github.repository }}"
           PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          SERVER_PKG="$(ls dist/server/*.zip 2>/dev/null | head -1 | xargs -r basename || true)"
           {
             echo "## 企业网管助手 v${V}"
             echo ""
-            echo "Windows x64 客户端，已内置私有服务器地址与公钥，开箱即连。"
+            echo "客户端已内置私有服务器地址与公钥，服务端由本仓库源码自行编译 —— 两者配套发布。"
             echo ""
-            echo "### 下载"
+            echo "### 客户端（Windows x64）"
             echo ""
             echo "| 文件 | 说明 |"
             echo "|---|---|"
@@ -712,7 +929,26 @@ jobs:
             if [ "${{ steps.pack.outputs.has_msi }}" = "true" ]; then
               echo "| \`wedesk-${V}-windows-x64.msi\` | 安装包：适合域控 / 组策略批量部署 |"
             fi
-            echo "| \`SHA256SUMS.txt\` | 校验和，分发前请核对 |"
+            echo ""
+            echo "### 服务端（Linux x64 / musl 静态）"
+            echo ""
+            if [ "${{ steps.pack.outputs.has_server }}" = "true" ]; then
+              echo "自行编译的 hbbs / hbbr，非官方镜像；已关闭向 api.rustdesk.com 的版本检查。"
+              echo ""
+              echo "| 文件 | 说明 |"
+              echo "|---|---|"
+              echo "| \`${SERVER_PKG}\` | 含 hbbs / hbbr / rustdesk-utils 与 systemd 单元 |"
+              echo "| \`hbbs\` / \`hbbr\` / \`rustdesk-utils\` | 裸二进制，musl 静态链接，任意发行版可直接运行 |"
+              echo "| 容器镜像 \`ghcr.io/${{ github.repository_owner }}/wedesk-server:latest\` | 本版镜像，\`docker pull\` 即可 |"
+            else
+              echo "::warning::本次未产出服务端二进制 —— 请查看 build-server job 日志"
+              echo "本次未随附服务端二进制（构建未成功）。使用上一版本或本地构建："
+              echo "\`\`\`bash"
+              echo "cd server && docker build -t wedesk-server:latest ."
+              echo "\`\`\`"
+            fi
+            echo ""
+            echo "| \`SHA256SUMS.txt\` | 上述全部文件的校验和，分发前请核对 |"
             echo ""
             echo "### 更新内容"
             echo ""
@@ -749,13 +985,16 @@ jobs:
           body_path: RELEASE_NOTES.md
           prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
           make_latest: ${{ steps.ver.outputs.prerelease != 'true' }}
-          # MSI 缺失是允许的（构建步骤有 continue-on-error 保护），
+          # MSI / 服务端缺失是允许的（构建步骤有 continue-on-error 保护），
           # 但不该因为少一个文件就让整个 Release 失败
           fail_on_unmatched_files: false
           files: |
             out/*.zip
             out/*.msi
             out/SHA256SUMS.txt
+            out/hbbs
+            out/hbbr
+            out/rustdesk-utils
 
       - name: Release 摘要
         shell: bash
@@ -768,5 +1007,7 @@ jobs:
             echo "| 版本 | \`v${{ steps.ver.outputs.version }}\` |"
             echo "| 预发布 | ${{ steps.ver.outputs.prerelease }} |"
             echo "| 含 MSI | ${{ steps.pack.outputs.has_msi }} |"
+            echo "| 含服务端 hbbs/hbbr | ${{ steps.pack.outputs.has_server }} |"
+            echo "| 服务端镜像 | \`ghcr.io/${{ github.repository_owner }}/wedesk-server:latest\` |"
             echo "| 地址 | ${{ steps.publish.outputs.url }} |"
           } >> "$GITHUB_STEP_SUMMARY"

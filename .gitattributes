@@ -18,6 +18,16 @@
 *.env           text eol=lf
 *.sh            text eol=lf
 
+# 服务端：Dockerfile / shell / Rust 源码统一 LF。
+# server/rustdesk-server/systemd/*.service 若被转成 CRLF，
+# systemd 会静默忽略整份单元文件，表现为服务起不来且没有报错。
+server/**/*.sh        text eol=lf
+server/**/Dockerfile* text eol=lf
+server/**/*.service   text eol=lf
+server/**/*.rs        text eol=lf
+server/**/*.proto     text eol=lf
+server/**/*.cargo     text eol=lf
+
 # Windows 批处理对换行敏感，CMD 在部分语法下无法正确处理纯 LF
 *.bat           text eol=crlf
 *.cmd           text eol=crlf
@@ -29,3 +39,6 @@
 *.png           binary
 *.ico           binary
 *.zip           binary
+# sqlx 编译期校验用的 SQLite 库。被当成文本做换行转换会把文件写坏，
+# 表现为编译时报 "file is not a database"
+*.sqlite3       binary

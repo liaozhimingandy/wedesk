@@ -1,0 +1,20 @@
+diff --git a/server/rustdesk-server/src/common.rs b/server/rustdesk-server/src/common.rs
+index 82e32ac..09d762f 100644
+--- a/server/rustdesk-server/src/common.rs
++++ b/server/rustdesk-server/src/common.rs
+@@ -426,6 +426,15 @@ pub async fn listen_signal() -> Result<()> {
+ 
+ 
+ pub fn check_software_update() {
++    // [wedesk] 私有化部署：默认不向官方服务器查询版本。
++    // 上游这里会常驻一个线程，每 24 小时向 https://api.rustdesk.com/version/latest
++    // POST 一次。对自建服务器而言这是一次无意义的外联——服务端跑在内网/专网里，
++    // 请求必然超时，还会持续刷日志；更重要的是它让"完全私有化"多了一条指向外部
++    // 的出口。留了环境变量作为反向开关：需要回到上游行为时给容器加上
++    // WEDESK_CHECK_UPDATE=1 即可，不必改代码重新编译。
++    if std::env::var("WEDESK_CHECK_UPDATE").is_err() {
++        return;
++    }
+     const ONE_DAY_IN_SECONDS: u64 = 60 * 60 * 24;
+     std::thread::spawn(move || loop {
+         std::thread::spawn(move || allow_err!(check_software_update_()));

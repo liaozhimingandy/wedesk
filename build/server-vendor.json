@@ -1,0 +1,5 @@
+{
+  "rustdesk-server": "873230e35a8805de7fd057e7eb763c46f7a174ef",
+  "hbb_common": "69cea8dafee147848ae88702029f4bf7df7224c3",
+  "note": "升级时改这两个 sha 再跑本脚本；改动 see upstream/server.patch"
+}

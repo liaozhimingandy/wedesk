@@ -14,6 +14,24 @@
 | 许可证 | AGPL-3.0 |
 | 整合日期 | 2026-10-14 |
 
+### 服务端基线（独立的一套）
+
+| 项目 | 值 |
+| --- | --- |
+| 上游项目 | [rustdesk/rustdesk-server](https://github.com/rustdesk/rustdesk-server) |
+| 上游版本 | 1.1.17 |
+| 服务端 commit | `873230e` |
+| 它的 hbb_common commit | `69cea8d` |
+| 落地位置 | `server/rustdesk-server/`（**独立 workspace**，不参与根目录构建） |
+| 版本指针 | `build/server-vendor.json` |
+| 定制补丁 | `server.patch` |
+| 许可证 | AGPL-3.0 |
+
+> ⚠️ **客户端与服务端的 `libs/hbb_common` 是两个不同的副本，不要合并。**
+> 虽然它们来自同一个上游仓库 `rustdesk/hbb_common`，但锁定的 commit 不同
+> （客户端 `229b904` / 服务端 `69cea8d`），强行共用会让其中一边编译不过，
+> 而且客户端那份里还带着我们的品牌注入。
+
 ## 整合方式：vendored + 扁平化
 
 上游源码**扁平化到仓库根**——`Cargo.toml`、`build.py`、`libs/`、`src/`、`flutter/`
@@ -91,10 +109,32 @@ python upstream/verify_patch.py --regen     # 重新生成 custom.patch
 python upstream/verify_patch.py             # 验证 8/8（退出码 0 才算通过）
 ```
 
+## 服务端的定制改动
+
+服务端只有一处改动，也是手工改的：
+
+| 文件 | 改动 | 为什么 |
+| --- | --- | --- |
+| `server/rustdesk-server/src/common.rs` `check_software_update()` | 开头加 `if std::env::var("WEDESK_CHECK_UPDATE").is_err() { return; }` | 见下 |
+
+**为什么需要它**：hbbs/hbbr 启动后会常驻一个线程，每 24 小时向
+`https://api.rustdesk.com/version/latest` POST 一次。服务端跑在私有网络里，
+这请求必然超时、白白刷日志，更让"完全私有化"留了一条指向外部的出口。
+
+**为什么用环境变量而不是直接删**：保留一个反向开关，
+需要上游行为时给容器加 `WEDESK_CHECK_UPDATE=1` 即可，不必重新编译。
+
+补丁文件：`server.patch`，位置相对**仓库根**（可直接 `git apply upstream/server.patch`）。
+
+> ⚠️ 不要再手工修改 `server/rustdesk-server/` 里的其它文件。
+> 追上游时要跑 `python build/vendor-server.py --server-rev <commit>`，
+> 它会把整个目录**整包覆盖**，任何没登记进 `server.patch` 的改动都会静默消失。
+
 ## 补丁与验证
 
-- `custom.patch` —— 以上 8 个文件的完整 diff，可从干净上游重放
-- `verify_patch.py` —— 验证补丁仍能完整重建当前定制状态
+- `custom.patch` —— 客户端 8 个文件的完整 diff，可从干净上游重放
+- `server.patch` —— 服务端 1 个文件的 diff
+- `verify_patch.py` —— 验证 custom.patch 仍能完整重建当前定制状态
 
 ```bash
 python upstream/verify_patch.py --upstream D:/Git/rustdesk

@@ -60,6 +60,17 @@ flutter/lib/generated_bridge.dart
 flutter/lib/generated_bridge.freezed.dart
 
 # =============================================================================
+# 服务端 —— server/rustdesk-server 是独立 Cargo workspace
+# =============================================================================
+# 它的 target 在自己目录下，上面的 /target 只匹配仓库根，够不到这里。
+# 不排除的话一次 cargo build 就有上 GB 依赖在 git status 里刷屏。
+server/rustdesk-server/target/
+# hbb_common::gen_version() 在 build.rs 里现场生成（版本号 + 编译时间戳）
+server/rustdesk-server/src/version.rs
+# 本地编译产出的 exe（build/build-server.bat 会拷到这里）
+server/bin/
+
+# =============================================================================
 # vcpkg —— C++ 依赖（libvpx / aom / opus），体积以 GB 计且可再生
 # =============================================================================
 vcpkg_installed/

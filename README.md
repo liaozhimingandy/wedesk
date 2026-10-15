@@ -45,9 +45,12 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 │
 ├── ── 我们自己的东西 ──────────────────────────
 ├── server/                      自建服务器端
-│   ├── docker-compose.yml       hbbs(ID/注册) + hbbr(中继)
+│   ├── rustdesk-server/         ★ 服务端源码（hbbs/hbbr），上游另一仓库，已 vendor
+│   ├── Dockerfile               容器内从源码编译 → 自有镜像
+│   ├── Dockerfile.prebuilt      CI 用：直接装已编译二进制
+│   ├── docker-compose.yml       hbbs(ID/注册) + hbbr(中继)，默认本地构建
 │   ├── .env.example             配置项模板，复制为 .env 后填写
-│   └── rdctl.py                 跨平台管理工具（启停/查公钥/备份）
+│   └── rdctl.py                 跨平台管理工具（构建/启停/查公钥/备份）
 │
 ├── build/                       客户端定制与构建
 │   ├── custom.toml              ★ 唯一需要你改的配置文件
@@ -57,12 +60,16 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 │   ├── check-env.bat            环境体检
 │   ├── install-vcpkg-deps.bat   vcpkg + C++ 依赖（30–120 min）
 │   ├── apply-rustdesk-engine.bat Flutter SDK + 替换自研 engine
-│   ├── build-local.bat          一键构建
+│   ├── build-local.bat          一键构建客户端
+│   ├── build-server.bat         编译服务端 Windows exe
+│   ├── build-server-image.bat   docker 构建服务端镜像（本机无需 Rust）
+│   ├── vendor-server.py         追上游服务端版本并重新导出源码
 │   └── branding/                放你的图标、logo（替换客户端图标）
 │
 ├── upstream/                    上游基线与升级
 │   ├── UPSTREAM.md              版本信息、改了什么、升级流程
-│   ├── custom.patch             定制改动的可重放补丁
+│   ├── custom.patch             客户端定制改动的可重放补丁
+│   ├── server.patch             服务端定制改动（关闭官方版本检查）
 │   └── verify_patch.py          验证补丁仍能重建当前定制状态
 │
 ├── docs/                        文档（见下方「文档导航」）
@@ -76,6 +83,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 │   ├── 06-maintenance.md        维护：新增功能 SOP、升级上游
 │   ├── 07-faq.md                故障排查
 │   ├── 08-performance.md        性能：硬件编解码、画质取舍、资源占用
+│   ├── 09-server-build.md       服务端自编译：源码位置、三条产出路径、裸机部署
 │   ├── upstream/                上游自带文档（README、AGENTS.md 等）
 │   └── upstream-i18n/           上游 60 份多语言文档（留档，与本项目无关）
 │
@@ -123,8 +131,9 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 |---|---|
 | **搞懂这套东西怎么跑的** | [01 架构总览](docs/01-architecture.md) → [02 运行原理](docs/02-runtime.md) |
 | **拿到一个 exe** | [03b GitHub Actions 云构建](docs/03b-ci.md)（推荐）或 [03 本地构建](docs/03-build.md) |
-| **发一个正式版本** | `build\tag-release.bat` —— 打标签即自动构建并发布 Release（见 [03b](docs/03b-ci.md)） |
+| **发一个正式版本** | `build\tag-release.bat` —— 打标签即自动构建并发布 Release（见 [03b](docs/03b-ci.md)）<br>一次产出：客户端便携版 / MSI + **服务端 hbbs/hbbr** + GHCR 镜像 |
 | **上线给用户用** | [04 部署指南](docs/04-deploy.md) |
+| **不想用官方服务端镜像，要自己编译 hbbs/hbbr** | [09 服务端自编译](docs/09-server-build.md) |
 | **换 Logo、改服务器、砍功能** | [05 定制指南](docs/05-customize.md) |
 | **加一个新功能** | [06 维护手册](docs/06-maintenance.md) |
 | **出问题了** | [07 故障排查](docs/07-faq.md) |

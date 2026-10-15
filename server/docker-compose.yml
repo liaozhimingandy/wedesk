@@ -13,7 +13,13 @@ services:
   # hbbs : ID 注册 / 心跳 / NAT 打洞协调
   # ---------------------------------------------------------------------------
   hbbs:
-    image: ${RD_IMAGE:-rustdesk/rustdesk-server:latest}
+    # 镜像来自本目录的 Dockerfile —— 源码在 rustdesk-server/，编译时就在容器里跑，
+    # 不依赖 rustdesk/rustdesk-server 官方镜像。
+    # 首次启动前先执行一次 `docker compose build`（或 `docker compose up --build`）。
+    image: ${RD_IMAGE:-wedesk-server:latest}
+    build: &wedesk-build
+      context: .
+      dockerfile: Dockerfile
     container_name: rd-hbbs
     command: hbbs -r ${RELAY_HOST:-127.0.0.1}:${RELAY_PORT:-21117}
     environment:
@@ -57,7 +63,9 @@ services:
   # hbbr : 中继服务器。P2P 打洞失败时兜底转发画面数据
   # ---------------------------------------------------------------------------
   hbbr:
-    image: ${RD_IMAGE:-rustdesk/rustdesk-server:latest}
+    # 与 hbbs 同一个镜像、同一份构建配置（用 YAML 锚点复用上面的 build 段）
+    image: ${RD_IMAGE:-wedesk-server:latest}
+    build: *wedesk-build
     container_name: rd-hbbr
     command: hbbr
     environment:

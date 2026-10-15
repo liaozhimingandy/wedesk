@@ -64,11 +64,30 @@ git push
 |---|---|
 | `company_name` | 覆盖 `build/custom.toml` 的 `brand.company_name` |
 | `website` | 覆盖 `brand.website` |
-| `build_args` | 传给 `build.py` 的参数，默认 `--hwcodec --vram` |
+| `hwcodec` | **硬件编解码开关，默认关闭**（见下方说明） |
+| `build_args` | 传给 `build.py` 的额外参数，例如 `--vram`（显存编码，仅 x86/x64） |
 | `skip_customize` | 跳过品牌注入（抓 CI 本身的问题时用） |
 | `build_msi` | 额外产出 MSI 安装包 |
 
 手动输 CI 的意义在于：**临时换个品牌试一次，不必改源码也不用留提交**。
+
+### 关于 hwcodec 开关
+
+`--hwcodec` 启用 NVENC / Intel QSV / AMD AMF 硬件编解码，能显著降低远程桌面的 CPU 占用。
+但它要求 **vcpkg 从源码编译 FFmpeg 7.1.1**（含 nasm、AMF、nvcodec、qsv 一堆补丁），
+在 GitHub Runner 上动辄 40 分钟以上，**首次无缓存时是整个流水线最慢的一步**。
+
+所以默认关掉：
+
+| | 默认（关） | 勾选 `hwcodec` |
+|---|---|---|
+| FFmpeg | 跳过 | vcpkg 源码编译 |
+| 构建耗时 | 较快 | +40~90 分钟（首次） |
+| 编解码 | 软件 VP9 / AV1，**完全可用** | 额外支持显卡硬编 |
+| 适用场景 | 先跑通、快速迭代 | 正式分发、追求流畅度 |
+
+内网团队场景建议：**先按默认跑通，确认链路没问题后再勾一次 hwcodec 出正式版**。
+第二次之后 vcpkg 的 `x-gha` 二进制缓存会生效，耗时大幅下降。
 
 ---
 
@@ -136,6 +155,26 @@ python build/customize.py --source . --config build/custom.toml
 缺了它客户端照样能连、能控、能传文件，只是少个功能。
 
 MSI 构建同理（依赖 WiX/nuget，失败不影响便携版交付）。
+
+### 7. `VCPKG_DEFAULT_HOST_TRIPLET` 不能删
+
+这是本流水线踩过的最隐蔽的一个坑，删掉它构建会以很费解的方式失败。
+
+`vcpkg.json` 里 `ffmpeg` 声明为 `host: true`，且 platform 条件是 `((windows | ...) & static)`。
+而 host triplet **默认是 `x64-windows`（动态 CRT）**，不满足 `static` —— 于是 vcpkg
+**静默跳过 FFmpeg，不报错**。等到 cargo 编译 hwcodec 的 `mfx_encode.cpp` 才炸：
+
+```
+fatal error C1083: Cannot open include file: 'libavcodec/avcodec.h': No such file or directory
+fatal error C1083: Cannot open include file: 'libavutil/pixfmt.h': No such file or directory
+```
+
+上游 `flutter-build.yml` 靠这个变量让 host triplet 与 target triplet 一致，从而装上 FFmpeg。
+
+这里的处理是**条件设置**：只在勾选 `hwcodec` 时才设成 `x64-windows-static`，
+否则保持默认 `x64-windows` 让 vcpkg 跳过 FFmpeg（默认构建因此快很多）。
+
+改这个值前请确认 `vcpkg.json` 里 ffmpeg 条目的 platform 条件仍然要求 `static`。
 
 ---
 

@@ -104,6 +104,32 @@ build\apply-rustdesk-engine.bat
 
 ---
 
+### `Cannot open include file: 'libavcodec/avcodec.h'` / `'libavutil/pixfmt.h'`
+
+**原因**：启用了 `--hwcodec`，但 vcpkg 没装 FFmpeg。
+
+hwcodec 要用 `cc` 编译 `cpp/mfx/mfx_encode.cpp`，需要 FFmpeg 头文件。
+`vcpkg.json` 里 ffmpeg 是 `host: true` 且 platform 条件含 `& static`；
+**host triplet 默认是 `x64-windows`（动态 CRT），不满足条件 → FFmpeg 被静默跳过，不报错**。
+
+```bash
+# 本地排查：看头文件到底在不在
+ls "$VCPKG_ROOT/installed/x64-windows-static/include/libavcodec/avcodec.h"
+```
+
+解法二选一：
+
+| 想要 | 做法 |
+|---|---|
+| **先跑通**（推荐） | 去掉 `--hwcodec`。hwcodec 是 `optional = true` 依赖，不开就不编译。软件编解码 VP9/AV1 完全可用 |
+| **要硬件编解码** | 装 FFmpeg：`VCPKG_DEFAULT_HOST_TRIPLET=x64-windows-static vcpkg install --triplet x64-windows-static`。首次源码编译 40 分钟起 |
+
+CI 上对应的是 `Run workflow` 时的 **hwcodec 勾选框**，默认关闭。
+
+> 顺带说一句：`localtime` / `sprintf` 的 C4996 弃用警告、
+> 以及 `res/vcpkg/libyuv` 那条"用 MSVC 编译 libyuv 会很慢"的提示，
+> 都**只是警告**，不是构建失败的原因。真正致命的只有 C1083。
+
 ### 构建很慢 / 卡住不动
 
 先判断是真在编译还是卡死：

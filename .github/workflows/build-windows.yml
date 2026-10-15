@@ -30,10 +30,14 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      hwcodec:
+        description: "启用硬件编解码（NVENC/QSV/AMF）。需 vcpkg 从源码编译 FFmpeg，首次会显著变慢"
+        type: boolean
+        default: false
       build_args:
-        description: "传给 build.py 的额外参数（--hwcodec 硬件编解码，--vram 显存编码）"
+        description: "传给 build.py 的额外参数，例如 --vram（显存编码，仅 x86/x64）"
         required: false
-        default: "--hwcodec --vram"
+        default: ""
       company_name:
         description: "公司/组织名，留空则沿用 build/custom.toml 里的值"
         required: false
@@ -309,10 +313,27 @@ jobs:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: false
 
+      # VCPKG_DEFAULT_HOST_TRIPLET 是这条流水线最容易踩的坑，务必保留：
+      # vcpkg.json 里 ffmpeg 声明为 host:true，且 platform 条件是 `... & static`。
+      # host triplet 默认取 x64-windows（动态 CRT），不满足 static 条件 ——
+      # 结果 FFmpeg 被静默跳过，后面 hwcodec 编 mfx_encode.cpp 时报
+      #   fatal error C1083: Cannot open include file: 'libavcodec/avcodec.h'
+      # 上游 flutter-build.yml 是靠这个变量让 host 与 target triplet 一致的。
+      #
+      # 只在 hwcodec 打开时设成 static：不打开时保持默认 x64-windows，
+      # vcpkg 就会跳过 FFmpeg（它最慢，源码编译动辄 40 分钟以上），
+      # 默认构建因此能快很多。
       - name: Install vcpkg dependencies
+        env:
+          # 字符串写死而非引用 env.VCPKG_TRIPLET：step 级 env 里引用 env context
+          # 的求值顺序不够可靠，而这里两个值必须严格可预测。
+          # 改动时记得与上面的 VCPKG_TRIPLET 保持同步。
+          VCPKG_DEFAULT_HOST_TRIPLET: ${{ inputs.hwcodec && 'x64-windows-static' || 'x64-windows' }}
         shell: bash
         run: |
           set -e
+          echo "VCPKG_DEFAULT_HOST_TRIPLET=$VCPKG_DEFAULT_HOST_TRIPLET"
+          echo "VCPKG_DEFAULT_HOST_TRIPLET=$VCPKG_DEFAULT_HOST_TRIPLET" >> "$GITHUB_STEP_SUMMARY"
           if ! "$VCPKG_ROOT/vcpkg" install \
               --triplet ${{ env.VCPKG_TRIPLET }} \
               --x-install-root="$VCPKG_ROOT/installed"; then
@@ -323,6 +344,32 @@ jobs:
             done
             exit 1
           fi
+          # FFmpeg 是这条链路上最脆弱的一环，即使成功也留一份构建日志备查
+          head -n 60 "$VCPKG_ROOT/buildtrees/ffmpeg/build-${{ env.VCPKG_TRIPLET }}-rel-out.log" 2>/dev/null || true
+
+      # 与其让 FFmpeg 缺失以几十条 C1083 的形式暴露在 cargo 日志里，
+      # 不如在这里直接说清楚缺什么、为什么会缺。
+      - name: Verify FFmpeg headers (hwcodec only)
+        if: ${{ inputs.hwcodec }}
+        shell: bash
+        run: |
+          set -e
+          INC="$VCPKG_ROOT/installed/${{ env.VCPKG_TRIPLET }}/include"
+          missing=0
+          for h in libavcodec/avcodec.h libavutil/pixfmt.h libavformat/avformat.h; do
+            if [ -f "$INC/$h" ]; then
+              echo "  [OK]   $h"
+            else
+              echo "  [MISS] $h"
+              missing=1
+            fi
+          done
+          if [ $missing -ne 0 ]; then
+            echo "::error::FFmpeg 头文件缺失于 $INC —— hwcodec 编译 mfx_encode.cpp 会失败。请确认 vcpkg.json 的 ffmpeg 条目的 platform 条件被满足（需要 host triplet 为 static）。"
+            ls -la "$VCPKG_ROOT/installed/" || true
+            exit 1
+          fi
+          echo "✓ FFmpeg 头文件就位"
 
       # ------------------------------------------------------------------
       # 品牌注入：唯一真源是 build/custom.toml。
@@ -350,7 +397,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          python ./build.py --portable --flutter --skip-portable-pack ${{ inputs.build_args || '--hwcodec --vram' }}
+          HWCODEC="${{ inputs.hwcodec && '--hwcodec' || '' }}"
+          echo "build.py 参数: --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}"
+          python ./build.py --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}
           mkdir -p rustdesk
           cp -rf ./flutter/build/windows/x64/runner/Release/. ./rustdesk/
           ls -l ./rustdesk

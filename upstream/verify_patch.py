@@ -77,15 +77,77 @@ def norm(data: bytes) -> bytes:
     return data.replace(b"\r\n", b"\n")
 
 
+def regen(upstream: pathlib.Path) -> int:
+    """手工改了 CUSTOMIZED_FILES 里的源码后，重新生成 custom.patch。
+
+    直接 `git diff` 会有两个坑，这里都处理掉了：
+      1. 工作区是 CRLF（受 .gitattributes 的 `* text=auto` 影响），
+         而 checkout-index 导出的是 LF。不归一化的话每一行都算改动，
+         生成出来的补丁是整文件替换，等于没有参考价值。
+      2. 需要一个临时 git 仓库来做 diff，路径才是相对的；
+         同样要先 `git init` 防止 git 向上找 wedesk 的 .git。
+    """
+    clean = pathlib.Path(tempfile.gettempdir()) / "wedesk-regen-clean"
+    shutil.rmtree(clean, ignore_errors=True)
+
+    print(f"[1/4] 导出干净上游代码 -> {clean}")
+    export_clean(upstream, clean)
+    export_clean(upstream / "libs" / "hbb_common", clean / "libs" / "hbb_common")
+
+    run([GIT, "init", "-q", "."], clean)
+    run([GIT, "config", "core.autocrlf", "false"], clean)
+
+    print("[2/4] 建立基线 index")
+    run([GIT, "add", "-A", "."], clean)
+
+    print(f"[3/4] 用当前仓库的 {len(CUSTOMIZED_FILES)} 个文件覆盖（换行统一 LF）")
+    staged = []
+    for rel in CUSTOMIZED_FILES:
+        src_file = WEDESK / rel
+        if not src_file.exists():
+            print(f"      ! 跳过（仓库里不存在）: {rel}")
+            continue
+        dst = clean / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(norm(src_file.read_bytes()))
+        staged.append(rel)
+
+    print("[4/4] 生成 diff")
+    r = subprocess.run(
+        [GIT, "diff", "--no-ext-diff", "--no-color", "--"] + staged,
+        cwd=str(clean),
+        capture_output=True,
+    )
+    patch = r.stdout.decode("utf-8", "replace").replace("\r\n", "\n")
+    if not patch.strip():
+        print("      ! 没有任何差异，补丁未改动")
+        shutil.rmtree(clean, ignore_errors=True)
+        return 1
+
+    PATCH.write_text(patch, encoding="utf-8", newline="\n")
+    shutil.rmtree(clean, ignore_errors=True)
+    hunks = patch.count("\n@@")
+    print(f"      已写入 {PATCH}（{len(staged)} 个文件，{hunks} 个 hunk）")
+    print()
+    print("下一步务必验证：python upstream/verify_patch.py")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--upstream", default="D:/Git/rustdesk",
                     help="仍保留 .git 的上游源码目录（用于导出干净基线）")
+    ap.add_argument("--regen", action="store_true",
+                    help="重新生成 custom.patch（手工改了源码后必跑）")
     args = ap.parse_args()
 
     upstream = pathlib.Path(args.upstream)
     if not (upstream / ".git").exists():
         sys.exit(f"{upstream} 不是 git 仓库，无法导出干净基线")
+
+    if args.regen:
+        return regen(upstream)
+
     if not PATCH.exists():
         sys.exit(f"补丁不存在: {PATCH}")
 

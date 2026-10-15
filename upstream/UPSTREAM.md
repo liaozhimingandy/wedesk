@@ -66,6 +66,31 @@
 
 > 单元测试 `#[cfg(test)]` 里还有 2 处官方地址，**故意没改** —— 改了会破坏测试意图。
 
+### 手工源码改动（customize.py 不覆盖）
+
+`customize.py` 只做"字符串替换"这一类机械改动。下面这个改动带逻辑判断，
+塞不进规则表，因此是**直接改源码**的，升级上游时必须手动重做：
+
+| 文件 | 改动 | 为什么必须这样 |
+| --- | --- | --- |
+| `src/common.rs` `do_check_software_update()` | 函数开头加 `if is_custom_client() { return Ok(()); }` | 见下 |
+
+**为什么需要它**：官方更新检查请求的是 `https://api.rustdesk.com/version/latest`。
+上游只在 `check_software_update()`（自动检查）里加了 `is_custom_client()` 早退，
+但用户在"关于"页手动点检查更新时，`src/updater.rs` 会**绕过那道闸**直接调用
+`do_check_software_update()`，于是照样打到官方域名。这里补的是最后一道防线。
+
+**为什么返回 `Ok` 而不是 `Err`**：`updater.rs` 读 `SOFTWARE_UPDATE_URL` 为空时会走
+`"No update available."` 分支。返回 Ok + 不写 URL，UI 表现就是"已是最新版本"，
+不会因为我们断网这个动作弹出任何报错。
+
+改的同时记得重建补丁，否则下次升级会静默丢掉这次改动：
+
+```bash
+python upstream/verify_patch.py --regen     # 重新生成 custom.patch
+python upstream/verify_patch.py             # 验证 8/8（退出码 0 才算通过）
+```
+
 ## 补丁与验证
 
 - `custom.patch` —— 以上 8 个文件的完整 diff，可从干净上游重放
@@ -76,6 +101,16 @@ python upstream/verify_patch.py --upstream D:/Git/rustdesk
 ```
 
 退出码 0 = 通过。**上游升级后务必跑一次。**
+
+**手工改了上面那 8 个文件里的任何一个，都必须重建补丁**，否则升级时会丢改动：
+
+```bash
+python upstream/verify_patch.py --regen     # 重新生成 custom.patch
+python upstream/verify_patch.py             # 再验证一遍
+```
+
+`--regen` 内部处理了 CRLF/LF 归一化——工作区是 CRLF 而 `checkout-index`
+导出的是 LF，不归一化会生成"整文件替换"的垃圾补丁。
 
 ## 上游升级流程
 

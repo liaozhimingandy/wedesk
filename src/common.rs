@@ -1130,6 +1130,19 @@ fn process_software_update_check_response(bytes: Bytes) -> ResultType<()> {
 // Because the url is always `https://api.rustdesk.com/version/latest`.
 #[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+    // WEDESK(断外网): 私有部署的客户端不允许向官方 api.rustdesk.com 发起请求。
+    //
+    // 上游只挡了"自动检查"——check_software_update() 里有 is_custom_client() 早退。
+    // 但用户在"关于"里手动点检查更新时，src/updater.rs 会绕过那道闸直接调到这里，
+    // 于是照样会打到官方域名。这里补上最后一道防线。
+    //
+    // 实现上刻意返回 Ok 而不是 Err，且不写 SOFTWARE_UPDATE_URL：
+    // 上游调用方读完发现 URL 为空，会走 "", update_url.is_empty() -> "No update available."
+    // 的正常分支，UI 表现还是"已是最新版本"，不会因为断网开关弹出报错。
+    if is_custom_client() {
+        log::debug!("custom client: official software update check disabled");
+        return Ok(());
+    }
     let (request, url) =
         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
     let proxy_conf = Config::get_socks();

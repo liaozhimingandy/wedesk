@@ -464,6 +464,28 @@ def validate(c: dict):
     return problems
 
 
+def apply_overrides(c: dict, overrides):
+    """把 --set section.key=value 合并进已加载的配置。
+
+    只接受两级键（section.key）。空 VALUE 表示"不覆盖"而不是"清空"：
+    CI 里常见写法是 `--set brand.company_name="$NAME"`，变量未设时 $NAME 展开为空串，
+    此时若当成清空，会把仓库里已注入的公司名抹成空，很难排查。
+    """
+    for item in overrides:
+        key, sep, val = item.partition("=")
+        if not sep:
+            raise ValueError(f"--set 需要 SECTION.KEY=VALUE 形式，收到: {item!r}")
+        parts = key.strip().split(".")
+        if len(parts) != 2:
+            raise ValueError(f"--set 的键必须是 SECTION.KEY 两级形式，收到: {key!r}")
+        sec, name = parts[0].strip(), parts[1].strip()
+        val = val.strip()
+        if not val:
+            continue
+        c.setdefault(sec, {})[name] = val
+    return c
+
+
 def main():
     _init_color()
     ap = argparse.ArgumentParser(
@@ -482,6 +504,17 @@ def main():
     )
     ap.add_argument("--dry-run", action="store_true", help="只预览不写入")
     ap.add_argument("--restore", action="store_true", help="还原到定制前状态")
+    ap.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="SECTION.KEY=VALUE",
+        help=(
+            "覆盖配置项的某个字段，可重复。用于 CI/命令行里临时改品牌，"
+            "免去修改 custom.toml 再提交。例："
+            "--set brand.company_name=\"某某科技\" --set brand.website=https://xx.com"
+        ),
+    )
     args = ap.parse_args()
 
     # 路径一律以本脚本位置为基准，这样从任何目录调用都能工作，
@@ -499,6 +532,8 @@ def main():
         sys.exit(1)
 
     cfg = load_config(cfg_path)
+    if args.set:
+        cfg = apply_overrides(cfg, args.set)
     rules = build_rules(cfg)
 
     if args.restore:

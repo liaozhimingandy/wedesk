@@ -62,6 +62,24 @@ if not exist "%VCPKG_ROOT%\installed\x64-windows-static" (
     exit /b 1
 )
 
+REM --- flutter-rust-bridge 胶水代码 ---------------------------------------
+REM src/bridge_generated.rs / flutter/lib/generated_bridge.dart 是代码生成器
+REM 产物，被 .gitignore 排除，仓库里没有。缺了它们 cargo 会直接报
+REM "E0583: file not found for module bridge_generated"。
+REM 首次执行会自动 cargo install codegen（约 5-15 分钟）。
+echo.
+echo === Checking flutter-rust-bridge artifacts ===
+python "%~dp0generate-bridge.py" --check
+if errorlevel 1 (
+    echo Artifacts missing - generating now. First run takes 5-15 min.
+    python "%~dp0generate-bridge.py"
+    if errorlevel 1 (
+        echo.
+        echo ERROR: failed to generate bridge artifacts. See output above.
+        exit /b 1
+    )
+)
+
 echo Source:  %CD%
 echo Rust toolchain:
 cargo --version
@@ -75,7 +93,7 @@ echo  First build compiles every dependency from scratch.
 echo ============================================================
 echo.
 
-python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
 
 if errorlevel 1 (
     echo.

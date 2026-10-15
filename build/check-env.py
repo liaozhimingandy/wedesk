@@ -72,32 +72,76 @@ def check_version(name, cmd, pattern, expect=None, extra_path=None):
     return True, ver, note
 
 
+def _vs_roots():
+    """候选 Visual Studio 安装根目录。
+
+    不能只写死 C:\\Program Files\\Microsoft Visual Studio\\2022：
+      1) 用户完全可能把 VS 装到 D 盘等其他盘符；
+      2) 版本号也不止 2022/2019，新版本（如 VS 18 = "2026"）目录名完全不同；
+      3) 还得考虑 Isolated/Insiders 这类发行通道目录（我这儿就是 18\\Insiders）。
+    所以这里做「盘符 × 程序目录 × 任意 VS 版本 × 任意发行版」的笛卡尔积扫描。
+    """
+    roots = []
+    for drive_env in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        d = os.environ.get(drive_env)
+        if d:
+            roots.append(Path(d) / "Microsoft Visual Studio")
+    for letter in "CDEFGHIJ":
+        for middle in ("Program Files", "Program Files (x86)"):
+            roots.append(Path(f"{letter}:\\{middle}\\Microsoft Visual Studio"))
+    # 去重且保序
+    seen, out = set(), []
+    for r in roots:
+        key = str(r).lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
 def find_msvc():
     """定位 Visual Studio Build Tools / MSVC 工具链"""
-    roots = [
-        Path(r"C:\Program Files\Microsoft Visual Studio\2022"),
-        Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022"),
-        Path(r"C:\Program Files\Microsoft Visual Studio\2019"),
-        Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2019"),
-    ]
-    for base in roots:
-        if not base.exists():
+    for root in _vs_roots():
+        if not root.exists():
             continue
-        for edition in base.iterdir():
-            vcv = edition / "VC" / "Auxiliary" / "Build" / "vcvarsall.bat"
-            if vcv.exists():
-                return True, str(vcv), edition.name
+        # 版本层（2022 / 18 / ...）→ 发行层（BuildTools / Community / Insiders / ...）
+        for version in sorted(root.iterdir(), reverse=True):
+            if not version.is_dir():
+                continue
+            for edition in sorted(version.iterdir()):
+                if not edition.is_dir():
+                    continue
+                tools = edition / "VC" / "Tools" / "MSVC"
+                vcv = edition / "VC" / "Auxiliary" / "Build" / "vcvarsall.bat"
+                if not vcv.exists():
+                    continue
+                toolset = None
+                if tools.is_dir():
+                    vers = sorted(tools.iterdir(), reverse=True)
+                    toolset = vers[0].name if vers else None
+                return True, str(vcv), f"{version.name}/{edition.name} (MSVC {toolset})"
     return False, None, None
 
 
 def find_winsdk():
-    base = Path(r"C:\Program Files (x86)\Windows Kits\10\bin")
-    if not base.exists():
-        return False, None
-    vers = sorted(
-        [d.name for d in base.iterdir() if re.match(r"^10\.", d.name)], reverse=True
-    )
-    return True, vers[0] if vers else None
+    """定位 Windows SDK，同样要覆盖非 C 盘安装。"""
+    bases = []
+    for letter in "CDEFGHIJ":
+        bases.append(Path(f"{letter}:\\Program Files (x86)\\Windows Kits\\10\\bin"))
+        bases.append(Path(f"{letter}:\\Windows Kits\\10\\bin"))
+    for drive_env in ("ProgramFiles(x86)", "ProgramW6432"):
+        d = os.environ.get(drive_env)
+        if d:
+            bases.append(Path(d) / "Windows Kits" / "10" / "bin")
+    for base in bases:
+        if not base.exists():
+            continue
+        vers = sorted(
+            [d.name for d in base.iterdir() if re.match(r"^10\.", d.name)], reverse=True
+        )
+        if vers:
+            return True, vers[0] if vers else None
+    return False, None
 
 
 def main():
@@ -142,17 +186,39 @@ def main():
         results.append(("Rust", False, "未安装（需要 1.75）", "critical"))
 
     # ---------- Flutter ----------
-    fcmd = shutil.which("flutter")
-    if fcmd:
-        rc, out = run("flutter --version")
-        m = re.search(r"Flutter (\S+)", out)
-        ver = m.group(1) if m else "?"
+    # flutter 常常装好了却没进 PATH（典型：直接解压到 C:\flutter），
+    # 只查 which 会误判成未安装。先探测常见安装位置，再回退 PATH。
+    flutter_bat = None
+    for cand in ["C:\\flutter", "C:\\src\\flutter", "D:\\flutter", "D:\\src\\flutter"]:
+        p = Path(cand) / "bin" / "flutter.bat"
+        if p.exists():
+            flutter_bat = str(p)
+            break
+    if flutter_bat is None:
+        found = shutil.which("flutter")
+        flutter_bat = found if found else None
+
+    ver = "?"
+    if flutter_bat:
+        vfile = Path(flutter_bat).parent.parent / "version"
+        if vfile.exists():
+            ver = vfile.read_text(encoding="utf-8").strip()
+        else:
+            rc, out = run(f'"{flutter_bat}" --version')
+            m = re.search(r"Flutter (\S+)", out)
+            ver = m.group(1) if m else "?"
+
+    if flutter_bat:
         ok = ver == "3.24.5"
+        on_path = shutil.which("flutter") is not None
+        note = ver + ("" if ok else "  (官方 CI 要求 3.24.5)")
+        if not on_path:
+            note += f"  [未进 PATH: {flutter_bat}]"
         results.append(
             (
                 "Flutter",
                 ok,
-                ver + ("" if ok else "  (官方 CI 要求 3.24.5)"),
+                note,
                 "ok" if ok else "warn",
             )
         )
@@ -186,12 +252,27 @@ def main():
         results.append(("vcpkg", False, "VCPKG_ROOT 未设置", "critical"))
 
     # ---------- LLVM ----------
-    llvm = Path(r"C:\Program Files\LLVM\bin\clang.exe")
-    if llvm.exists():
+    llvm = None
+    for cand in [
+        r"C:\Program Files\LLVM\bin\clang.exe",
+        r"D:\Program Files\LLVM\bin\clang.exe",
+        r"C:\LLVM\bin\clang.exe",
+    ]:
+        if Path(cand).exists():
+            llvm = Path(cand)
+            break
+    if llvm is None:
+        found = shutil.which("clang")
+        if found:
+            llvm = Path(found)
+    if llvm and llvm.exists():
         rc, out = run(f'"{llvm}" --version')
         m = re.search(r"version (\S+)", out)
         ver = m.group(1) if m else "?"
-        results.append(("LLVM/Clang", True, ver, "ok"))
+        ok = ver.startswith("15.")
+        results.append(
+            ("LLVM/Clang", ok, ver + ("" if ok else "  (需 15.0.6)"), "ok" if ok else "warn")
+        )
     else:
         results.append(("LLVM/Clang", False, "未安装（需 15.0.6）", "critical"))
 

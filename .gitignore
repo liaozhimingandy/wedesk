@@ -121,3 +121,7 @@ third_party/libdrmtap/
 !flutter/android/app/src/main/res/**
 !fastlane/**
 !libs/**
+
+# 本地构建的临时工具目录（cargo install 的 codegen 二进制，可达数百 MB）
+build/.tools/
+build/__pycache__/

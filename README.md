@@ -145,39 +145,53 @@ company_name = "你的公司"
 website   = "https://你的内网地址"
 ```
 
-### 第 3 步：fork RustDesk 并打补丁
+### 第 3 步：提交并触发构建
+
+**不需要再 fork RustDesk —— 上游源码已经在仓库里了**（`libs/hbb_common` 等子模块已
+实体化，clone 下来就能编译）。直接：
 
 ```bash
-git clone --recursive https://github.com/rustdesk/rustdesk.git
-# ... 在 GitHub 上 fork 到你自己的账号，然后 clone 你的 fork ↓
-
-cd <你的fork目录>
-python <rd-suite>/build/patch-ci.py --source .
+git add build/custom.toml && git commit -m "chore: 更新服务器地址与品牌信息"
+git push
 ```
 
-> `git clone` 一定要带 `--recursive`：`libs/hbb_common` 是独立 submodule，
-> 服务器地址和公钥就定义在里面，漏了它定制会失败。
+推送会自动触发 `Build Windows Client` 工作流。也可以手动触发：
+仓库 → **Actions** → `Build Windows Client` → **Run workflow**。
 
-### 第 4 步：推送并触发构建
+手动触发时可以临时覆盖品牌而不改源码：
 
-```bash
-git add . && git commit -m "customize client" && git push
-```
+| 输入项 | 说明 |
+|---|---|
+| `company_name` / `website` | 覆盖 `build/custom.toml` 里的值 |
+| `build_args` | 传给 `build.py` 的参数，默认 `--hwcodec --vram` |
+| `skip_customize` | 跳过品牌注入（调试 CI 用） |
+| `build_msi` | 额外产出 MSI 安装包 |
 
-然后到 GitHub 仓库页面 → **Actions** → `Custom Client Build` → **Run workflow**。
+> **为什么 IP 变了必须重新构建**：服务器地址是**编译期注入**的。
+> 换成新服务器后要改 `build/custom.toml` 里的 `rendezvous_host` 和 `key`，再重新构建。
+> （用户自己仍可以在客户端界面临时改服务器——我们改的是兜底默认值，不是硬锁定。）
 
-构建约 20–40 分钟，完成后在 Artifacts 下载 `rustdesk-unsigned-windows-x86_64`。
+### 第 4 步：下载产物
+
+构建约 30–60 分钟（首次更久，之后有缓存），完成后在 Artifacts 下载 `wedesk-windows-x64`。
 
 ### 第 5 步：分发
 
 把整个 `rustdesk` 目录打包发给员工即可（便携版，无需安装）。
+
+> **注意**：开源仓库请先设为 **Private**。RustDesk 是 AGPL-3.0，对外分发改版客户端
+> 必须提供完整源码；设为私有后仅内部使用，不触发 §13 的源码提供义务。
 
 ---
 
 ## 四、本地构建（当前主线）
 
 源码已整合到本仓库根目录（`Cargo.toml`、`build.py` 都在最外层），定制也已注入完成。
-剩下的是补齐工具链——目前卡在 MSVC（正在安装）。
+
+**2026-10-15 实测进度**：MSVC ✅ / Windows SDK ✅ / Rust 1.75 ✅（已修）/ Flutter 3.24.5 ✅
+—— 还差 **vcpkg** 和 **LLVM 15**，见下方体检表。
+
+完整步骤、磁盘预算和已知坑见 [`docs/BUILD.md`](docs/BUILD.md)（比本节详细得多）。
 
 ### 4.1 必须先体检
 
@@ -215,10 +229,23 @@ check-env.bat
 
 ```bat
 cd <repo>\build
-install-vcpkg-deps.bat        REM C++ 依赖，最慢 30-120 分钟
-apply-rustdesk-engine.bat     REM Flutter SDK + 替换官方自研 engine
-build-local.bat               REM 最终构建，20-40 分钟
+
+REM 0. Rust 转发壳损坏时的专用修复（并发 rustup / 中途 kill 会导致 0 字节）
+python fix-rust.py
+
+REM 1. C++ 依赖，最慢 30-120 分钟
+install-vcpkg-deps.bat
+
+REM 2. Flutter SDK + 替换官方自研 engine
+apply-rustdesk-engine.bat
+
+REM 3. 最终构建，20-40 分钟（内部会自动检查并生成 bridge 胶水代码）
+build-local.bat
 ```
+
+> **LLVM 15.0.6 需要手动装**（本项目没有对应脚本）：
+> `winget install LLVM.LLVM --version 15.0.6`
+> bindgen 用它解析 C 头文件，缺了会在编译依赖时报一堆莫名的符号错误。
 
 三个脚本的路径都基于脚本自身位置推导，仓库放在哪个盘都能跑。
 工具位置可用环境变量覆盖，默认值：
@@ -254,12 +281,16 @@ Flutter/vcpkg 装到 D 盘 —— 改两个脚本里的路径即可）。
 python <repo>\build\customize.py --dry-run   # 先预览
 python <repo>\build\customize.py             # 再写入
 
-# 2. 构建
-cd <repo>\rustdesk
-python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+# 2. 生成 flutter-rust-bridge 胶水代码（首次约 5-15 分钟，build-local.bat 会自动做）
+python <repo>\build\generate-bridge.py --check    # 先看是否就绪
+python <repo>\build\generate-bridge.py            # 缺了就生成
+
+# 3. 构建（在仓库根执行，不再有 rustdesk/ 子目录）
+cd <repo>
+python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
 ```
 
-产物在 `<repo>\rustdesk\flutter\build\windows\x64\runner\Release`。
+产物在 `<repo>\flutter\build\windows\x64\runner\Release`。
 
 想撤销定制（还原到注入前，依赖 `*.rd.bak` 备份）：
 

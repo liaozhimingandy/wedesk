@@ -94,17 +94,17 @@ git push
 推送 `v*` 标签 → 自动构建 → 自动发布 Release：
 
 ```bat
-build\tag-release.bat
+build\common\tag-release.bat
 ```
 
 脚本会做四件事，任何一件不通过就停下：
 
-1. 从 `Cargo.toml` 读取版本号（**不手工输入**，避免与 CI 校验冲突）
+1. 从 `client/Cargo.toml` 读取版本号（**不手工输入**，避免与 CI 校验冲突）
 2. 检查工作区干净、且与 `origin/main` 一致
 3. 检查标签未重复
 4. 打标签并推送，最后打印 Actions 与 Release 页面链接
 
-先 `build\tag-release.bat --dry` 看一遍将要做什么，确认无误再真跑。
+先 `build\common\tag-release.bat --dry` 看一遍将要做什么，确认无误再真跑。
 
 Release 里会有：
 
@@ -223,7 +223,7 @@ FLUTTER_ROOT="$(dirname "$(dirname "$(readlink -f "$(command -v flutter)")")")"
 ### 3. codegen 装到独立目录再缓存
 
 ```yaml
-path: .tools/frb
+path: build/client/.tools/frb
 ```
 
 `flutter_rust_bridge_codegen` 要 `cargo install`（编译 10 分钟），必须缓存。

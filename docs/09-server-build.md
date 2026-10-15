@@ -66,7 +66,7 @@ flowchart LR
 推送标签即触发，与客户端在同一次发版里产出：
 
 ```bash
-build\tag-release.bat        # 打标签并推送（版本自动取自根 Cargo.toml）
+build\common\tag-release.bat   # 打标签并推送（版本自动取自 client\Cargo.toml）
 ```
 
 流水线里的 `build-server` job 会编译 musl 静态二进制，`server-image` job 把镜像推到
@@ -115,8 +115,8 @@ docker build --platform linux/amd64 -t wedesk-server:latest -f deploy/Dockerfile
 想直接得到 `hbbs.exe` / `hbbr.exe`（例如部署到 Windows Server）：
 
 ```bash
-build\build-server.bat                      # → server\bin\*.exe
-build\build-server.bat --debug              # 排障版，编译更快
+build\server\build-server.bat            # → server\bin\*.exe
+build\server\build-server.bat --debug    # 排障版，编译更快
 ```
 
 这条路径有两个硬要求，脚本会先检查再动手：
@@ -229,7 +229,7 @@ git apply --check upstream/server.patch
 git apply upstream/server.patch
 
 # 4. 本地验证能编译
-build\build-server.bat
+build\server\build-server.bat
 ```
 
 第 2 步失败说明上游改了我们打补丁的那段代码。这时要人工看
@@ -472,7 +472,7 @@ docker compose up -d
 
 | 组件 | 版本来源 | 说明 |
 |---|---|---|
-| 客户端 | 仓库根 `Cargo.toml`（当前 1.5.1） | `build\tag-release.bat` 取的就是它 |
+| 客户端 | `client/Cargo.toml`（当前 1.5.1） | `build\common\tag-release.bat` 取的就是它 |
 | 服务端 | `server/src/Cargo.toml`（当前 1.1.17） | 与客户端版本各自演进，互不绑定 |
 | 容器镜像标签 | 沿用 Release 标签 | `liaozhiming/wedesk-server:<tag>` |
 

@@ -97,10 +97,10 @@ echo.
 docker images wedesk-server:%TAG%
 echo.
 echo 启动服务：
-echo     cd /d server
+echo     cd /d server\deploy
 echo     copy .env.example .env
 echo     编辑 .env 填写 RELAY_HOST=^<服务器IP^>
 echo     docker compose up -d
 echo.
 echo 如果没要用 Docker，也可以直接用源码编译 Windows 版：
-echo     build\build-server.bat
+echo     build\server\build-server.bat

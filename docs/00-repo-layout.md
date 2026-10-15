@@ -62,7 +62,7 @@ wedesk/
 │   │   └── build-server-image.bat #   本机构建 Linux 服务端 Docker 镜像
 │   └── common/                    # 跨端共用
 │       ├── check-workflow.py      #   工作流静态审计（推送前跑）
-│       ├── get-version.py         #   从 Cargo.toml 取版本号
+│       ├── get-version.py         #   从 client/Cargo.toml 取版本号
 │       └── tag-release.bat        #   打 v* 标签 → 触发 CI 发布
 │
 ├── docs/                          # 文档（00 是本篇，其余按 01→11 顺序读）
@@ -226,3 +226,12 @@ build-local.bat                 # 一键构建
 6. **不要在 `server/data/` 下放 `.env`**
    hbbs/hbbr 启动时会读工作目录的 `.env` 并把它当参数，`PORT=5188` 会让 hbbr
    改听 5190 撞上 hbbs 的 WebSocket 端口，全程不报错。
+
+7. **移动任何脚本之前，先确认它的根目录推断还成立**
+   构建脚本一律用 `Path(__file__)` 逐级向上推导仓库根 / 客户端根，不硬编码盘符。
+   好处是仓库放哪都能跑，代价是**层数假设**：脚本从 `build/` 挪到 `build/client/`
+   后，原来的 `parent.parent` 就少了一级，`ROOT` 会指向 `build/` 而不是仓库根。
+   而这种错**不会立刻报错**——目录都存在、`is_dir()` 检查全过，直到某次
+   "找不到源码 / 产物永远缺失"才暴露。三个脚本（`generate-bridge.py`、
+   `customize.py`、`vendor-server.py`）和 `get-version.py` 都中过这一招，
+   每个的修正处都写了注释说明该写几级。**移动脚本 = 必须重算层数。**

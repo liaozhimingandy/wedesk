@@ -61,7 +61,7 @@ build\server\build-server-image.bat
 | 脚本 | 干什么 | 什么时候跑 |
 |---|---|---|
 | `check-workflow.py` | 静态审计 `.github/workflows/*.yml`：GH 表达式语法、`env`/`steps.outputs` 引用是否可解析、用到哪些 secrets | **改了工作流之后、推送之前** |
-| `get-version.py` | 从 `Cargo.toml` 提取版本号输出到 stdout | 被 `tag-release.bat` 调用 |
+| `get-version.py` | 从 `client/Cargo.toml` 提取版本号输出到 stdout | 被 `tag-release.bat` 调用 |
 | `tag-release.bat` | 校验版本一致性 → 打 `v*` 标签 → 推送，触发 CI 发布客户端 + 服务端 + 镜像 | 发版时。`--dry` 可预演 |
 
 ```bash

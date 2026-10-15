@@ -15,7 +15,7 @@
     python build/client/generate-bridge.py --check      # 只看是否已就绪
 
 注意：flutter_rust_bridge_codegen 是从源码 cargo install 的，首次约 5-15 分钟，
-中途别 kill —— 半途中断会留下损坏的二进制，得删掉 build/.tools/frb 重来。
+中途别 kill —— 半途中断会留下损坏的二进制，得删掉 build/client/.tools/frb 重来。
 """
 import argparse
 import os
@@ -25,7 +25,10 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent.parent
+# 脚本在 build/client/ 下，向上两级是仓库根，再进 client/ 才是客户端源码根。
+# 注意别写成 HERE.parent.parent：那是仓库根，本脚本所有路径（flutter/、src/）
+# 都相对客户端根拼，差一级会让「产物缺失」永远修不好。
+ROOT = HERE.parent.parent / "client"
 
 FRB_VERSION = "1.80.1"
 CARGO_EXPAND_VERSION = "1.0.95"
@@ -107,14 +110,14 @@ def install_codegen(force_reinstall: bool):
 
 def main():
     ap = argparse.ArgumentParser(description="生成本地构建所需的 flutter-rust-bridge 代码")
-    ap.add_argument("--root", default=None, help="仓库根目录（默认由本脚本位置向上两级推断）")
+    ap.add_argument("--root", default=None, help="客户端源码根目录（默认由本脚本位置向上两级再进 client/ 推断）")
     ap.add_argument("--force", action="store_true", help="忽略已有产物，强制重新生成")
     ap.add_argument("--reinstall", action="store_true", help="强制重装 codegen 二进制")
     ap.add_argument("--check", action="store_true", help="只检查是否已就绪")
     args = ap.parse_args()
 
     root = Path(args.root).resolve() if args.root else ROOT
-    print(f"仓库根目录: {root}\n")
+    print(f"客户端源码根目录: {root}\n")
 
     miss = missing_outputs(root)
     if args.check:

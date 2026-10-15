@@ -611,7 +611,7 @@ def main():
     ap.add_argument(
         "--source",
         default=None,
-        help="rustdesk 源码根目录（省略则自动探测本仓库的 rustdesk/）",
+        help="rustdesk 源码根目录（省略则用本仓库的 client/）",
     )
     ap.add_argument(
         "--config",
@@ -635,9 +635,9 @@ def main():
 
     # 路径一律以本脚本位置为基准，这样从任何目录调用都能工作，
     # 不必先 cd 到 build/ 再执行。
-    # 上游源码已扁平化到仓库根（与 build/ 同级），不再有 rustdesk/ 子目录。
+    # 客户端源码在仓库的 client/ 下：脚本在 build/client/，向上两级到仓库根再进 client/。
     here = Path(__file__).resolve().parent
-    root = Path(args.source).resolve() if args.source else here.parent
+    root = Path(args.source).resolve() if args.source else here.parent.parent / "client"
     cfg_path = Path(args.config).resolve() if args.config else (here / "custom.toml")
 
     if not root.is_dir():

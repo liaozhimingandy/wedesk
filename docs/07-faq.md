@@ -77,7 +77,7 @@ Flutter 装好了但不在 PATH。脚本支持环境变量覆盖，也可以直�
 
 ```bat
 set FLUTTER_ROOT=C:\flutter
-build\build-local.bat
+build\client\build-local.bat
 ```
 
 ---
@@ -86,10 +86,10 @@ build\build-local.bat
 
 ```bat
 set VCPKG_ROOT=D:\vcpkg
-build\install-vcpkg-deps.bat      :: 首次 30-120 分钟
+build\client\install-vcpkg-deps.bat   :: 首次 30-120 分钟
 ```
 
-> ⚠️ `install-vcpkg-deps.bat` 与 `build-local.bat` 的 `VCPKG_ROOT` **必须指向同一个目录**，
+> ⚠️ `build\client\install-vcpkg-deps.bat` 与 `build\client\build-local.bat` 的 `VCPKG_ROOT` **必须指向同一个目录**，
 > 否则装到 A 盘、构建去 B 盘找，必然失败。
 
 ---
@@ -99,7 +99,7 @@ build\install-vcpkg-deps.bat      :: 首次 30-120 分钟
 **原因**：没换成 RustDesk 自研 Flutter engine。官方 engine 会有各种细微异常。
 
 ```bat
-build\apply-rustdesk-engine.bat
+build\client\apply-rustdesk-engine.bat
 ```
 
 ---

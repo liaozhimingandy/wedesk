@@ -21,7 +21,11 @@ import sys
 import tempfile
 import urllib.request
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 本脚本在 build/server/ 下，要向上三级才到仓库根。
+# 别写成两层 dirname：那是 build/，于是 DEST 变成 build/server/src（不存在）、
+# PIN_STATE 变成 build/build/...（写不进去），而且两个错都不会立刻报错，
+# 直到下次升级上游时才爆炸。
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEST = os.path.join(ROOT, "server", "src")
 
 SERVER_REPO = "https://github.com/rustdesk/rustdesk-server.git"
@@ -47,7 +51,7 @@ KEEP = [
     ".gitattributes",
 ]
 
-PIN_STATE = os.path.join(ROOT, "build", "server-vendor.json")
+PIN_STATE = os.path.join(ROOT, "build", "server", "server-vendor.json")
 
 GITHUB_API = "https://api.github.com/repos/{repo}/contents/{path}?ref={ref}"
 

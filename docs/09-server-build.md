@@ -229,6 +229,7 @@ build\build-server.bat
 | 启动就报端口占用 | 本机已有进程占着派生端口 | `python rdctl.py stop` 后再起，或整体平移 `HBBS_PORT` / `HBBR_PORT`。<br>**别只改主端口** —— P-1 与 P+2 也要一并挪开，见 [10 端口规划](10-ports.md) |
 | 客户端连不上，日志无报错 | 两端公钥不一致 | 核对 `rdctl.py key` 与 `build/custom.toml` 的 key 是否相同 |
 | `docker build` 卡在 crates.io 下载 | 容器内网络慢 | 重试一次即可；CI 里有 cargo registry 缓存，本机建议 `--platform` 保持一致以复用层缓存 |
+| CI 里 `cp: cannot stat 'target//release/hbbs'`（注意路径里的**双斜杠**） | 打包步骤拼路径用的三元组变量为空 | 见下方第 6.2 节 |
 
 ### 6.1 OpenSSL 报错：为什么不在 runner 上交叉编译
 
@@ -290,6 +291,36 @@ docker run --rm \
 > 注意 **hbbs/hbbr 的端口不写在源码里**，是靠 `docker-compose.yml` 的
 > `command: hbbs -p 5187` / `hbbr -p 5188` 传入的。重新编译不会改变端口。
 > 端口推导规则见 [10 端口规划](10-ports.md)。
+
+### 6.2 `cp: cannot stat 'target//release/hbbs'`：路径里的双斜杠就是线索
+
+完整报错：
+
+```
+Run set -e
+cp: cannot stat 'target//release/hbbs': No such file or directory
+Error: Process completed with exit code 1
+```
+
+**注意 `target//release` 中间那个双斜杠** —— 它不是笔误，而是拼路径的变量为空，
+`target/${TRIPLE}/release` 变成了 `target//release`。
+
+根因是"目标三元组"有两个真源：`server/build-musl.sh` 里 `TARGET` 有默认值
+`x86_64-unknown-linux-musl`，而打包步骤直接读 workflow 的 `env.SERVER_TARGET`。
+一旦 env 里漏配，编译按脚本默认值把产物放进 `target/x86_64-unknown-linux-musl/release/`，
+打包却去 `target//release` 找 —— 编译是成功的，只是两边对不上。
+
+现在的处理是**把真源收敛成一处**：构建步骤算出三元组后写进 step output，
+打包步骤只认这个值；另外加了兜底与诊断（找不到时会打印 `target/` 的真实目录结构），
+不会再只留一句 `cannot stat` 让人从头猜。
+
+自己改构建流程时注意：三元组在三处各有一份默认值，必须保持一致 ——
+
+| 位置 | 用途 |
+|---|---|
+| `.github/workflows/build-windows.yml` 的 `env.SERVER_TARGET` | CI 打包与缓存路径 |
+| `server/build-musl.sh` 的 `TARGET="${TARGET:-...}"` | 未收到环境变量时的兜底 |
+| `server/Dockerfile` 的 `ARG TARGET=...` | 最终 `COPY --from=builder` 的源路径 |
 
 ---
 

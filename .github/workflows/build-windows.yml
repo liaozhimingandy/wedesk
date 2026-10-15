@@ -95,6 +95,11 @@ env:
   # 安装的工具链。要换版本就把这里和 server/Dockerfile 的 ARG RUST_IMAGE 一起改。
   SERVER_BUILD_IMAGE: "rust:1.90-alpine"
   SERVER_DIR: "server/rustdesk-server"
+  # 目标三元组。必须与 server/build-musl.sh 的 TARGET 默认值、以及
+  # server/Dockerfile 的 ARG TARGET 默认值三者一致 ——
+  # cargo 只有在传了 --target 时才把产物放进 target/<triple>/，
+  # 编译与打包一旦对 triple 的理解不一致，就会拼出 target//release 这种空路径。
+  SERVER_TARGET: "x86_64-unknown-linux-musl"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -666,14 +671,22 @@ jobs:
           workspaces: ${{ env.SERVER_DIR }} -> target/${{ env.SERVER_TARGET }}
 
       - name: Build hbbs / hbbr / rustdesk-utils in musl container
+        id: build
         run: |
           set -e
+          # TRIPLE 只在这里定一次，并作为 step output 交给下面的打包步骤。
+          # 之前打包步骤直接读 env.SERVER_TARGET，而脚本在未收到 TARGET 时会
+          # 退回自己的默认值 —— 两个真源，env 一漏配就变成「编译放到
+          # target/x86_64-...-musl/、打包却去 target//release 找」的错位。
+          TRIPLE="${SERVER_TARGET:-x86_64-unknown-linux-musl}"
+          echo "triple=$TRIPLE" >> "$GITHUB_OUTPUT"
+          echo "==> 编译目标三元组：$TRIPLE"
           mkdir -p "$HOME/.cargo/registry" "${SERVER_DIR}/target"
           docker run --rm \
             --volume "$PWD/${SERVER_DIR}:/src" \
             --volume "$PWD/server/build-musl.sh:/build-musl.sh:ro" \
             --volume "$HOME/.cargo/registry:/usr/local/cargo/registry" \
-            --env TARGET="${SERVER_TARGET}" \
+            --env TARGET="$TRIPLE" \
             "${SERVER_BUILD_IMAGE}" \
             sh /build-musl.sh
           # 容器里是 root，写出来 target/ 与 registry 缓存都归 root；
@@ -690,7 +703,21 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           DIST="$GITHUB_WORKSPACE/out-server"
           mkdir -p "$DIST"
-          BIN="target/${{ env.SERVER_TARGET }}/release"
+          # 路径由上一个 step 实际使用的三元组决定，不再各自取值。
+          BIN="target/${{ steps.build.outputs.triple }}/release"
+          if [ ! -f "$BIN/hbbs" ]; then
+            # 兜底：没传 --target 时 cargo 直接放在 target/release
+            if [ -f "target/release/hbbs" ]; then
+              echo "::warning::$BIN/hbbs 不存在，回退到 target/release（未传 --target 时的产物位置）"
+              BIN="target/release"
+            else
+              echo "::error::找不到编译产物。当前 target/ 下的目录结构："
+              find target -maxdepth 3 -type d 2>/dev/null | head -30
+              echo "::error::以及存在的二进制："
+              find target -maxdepth 4 -type f -name 'hbbs' 2>/dev/null | head
+              exit 1
+            fi
+          fi
           for b in hbbs hbbr rustdesk-utils; do cp "$BIN/$b" "$DIST/"; done
           # systemd 单元带上：不用 Docker 的部署方式直接落到 /etc/systemd/system 即可
           [ -d systemd ] && cp -r systemd "$DIST/systemd"

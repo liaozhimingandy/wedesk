@@ -159,6 +159,29 @@ def compose_image_name():
     return img if img else "wedesk-server:latest"
 
 
+def is_remote_image():
+    """RD_IMAGE 是否指向远端镜像。
+
+    判据就是【镜像名里有没有 '/'】：
+      本地镜像是 docker-compose.yml 的默认值 `wedesk-server:latest`，不带 /；
+      远端镜像一定带 / —— Docker Hub 简写 `owner/repo:tag` 也是（
+      `liaozhiming/wedesk-server:latest`），带仓库地址的更是
+      （`ghcr.io/foo/bar:1`、`127.0.0.1:5000/ws:1`）。
+
+    注意别写成"第一段含 . 或 :"：那会把 Docker Hub 简写误判成本地镜像，
+    而它恰恰是最常用的远端写法。
+
+    区分它很重要：
+      - 本地：compose build 真的会用本仓库源码编译，改源码会生效；
+      - 远端：compose 直接用（或拉取）那个镜像，本地 Dockerfile 不参与，
+              改源码【不会】生效 —— 这是最容易白改半天的地方。
+    """
+    img = read_env().get("RD_IMAGE")
+    if not img:
+        return False
+    return "/" in img
+
+
 # --- 端口规划 --------------------------------------------------------------
 # 端口是从【主端口】推导出来的，不是一张随意的清单：
 #   hbbs 主端口 P → UDP P / TCP P / TCP P-1(NAT 探测) / TCP P+2(WebSocket)
@@ -268,28 +291,148 @@ def image_exists(tag):
     return rc == 0
 
 
+# 探针脚本：逐个判定三个二进制的状态，输出一行结论后退出。
+# 刻意用固定的 /usr/bin 路径而不是 command -v —— 后者对"存在但没 +x"的文件
+# 同样返回空，会把「缺可执行位」误报成「文件不存在」，而这正是最容易踩的一种。
+#
+# 三种结论对应三个完全不同的成因与修法，所以分开报：
+#   MISSING:<b>  文件不在镜像里        → COPY 源路径写错，或产物目录被挂成
+#                                        BuildKit cache mount（内容不进镜像层）
+#   EMPTY:<b>    是 0 字节文件          → 打包/传输环节损坏
+#   NOEXEC:<b>   存在但没有可执行位      → artifact 上传/下载丢失了 POSIX mode
+#   BROKEN:<b>   有 +x 但 execve 返回 ENOENT → 不是静态二进制，动态链接器缺失
+#                                        （典型：glibc 产物被 COPY 进了 alpine）
+# 解析顺序刻意与 Docker 自身一致：先用 PATH 查找（Docker 就是这么找 command
+# 第一段的），找到后再执行【解析出的绝对路径】而不是裸名字 ——
+# 否则"检查的"和"执行的"可能不是同一个文件，诊断结论会跑偏。
+_PROBE_BINS = r'''
+for b in hbbs hbbr rustdesk-utils; do
+    p="$(command -v "$b" 2>/dev/null || true)"
+    if [ -z "$p" ]; then
+        # PATH 上找不到。command -v 对"存在但没 +x"的文件同样会跳过，
+        # 所以补一次直查，把「文件不在」与「在但缺执行位」分开。
+        if [ -e "/usr/bin/$b" ]; then echo "NOEXEC:$b"; else echo "MISSING:$b"; fi
+        exit 0
+    fi
+    if [ ! -s "$p" ]; then echo "EMPTY:$b"; exit 0; fi
+    if [ ! -x "$p" ]; then echo "NOEXEC:$b"; exit 0; fi
+    "$p" --help >/dev/null 2>&1 && rc=0 || rc=$?
+    # 127 = command not found：execve 返回 ENOENT，典型是 ELF 解释器
+    #       （如 /lib64/ld-linux-x86-64.so.2）在 alpine 里不存在 —— glibc
+    #       产物被 COPY 进 alpine 就是这个现象。
+    # 126 = 找到了但执行不了：不是可执行的二进制格式，或 shebang 指向的
+    #       解释器不存在（比如产物被截断 / 传成了脚本）。
+    # 两个都要判，只判 127 会漏掉后者。
+    if [ "$rc" -eq 127 ] || [ "$rc" -eq 126 ]; then echo "BROKEN:$b:$rc"; exit 0; fi
+done
+echo "OK"
+'''
+
+# 每种结论对应的解释与处理建议
+_PROBE_HELP = {
+    "MISSING": (
+        "镜像里找不到这个文件。最可能是 COPY 的源路径写错了 —— 尤其注意："
+        "Dockerfile 里若把 cargo 的 target 目录挂成了 BuildKit cache mount "
+        "（--mount=type=cache），它的内容不会进入镜像层，从挂载点 COPY 必然落空。",
+        "docker compose build --no-cache",
+    ),
+    "EMPTY": (
+        "文件是 0 字节，打包或传输环节损坏。",
+        "重新构建：docker compose build --no-cache",
+    ),
+    "NOEXEC": (
+        "文件存在但没有可执行位。典型成因：二进制经过 artifact 上传/下载 "
+        "（zip 打包）后丢失了 POSIX mode。Docker 解析容器 command 第一段走的是 "
+        "PATH 查找，而 PATH 查找要求可执行位，所以报的是 not found 而不是 "
+        "permission denied —— 这句话极具误导性。",
+        "在 Dockerfile 里 COPY 之后补 chmod 0755，然后 docker compose build --no-cache",
+    ),
+    # BROKEN 不在这里 —— 它的主句要按退出码（126 / 127）分别措辞，
+    # 写在 image_has_binaries 里的组装段。
+}
+
+
 def image_has_binaries(tag):
-    """检查镜像里是否真有可执行的 hbbs / hbbr。
+    """检查镜像里是否真有可执行的 hbbs / hbbr / rustdesk-utils。
+
+    返回 (ok, detail)：ok=False 时 detail 是可直接打印的原因与处理建议。
 
     为什么要在启动前专门查一次：
-      容器起不来的报错是 runc 层的
-          exec: "hbbr": executable file not found in $PATH
-      它的位置回指的是容器 init 进程，行列上根本指不到"镜像里少了个文件"这回事，
-      排查成本极高。这里提前把结论说清楚。
-
-    注意这里刻意【实际执行】而不是 test -x：
-      动态链接器缺失时可执行位照样在，但 execve 会返回 ENOENT，
-      只有真跑一次才暴露得出来（退出码 127）。
+      容器起不来的报错来自 runc 层
+          error during container init: exec: "hbbr": executable file not found in $PATH
+      它回指的是容器 init 进程，行列上完全指不到"镜像里少了个文件"这回事，
+      而且三种成因共用这一句话，排查方向南辕北辙。
     """
-    rc, _, _ = run([
-        "docker", "run", "--rm", "--entrypoint", "sh", tag, "-c",
-        'for b in hbbs hbbr rustdesk-utils; do '
-        '  command -v "$b" >/dev/null 2>&1 || { echo "MISSING:$b"; exit 1; }; '
-        '  "$b" --help >/dev/null 2>&1; rc=$?; '
-        '  [ "$rc" -eq 127 ] && { echo "BROKEN:$b"; exit 1; }; '
-        'done'
+    rc, out, _ = run([
+        "docker", "run", "--rm", "--entrypoint", "sh", tag, "-c", _PROBE_BINS
     ])
-    return rc == 0
+
+    if rc != 0:
+        # 连 sh 都跑不起来，说明基础镜像或 entrypoint 被改过
+        return False, (
+            "无法在镜像里执行 sh —— 基础镜像可能不是 alpine，"
+            "或者镜像被设了自定义 ENTRYPOINT。\n"
+            "    用下面这条命令看看镜像里到底有什么：\n"
+            f"        docker run --rm --entrypoint sh {tag} -c 'ls -l /usr/bin'"
+        )
+
+    verdict = out.strip().splitlines()[-1] if out.strip() else ""
+
+    if verdict == "OK":
+        return True, ""
+
+    parts = verdict.split(":")
+    kind = parts[0]
+    name = parts[1] if len(parts) > 1 else ""
+    extra = parts[2] if len(parts) > 2 else ""
+
+    # 有可执行位但执行失败：126 与 127 指向完全不同的问题，分开说。
+    if kind == "BROKEN":
+        if extra == "127":
+            why = (
+                "execve 返回 ENOENT（退出码 127）：它不是静态二进制，依赖的"
+                "动态链接器在本镜像里不存在 —— 通常是把 glibc 编译的产物 "
+                "COPY 进了 alpine。"
+            )
+            how = "确认 build-musl.sh 的 TARGET 是 *-unknown-linux-musl，或改用带 glibc 的基础镜像"
+        else:
+            why = (
+                "退出码 126 = 找到了但执行不了：文件不是本平台的可执行格式，"
+                "或 shebang 指向的解释器不存在（产物被截断 / 架构不对 / 传错文件）。"
+            )
+            how = "用 file <产物> 看它的真实类型与目标架构"
+        return False, f"{name}：{why}\n    处理：{how}"
+
+    why, how = _PROBE_HELP.get(
+        kind,
+        ("镜像自检返回了未预期的结果：" + verdict, "检查 server/check-bins.sh 的实现"),
+    )
+    return False, f"{name}：{why}\n    处理：{how}"
+
+
+def build_image(image, nocache=False):
+    """用本仓库源码构建镜像，并在构建后做一次可执行性自检。
+
+    为什么要自检：docker build 退出码为 0 完全不代表镜像能用 ——
+    产物可能压根没进镜像层（cache mount），也可能丢了可执行位（artifact 传输）。
+    这两种情况都要拖到 `docker compose up` 才炸，且报错指向容器 init，极难定位。
+    """
+    step(f"从源码构建镜像 {image} ...")
+    info("首次构建较慢：容器内要编译 musl 静态二进制（约 15-25 分钟）")
+    cmd = COMPOSE + ["build"] + (["--no-cache"] if nocache else [])
+    rc, _, errout = run(cmd)
+    if rc != 0:
+        err(f"镜像构建失败:\n{errout}")
+        sys.exit(1)
+    info(f"镜像 {image} 构建完成")
+
+    ok, detail = image_has_binaries(image)
+    if not ok:
+        err(f"构建完成，但镜像 {image} 自检未通过：")
+        for line in detail.splitlines():
+            print("    " + line)
+        sys.exit(1)
+    info("镜像自检通过（hbbs / hbbr / rustdesk-utils 均可执行）")
 
 
 def cmd_build(args):
@@ -304,13 +447,19 @@ def cmd_build(args):
     check_env_legacy()
     check_ports(resolve_ports(), fatal=True)
     image = compose_image_name()
-    step(f"从源码构建镜像 {image} ...")
-    info("首次构建较慢：容器内要编译 musl 静态二进制（约 15-25 分钟）")
-    rc, out, errout = run(COMPOSE + ["build"])
-    if rc != 0:
-        err(f"镜像构建失败:\n{errout}")
-        sys.exit(1)
-    info(f"镜像 {image} 构建完成")
+
+    # 若 .env 的 RD_IMAGE 指向了远端镜像，本地源码构建根本不会被执行 ——
+    # 那样跑的就不是自己编的二进制，也不会带我们关掉的版本检查补丁。
+    # 这里提前说清楚，避免"改了源码发现没生效"。
+    if is_remote_image():
+        warn(f".env 里 RD_IMAGE={image} 指向远端镜像 —— 下面的构建只作用于该 tag 的本地副本，")
+        warn("真正生效的仍然是你指定的远端镜像。若要完全本地化，请注释掉 RD_IMAGE。")
+
+    # args 就是 sys.argv[2:]（字符串列表），没有 argparse 的命名空间，
+    # 所以只能在这里认标志位 —— 别用 getattr(args, "no_cache")，列表上取不到，
+    # 会静默永远为 False。
+    nocache = "--no-cache" in args or "--nocache" in args
+    build_image(image, nocache=nocache)
 
 
 def cmd_start(args):
@@ -328,33 +477,36 @@ def cmd_start(args):
     # 不直接 `compose up --build` 是为了避免每次重启都触发一次重新编译。
     image = compose_image_name()
     if not image_exists(image):
+        # 不直接 `compose up --build` 是为了避免每次重启都触发一次重新编译
         step(f"本地没有镜像 {image}，先用本仓库源码构建（首次约 15-25 分钟）...")
-        rc, out, errout = run(COMPOSE + ["build"])
-        if rc != 0:
-            err(f"镜像构建失败:\n{errout}")
-            print("    也可以先手动构建看完整日志: build\\build-server-image.bat")
-            sys.exit(1)
-        info("镜像构建完成")
-    elif not image_has_binaries(image):
-        # 镜像在，但里面没有可执行的 hbbs / hbbr。
-        # 最常见的原因：Dockerfile 的编译阶段把 cargo 的 target 目录挂成了
-        # BuildKit cache mount（--mount=type=cache），而 cache mount 的内容
-        # 不会进入镜像层，于是下一阶段 COPY --from 拿不到文件。
-        err(f"镜像 {image} 里没有可执行的 hbbs / hbbr。")
-        print("    这个镜像是坏的，跑起来必定报：")
-        print("        exec: \"hbbr\": executable file not found in $PATH")
-        print()
-        print("    常见成因：Dockerfile 编译阶段把产物目录挂成了 BuildKit")
-        print("    cache mount（--mount=type=cache,target=.../target）——")
-        print("    cache mount 的内容只跨构建复用、不进镜像层。")
-        print()
-        print("    处理：")
-        print("        docker compose build --no-cache")
-        print("        python rdctl.py start")
-        print()
-        print("    若 .env 的 RD_IMAGE 指向远端镜像，则本地构建不会被执行，")
-        print("    需要让 CI 重新推送该镜像后 docker compose pull。")
-        sys.exit(1)
+        build_image(image)
+    else:
+        ok, detail = image_has_binaries(image)
+        if not ok:
+            # 镜像在，但里面没有可用的 hbbs / hbbr —— 这个镜像是坏的。
+            # 上面已经把三种成因逐条判定好了，这里先转述再决定怎么办。
+            err(f"镜像 {image} 里没有可执行的 hbbs / hbbr，这个镜像是坏的。")
+            print("    直接 up 必定报：")
+            print('        exec: "hbbr": executable file not found in $PATH')
+            print()
+            for line in detail.splitlines():
+                print("    " + line)
+            print()
+            if is_remote_image():
+                # 远端镜像：本地源码构建帮不上忙，只能重新拉
+                print("    RD_IMAGE 指向远端镜像，本地构建不会被执行。请：")
+                print("        docker compose pull")
+                print("        docker compose up -d")
+                print()
+                print("    或注释掉 .env 里的 RD_IMAGE，改用本地自编译镜像")
+                print("    （那样跑的才是本仓库源码，也才带我们的版本检查补丁）。")
+                sys.exit(1)
+            # 本地镜像坏了 —— 直接重建。
+            # 这是最容易反复踩的坑：docker compose up（不带 --build）发现有
+            # 同 tag 镜像就静默复用，改了 Dockerfile 也不会重新构建。
+            warn("本地镜像缺少可执行的服务端二进制，即将用本仓库源码重建。")
+            info("重建约 15-25 分钟，且会跳过缓存以确保产物真的重新编译。")
+            build_image(image, nocache=True)
 
     step("启动容器 ...")
     rc, out, errout = run(COMPOSE + ["up", "-d"])
@@ -478,6 +630,10 @@ def cmd_uninstall(args):
 def usage():
     print(__doc__)
     print("可用命令: build / start / stop / restart / status / ports / key / logs / backup / uninstall")
+    print("  build [--no-cache]  从本仓库源码构建服务端镜像（跳过缓存用 --no-cache）")
+    print()
+    print("提示：改过源码或 Dockerfile 后必须重新 build ——")
+    print("      docker compose up（不带 --build）发现有同 tag 镜像会静默复用，不会重建。")
 
 
 def main():

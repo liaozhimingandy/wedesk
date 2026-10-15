@@ -74,24 +74,16 @@ COPY --from=builder /out/hbbs           /usr/bin/hbbs
 COPY --from=builder /out/hbbr           /usr/bin/hbbr
 COPY --from=builder /out/rustdesk-utils /usr/bin/rustdesk-utils
 
+COPY check-bins.sh /check-bins.sh
+
 # --- 构建期自检 ----------------------------------------------------------
-# 三个二进制必须真能执行。刻意【实际跑一次】而不是 test -x：
-# 动态链接器缺失时可执行位照样在，但 execve 返回 ENOENT，
-# 只在容器启动时才暴露成一句
+# 三个二进制必须真能执行。逻辑在 check-bins.sh，与 Dockerfile.prebuilt 共用。
+# 刻意【实际跑一次】而不是 test -x：动态链接器缺失时可执行位照样在，
+# 但 execve 返回 ENOENT，只在容器启动时才暴露成一句
 #     exec: "hbbr": executable file not found in $PATH
 # 报错位置回指容器 init，从行列上完全看不出是镜像里缺东西。
-# 退出码 127 就是这种 ENOENT，让它在构建阶段就炸，并打印链接方式。
-RUN for b in hbbs hbbr rustdesk-utils; do \
-        p="$(command -v "$b" 2>/dev/null)" || \
-            { echo "✗ 镜像里没有 $b（不在 PATH 上）" >&2; exit 1; }; \
-        "$b" --help >/dev/null 2>&1; rc=$?; \
-        if [ "$rc" -eq 127 ]; then \
-            echo "✗ $b 无法执行（ENOENT）——它不是静态二进制，" >&2; \
-            echo "  依赖的动态链接器在运行镜像里不存在：$(ldd "$p" 2>&1 | head -3)" >&2; \
-            exit 1; \
-        fi; \
-        echo "✓ $b 可执行（$p）"; \
-    done
+# 退出码 127 就是这种 ENOENT，让它在构建阶段就炸。
+RUN sh /check-bins.sh
 
 # 密钥（id_ed25519 / id_ed25519.pub）与 SQLite 数据库的工作目录。
 # hbbs 默认把文件写在 $HOME 下，容器内 HOME 是 /root —— 与 docker-compose.yml

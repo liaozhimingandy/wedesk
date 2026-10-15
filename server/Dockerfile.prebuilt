@@ -19,9 +19,68 @@ FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates tzdata
 
+# 刻意【不】从 context 里 COPY 任何辅助脚本：本文件的 context 是 CI 里临时的
+# 产物目录（dist-server/），多一个文件依赖就多一处"COPY 拿不到"的可能。
+# 检查逻辑随文件自带，与 server/Dockerfile 共用的 check-bins.sh 保持一致。
 COPY hbbs           /usr/bin/hbbs
 COPY hbbr           /usr/bin/hbbr
 COPY rustdesk-utils /usr/bin/rustdesk-utils
+
+# ---------------------------------------------------------------------------
+# 显式补可执行位 —— 这一行不是多余的保险，是必需项
+# ---------------------------------------------------------------------------
+# CI 里这三个二进制是 build-server job 打包后走 artifact 传过来的：
+#   upload-artifact@v4 → download-artifact@v4
+# v4 的实现是 zip 打包，【不保留 POSIX 可执行位】。产物在打包前是 0755，
+# 下载回来就退化成 0644。COPY 会原样把这个 mode 带进镜像，于是
+# /usr/bin/hbbr 存在、但不是"可执行文件"。
+#
+# 后果非常隐蔽：Docker 解析容器 command 的第一段（hbbr）走的是 PATH 查找，
+# 而 PATH 查找【要求可执行位】。所以缺失时它报的不是 permission denied，而是
+#
+#     error during container init: exec: "hbbr": executable file not found in $PATH
+#
+# 一句话把"文件在、只是没 +x"说成了"找不到文件"，把人引向"Dockerfile 没 COPY"
+# 的错误方向。而且它只在 `docker compose up` 时炸，构建期风平浪静。
+#
+# 所以这里无条件 chmod 0755，不管上游传过来是什么 mode。
+# ---------------------------------------------------------------------------
+RUN chmod 0755 /usr/bin/hbbs /usr/bin/hbbr /usr/bin/rustdesk-utils
+
+# 构建期自检：三个二进制必须【真的能跑】，且保持与 check-bins.sh 一致的判定。
+# 分三种情况报，因为成因完全不同：
+#   a) PATH 上找不到      —— 产物没进镜像（COPY 源路径写错）
+#   b) 在但没有可执行位    —— artifact 上传/下载丢了 mode（上面已补 chmod）
+#   c) 有 +x 但执行失败：
+#        127 = ENOENT    —— 不是静态二进制，动态链接器在本镜像里不存在
+#                           （glibc 产物被 COPY 进了 alpine）
+#        126 = 无法执行    —— 文件格式不对，或 shebang 指向的解释器不存在
+# 执行解析出的绝对路径 $p 而不是裸名字：保证"检查的"和"执行的"是同一个文件。
+# 写成 `cmd && rc=0 || rc=$?`，否则 set -e 会让这一行直接退出、拿不到 rc。
+RUN set -e; \
+    for b in hbbs hbbr rustdesk-utils; do \
+        p="$(command -v "$b" 2>/dev/null || true)"; \
+        if [ -z "$p" ]; then \
+            if [ -e "/usr/bin/$b" ]; then \
+                echo "✗ /usr/bin/$b 存在但没有可执行位（丢了 POSIX mode）" >&2; \
+            else \
+                echo "✗ 镜像里没有 $b（不在 PATH 上，PATH=$PATH）" >&2; \
+            fi; \
+            ls -l /usr/bin 2>/dev/null | head -20 >&2; \
+            exit 1; \
+        fi; \
+        "$p" --help >/dev/null 2>&1 && rc=0 || rc=$?; \
+        if [ "$rc" -eq 127 ] || [ "$rc" -eq 126 ]; then \
+            echo "✗ $b 无法执行（exit $rc）" >&2; \
+            if [ "$rc" -eq 127 ]; then \
+                echo "  127 = ENOENT：不是静态二进制，动态链接器缺失" >&2; \
+            else \
+                echo "  126 = 无法执行：文件格式不对或 shebang 解释器不存在" >&2; \
+            fi; \
+            exit 1; \
+        fi; \
+        echo "✓ $b 可执行（$p）"; \
+    done
 
 # 密钥（id_ed25519 / id_ed25519.pub）与 SQLite 数据库的工作目录。
 # hbbs 默认把文件写在 $HOME 下，容器内 HOME 是 /root ——

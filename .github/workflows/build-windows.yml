@@ -876,6 +876,39 @@ jobs:
           name: wedesk-server-linux-x64
           path: dist-server
 
+      # -------------------------------------------------------------------
+      # 下载回来的产物必须重新补可执行位 —— 这一步是必需的，不是保险
+      # -------------------------------------------------------------------
+      # upload-artifact@v4 / download-artifact@v4 走 zip 打包，【不保留 POSIX
+      # 可执行位】。产物在 build-server job 里明明是 0755，传到这个 job 就退化成
+      # 0644；COPY 会把这个 mode 原样带进镜像。
+      #
+      # 于是容器启动时报：
+      #     exec: "hbbr": executable file not found in $PATH
+      # 注意它报的是 "not found" 而不是 "permission denied" —— 因为 Docker
+      # 解析 command 第一段走 PATH 查找，而 PATH 查找要求可执行位。这句话把
+      # "文件在、只是没 +x" 说成了 "找不到文件"，极易把人引向 "COPY 写错了"
+      # 的错误方向。且构建期全程无报错，只在 up 时才炸。
+      #
+      # Dockerfile.prebuilt 里也补了一次 chmod（双保险），这里额外把 mode
+      # 打印出来，日后一眼能确认产物状态。
+      # -------------------------------------------------------------------
+      - name: 修复产物可执行位并校验
+        run: |
+          set -e
+          cd dist-server
+          echo "=== 下载回来的产物 ==="
+          ls -l
+          chmod 0755 hbbs hbbr rustdesk-utils
+          echo "=== chmod 之后 ==="
+          ls -l hbbs hbbr rustdesk-utils
+          for b in hbbs hbbr rustdesk-utils; do
+            [ -f "$b" ] || { echo "::error::缺少产物 $b"; exit 1; }
+            [ -s "$b" ] || { echo "::error::$b 是空文件（0 字节）"; exit 1; }
+            [ -x "$b" ] || { echo "::error::$b 仍不可执行"; exit 1; }
+          done
+          echo "✓ 三个产物均存在、非空且可执行"
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub

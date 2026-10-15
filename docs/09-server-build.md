@@ -363,8 +363,11 @@ process: error during container init: exec: "hbbr": executable file not found in
 docker run --rm --entrypoint sh <镜像名> -c "command -v hbbs; command -v hbbr"
 ```
 
-两条都空 → 镜像里确实没有这两个二进制，往下看成因；都有路径 → 是别的问题
+两条都空 → 镜像里确实没有这两个二进制，往下看成因 A / B；都有路径 → 是别的问题
 （多半是动态链接器缺失，见第 6.1 节的"静态性自检"）。
+
+更省事的办法是直接跑 `python server/rdctl.py start` —— 它会在启动前自动检查
+镜像里有没有可执行的 hbbs / hbbr，并区分下面三种成因给出对应的处理命令。
 
 **成因 A：Dockerfile 把 cargo 的产物目录挂成了 BuildKit cache mount**
 
@@ -399,6 +402,43 @@ cache mount 只留给真正的缓存目录（这里是 `/usr/local/cargo/registr
 
 ```bash
 docker compose config | grep -i image
+```
+
+**成因 C：artifact 上传/下载把可执行位弄丢了**（本仓库实际踩到的那个）
+
+CI 的镜像链路是：
+
+```
+build-server job                 server-image job
+  cargo build  → out-server/  ──▶  upload-artifact@v4
+  cp hbbs hbbr rustdesk-utils      → zip 打包 → download-artifact@v4
+                                   → docker build -f Dockerfile.prebuilt
+```
+
+产物在 `build-server` 里明明是 `0755`，但 `actions/upload-artifact@v4` 与
+`download-artifact@v4` 走 **zip 打包，不保留 POSIX 可执行位**，下载回来就退化成
+`0644`。而 `COPY` 会把这个 mode **原样带进镜像** —— 于是 `/usr/bin/hbbr` 文件在、
+大小也正常，但**不是可执行文件**。
+
+这一步极其隐蔽，因为报错措辞是反的：Docker 解析容器 `command` 第一段走的是
+**PATH 查找**，而 PATH 查找**要求可执行位**。所以缺执行位时报的不是
+`permission denied`，而是一句
+
+```
+exec: "hbbr": executable file not found in $PATH
+```
+
+把"文件在、只是没 +x"说成了"找不到文件"，把人直接引向"Dockerfile 没 COPY 成功"
+的错误方向。而且**构建期全程无报错**，只在 `up` 时才炸。
+
+修法就一行，在 `COPY` 之后无条件补回来（不管上游传过来是什么 mode）：
+
+```dockerfile
+COPY hbbs           /usr/bin/hbbs
+COPY hbbr           /usr/bin/hbbr
+COPY rustdesk-utils /usr/bin/rustdesk-utils
+
+RUN chmod 0755 /usr/bin/hbbs /usr/bin/hbbr /usr/bin/rustdesk-utils
 ```
 
 **怎么处理**

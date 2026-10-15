@@ -31,13 +31,13 @@ on:
   workflow_dispatch:
     inputs:
       hwcodec:
-        description: "启用硬件编解码（NVENC/QSV/AMF）。需 vcpkg 从源码编译 FFmpeg，首次会显著变慢"
+        description: "启用硬件编解码（NVENC/QSV/AMF）。关闭可省 40+ 分钟构建时间，但被控端只能软件编码，CPU 占用显著变高"
         type: boolean
-        default: false
+        default: true
       build_args:
-        description: "传给 build.py 的额外参数，例如 --vram（显存编码，仅 x86/x64）"
+        description: "传给 build.py 的额外参数，例如 --vram（显存编码，进一步降低延迟与 CPU）"
         required: false
-        default: ""
+        default: "--vram"
       company_name:
         description: "公司/组织名，留空则沿用 build/custom.toml 里的值"
         required: false

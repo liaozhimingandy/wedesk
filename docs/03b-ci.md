@@ -64,8 +64,8 @@ git push
 |---|---|
 | `company_name` | 覆盖 `build/custom.toml` 的 `brand.company_name` |
 | `website` | 覆盖 `brand.website` |
-| `hwcodec` | **硬件编解码开关，默认关闭**（见下方说明） |
-| `build_args` | 传给 `build.py` 的额外参数，例如 `--vram`（显存编码，仅 x86/x64） |
+| `hwcodec` | **硬件编解码开关，默认开启**（见下方说明） |
+| `build_args` | 传给 `build.py` 的额外参数，默认 `--vram`（显存编码，进一步降低延迟与 CPU） |
 | `skip_customize` | 跳过品牌注入（抓 CI 本身的问题时用） |
 | `build_msi` | 额外产出 MSI 安装包 |
 
@@ -74,20 +74,24 @@ git push
 ### 关于 hwcodec 开关
 
 `--hwcodec` 启用 NVENC / Intel QSV / AMD AMF 硬件编解码，能显著降低远程桌面的 CPU 占用。
-但它要求 **vcpkg 从源码编译 FFmpeg 7.1.1**（含 nasm、AMF、nvcodec、qsv 一堆补丁），
+但它要求 **vcpkg 从源码编译 FFmpeg**（含 nasm、AMF、nvcodec、qsv 一堆补丁），
 在 GitHub Runner 上动辄 40 分钟以上，**首次无缓存时是整个流水线最慢的一步**。
 
-所以默认关掉：
+默认开，理由是构建慢一次性、运行省 CPU 是永久的：
 
-| | 默认（关） | 勾选 `hwcodec` |
+| | 默认（开） | 取消勾选 `hwcodec` |
 |---|---|---|
-| FFmpeg | 跳过 | vcpkg 源码编译 |
-| 构建耗时 | 较快 | +40~90 分钟（首次） |
-| 编解码 | 软件 VP9 / AV1，**完全可用** | 额外支持显卡硬编 |
-| 适用场景 | 先跑通、快速迭代 | 正式分发、追求流畅度 |
+| FFmpeg | vcpkg 源码编译 | 跳过 |
+| 构建耗时 | +40~90 分钟（首次） | 较快 |
+| 编解码 | 显卡硬编 + 软件兜底 | 软件 VP9 / AV1，**完全可用** |
+| 运行 CPU | 个位数百分比 | 数十个百分点 |
+| 适用场景 | 正式分发、追求流畅度 | 只想快速验证链路能否跑通 |
 
-内网团队场景建议：**先按默认跑通，确认链路没问题后再勾一次 hwcodec 出正式版**。
 第二次之后 vcpkg 的 `x-gha` 二进制缓存会生效，耗时大幅下降。
+
+> 想临时验证"CI 本身通不通"而不想等 FFmpeg，取消勾选 `hwcodec` 即可。
+> 长时间迭代调试时可以这样省机时，出正式版时记得勾回来。
+> 各参数的完整取舍见 [08 性能调优](./08-performance.md)。
 
 ---
 

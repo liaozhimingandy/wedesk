@@ -75,6 +75,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 │   ├── 05-customize.md          定制：换品牌、改服务器、裁剪功能
 │   ├── 06-maintenance.md        维护：新增功能 SOP、升级上游
 │   ├── 07-faq.md                故障排查
+│   ├── 08-performance.md        性能：硬件编解码、画质取舍、资源占用
 │   ├── upstream/                上游自带文档（README、AGENTS.md 等）
 │   └── upstream-i18n/           上游 60 份多语言文档（留档，与本项目无关）
 │
@@ -126,6 +127,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 | **换 Logo、改服务器、砍功能** | [05 定制指南](docs/05-customize.md) |
 | **加一个新功能** | [06 维护手册](docs/06-maintenance.md) |
 | **出问题了** | [07 故障排查](docs/07-faq.md) |
+| **让它跑得更快更省** | [08 性能调优](docs/08-performance.md) |
 | **升级上游版本** | [`upstream/UPSTREAM.md`](upstream/UPSTREAM.md) |
 
 索引入口：[`docs/README.md`](docs/README.md)

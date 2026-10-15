@@ -91,8 +91,25 @@ build-local.bat
 |---|---|---|
 | `FLUTTER_ROOT` | `c:\flutter` | Flutter SDK |
 | `VCPKG_ROOT` | `d:\vcpkg` | 放 D 盘，build tree 数 GB，C 盘会吃紧 |
+| `NO_HWCODEC` | 未设置 | 设为 `1` 跳过 FFmpeg 编译，只编软件编解码器 |
 
 所有路径都从脚本自身位置推导，仓库放哪个盘都能跑，脚本里没有硬编码盘符。
+
+### 关于硬件编解码
+
+`install-vcpkg-deps.bat` 和 `build-local.bat` **默认都带硬件编解码**，
+代价是 FFmpeg 要从源码编译（60–150 分钟，一次性；之后命中缓存会快很多）。
+换来的是运行时 CPU 从数十个百分点降到个位数——**这是性能上最大的一笔买卖**。
+
+只想快速验证链路能否跑通时：
+
+```bat
+set NO_HWCODEC=1
+install-vcpkg-deps.bat
+build-local.bat
+```
+
+出正式版时不要设这个变量。完整取舍见 [08 性能调优](./08-performance.md)。
 
 ---
 

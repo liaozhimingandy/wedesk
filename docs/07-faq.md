@@ -121,10 +121,13 @@ ls "$VCPKG_ROOT/installed/x64-windows-static/include/libavcodec/avcodec.h"
 
 | 想要 | 做法 |
 |---|---|
-| **先跑通**（推荐） | 去掉 `--hwcodec`。hwcodec 是 `optional = true` 依赖，不开就不编译。软件编解码 VP9/AV1 完全可用 |
-| **要硬件编解码** | 装 FFmpeg：`VCPKG_DEFAULT_HOST_TRIPLET=x64-windows-static vcpkg install --triplet x64-windows-static`。首次源码编译 40 分钟起 |
+| **要硬件编解码**（默认） | 重跑 `install-vcpkg-deps.bat`——它现在是 manifest 模式，会自动带 FFmpeg 与 mfx-dispatch。首次源码编译 60–150 分钟 |
+| **先跑通** | `set NO_HWCODEC=1` 再跑。hwcodec 是 `optional = true` 依赖，不开就不编译，软件编解码 VP9/AV1 完全可用 |
 
-CI 上对应的是 `Run workflow` 时的 **hwcodec 勾选框**，默认关闭。
+CI 上对应的是 `Run workflow` 时的 **hwcodec 勾选框**，默认**开启**。
+
+> 如果是自己手写 `vcpkg install libvpx libyuv opus aom` 装的依赖，就会踩到这个坑
+> —— 手写清单会漏掉 FFmpeg。`install-vcpkg-deps.bat` 已改为读 `vcpkg.json`，别再手写。
 
 > 顺带说一句：`localtime` / `sprintf` 的 C4996 弃用警告、
 > 以及 `res/vcpkg/libyuv` 那条"用 MSVC 编译 libyuv 会很慢"的提示，

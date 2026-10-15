@@ -11,6 +11,13 @@
 .gitignore      text eol=lf
 .gitattributes  text eol=lf
 
+# docker compose 读 .env 时不会吃掉行尾的 \r，值会变成 "192.168.1.50\r"，
+# 表现为 RELAY_HOST 看起来填对了却连不上。这类文件必须钉死为 LF。
+.env            text eol=lf
+.env.example    text eol=lf
+*.env           text eol=lf
+*.sh            text eol=lf
+
 # Windows 批处理对换行敏感，CMD 在部分语法下无法正确处理纯 LF
 *.bat           text eol=crlf
 *.cmd           text eol=crlf

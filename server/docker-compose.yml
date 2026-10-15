@@ -24,7 +24,9 @@ services:
       - ENFORCED_RELAY=${ENFORCED_RELAY:-N}
       # 数据库保留天数：连接 / 审计日志留存周期，团队排障与合规审计的关键参数
       - DB_URL=${DB_URL:-/root/db_v2.sqlite3}
-      - RUST_LOG=${RUST_LOG:-info}
+      # 默认 warn 而非 info：hbbs 在 info 级别下每注册/心跳都落一行日志，
+      # 长期运行的磁盘写入与格式化开销是可观测的，而排障时临时调高即可。
+      - RUST_LOG=${RUST_LOG:-warn}
     volumes:
       # 密钥(id_ed25519 / id_ed25519.pub)与 SQLite 数据库落在此目录，务必定期备份
       - ./data:/root
@@ -38,6 +40,18 @@ services:
     restart: unless-stopped
     networks:
       - rd-net
+    # --- 资源上限 ---------------------------------------------------------
+    # hbbs 只做 ID 注册、心跳与打洞协调，不转发画面数据，实测常驻 10-40 MB。
+    # 给 256 MB 是留足余量又能在异常时快速触发重启，而不是把宿主机拖垮。
+    # 团队规模上千可适当调高；它不是性能瓶颈，别一上来就给 1 GB。
+    mem_limit: ${HBBS_MEM:-256m}
+    cpus: ${HBBS_CPUS:-0.50}
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILE:-3}"
 
   # ---------------------------------------------------------------------------
   # hbbr : 中继服务器。P2P 打洞失败时兜底转发画面数据
@@ -47,7 +61,7 @@ services:
     container_name: rd-hbbr
     command: hbbr
     environment:
-      - RUST_LOG=${RUST_LOG:-info}
+      - RUST_LOG=${RUST_LOG:-warn}
     volumes:
       - ./data:/root
     ports:
@@ -55,6 +69,18 @@ services:
     restart: unless-stopped
     networks:
       - rd-net
+    # --- 资源上限 ---------------------------------------------------------
+    # hbbr 转发画面数据，内存占用随并发会话数线性增长（每路约几 MB 缓冲）。
+    # 512 MB 足够支撑数十路并发中继；内存不是它的瓶颈，带宽才是
+    # —— 若 ALWAYS_USE_RELAY=Y，请优先盯出网带宽而不是这里的数字。
+    mem_limit: ${HBBR_MEM:-512m}
+    cpus: ${HBBR_CPUS:-1.00}
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILE:-3}"
       # -----------------------------------------------------------------------
       # Web 客户端端口 21118 / 21119 默认【不开启】。
       # 官方安全公告：开启后 hbbs/hbbr 会无条件信任 WebSocket 请求的

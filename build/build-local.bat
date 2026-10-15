@@ -62,6 +62,23 @@ if not exist "%VCPKG_ROOT%\installed\x64-windows-static" (
     exit /b 1
 )
 
+REM --- ffmpeg / hardware codec -------------------------------------------
+REM --hwcodec makes the build use NVENC / QSV / AMF instead of software VP9.
+REM It needs the ffmpeg headers that install-vcpkg-deps.bat produces.
+REM Check here rather than letting cargo fail 20 minutes in with a wall of
+REM C1083 "Cannot open include file: 'libavcodec/avcodec.h'".
+REM Set NO_HWCODEC=1 to build software-only (faster, higher CPU when running).
+if "%NO_HWCODEC%"=="1" goto :ffmpeg_checked
+if exist "%VCPKG_ROOT%\installed\x64-windows-static\include\libavcodec\avcodec.h" goto :ffmpeg_checked
+echo.
+echo ERROR: ffmpeg headers not found in
+echo     %VCPKG_ROOT%\installed\x64-windows-static\include
+echo A --hwcodec build will fail with C1083 on libavcodec/avcodec.h.
+echo Fix:  run install-vcpkg-deps.bat   ^(without NO_HWCODEC set^)
+echo   or: set NO_HWCODEC=1 to build with software codecs only.
+exit /b 1
+:ffmpeg_checked
+
 REM --- flutter-rust-bridge 胶水代码 ---------------------------------------
 REM src/bridge_generated.rs / flutter/lib/generated_bridge.dart 是代码生成器
 REM 产物，被 .gitignore 排除，仓库里没有。缺了它们 cargo 会直接报
@@ -93,7 +110,10 @@ echo  First build compiles every dependency from scratch.
 echo ============================================================
 echo.
 
-python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+set BUILD_EXTRA=--hwcodec --vram
+if "%NO_HWCODEC%"=="1" set BUILD_EXTRA=--vram
+echo Codec args: %BUILD_EXTRA%
+python .\build.py --portable --flutter --skip-portable-pack %BUILD_EXTRA%
 
 if errorlevel 1 (
     echo.

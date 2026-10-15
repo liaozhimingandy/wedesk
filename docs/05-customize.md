@@ -13,7 +13,7 @@
 
 | 层次 | 手段 | 改在哪 | 升级上游时 |
 |---|---|---|---|
-| ① 配置注入 | 改 `build/custom.toml` 再跑 `customize.py` | 8 个文件的字符串 | ✅ 重跑脚本即可 |
+| ① 配置注入 | 改 `build/custom.toml` 再跑 `customize.py` | 13 个文件的字符串 | ✅ 重跑脚本即可 |
 | ② 资源替换 | 直接换文件 | 图标、安装包素材 | ✅ 不受影响（除非上游也改了同名文件） |
 | ③ 源码直改 | 手写 Rust/Dart 逻辑 | 任意文件 | ⚠️ **必须手工重做**，且要重建补丁 |
 
@@ -30,18 +30,32 @@
 
 ```toml
 [server]
-rendezvous_host = "192.168.2.114"                                 # hbbs 地址
+rendezvous_host = "wedesk.alsoapp.com"                          # hbbs 域名或 IP
+                                                                # 不带端口 → 客户端用 21116
 key             = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0="  # RS_PUB_KEY
-relay_host      = "192.168.2.114:21117"                           # hbbr 地址:端口
+relay_host      = "wedesk.alsoapp.com:21117"                    # hbbr 域名/IP:端口
+                                                                # 端口不是默认 → 必须写全
 
 [brand]
-app_name     = "企业网管助手"
+app_name     = "企业网管助手"           # 给用户看的产品名，可中文
+product_name = "WeDesk"                # ASCII 名：MSI 文案/服务显示名/桌面入口用
 exe_name     = "nethelper"
-company_name = "贵公司名称"           # ⚠️ 占位值，务必替换
-website      = "https://example.com"  # ⚠️ 占位值，务必替换
+company_name = "贵公司名称"             # ⚠️ 占位值，务必替换
+website      = "https://wedesk.alsoapp.com"
 ```
 
+> **`rendezvous_host` 不带端口时，客户端默认用 21116；`relay_host` 必须写端口**，
+> 因为 hbbr 用的是另一个端口（默认 21117），不带端口会被当成 21116 → 中继永远连不上。
+> 服务端改了端口时这里必须跟着改，并**重新编译客户端**。端口推导规则见
+> [10 端口与网络规划](10-ports.md)。
+
+**`app_name` 与 `product_name` 为什么要分开**：前者会写进标题栏、安装目录名、
+用户配置目录（中文完全没问题）；后者只用于**必须是 ASCII / 文件名安全**的场合 ——
+WiX 字符串资源、Windows 服务显示名、Linux 桌面入口。中文进 WiX 字符串表容易踩坑，
+所以拆成两项。
+
 **`key` 从哪来**：服务端 `python rdctl.py key` 的输出。两边必须一致，否则客户端拒绝连接。
+注意它绑定的是**hbbs 那台机器**，不是域名 —— 换机器或重建 `server/data/` 都要重新取。
 
 ### 2.2 注入命令
 
@@ -147,7 +161,7 @@ fn get_api_server_(...) -> String {
 
 ## 四、品牌锚点清单
 
-`customize.py` 覆盖这 8 个文件：
+`customize.py` 覆盖这 13 个文件（完整清单见 [`../upstream/UPSTREAM.md`](../upstream/UPSTREAM.md)）：
 
 | 文件 | 改了什么 |
 |---|---|
@@ -159,6 +173,13 @@ fn get_api_server_(...) -> String {
 | `flutter/lib/common.dart` | "Powered by" 链接指向自家官网 |
 | `flutter/lib/desktop/pages/install_page.dart` | 安装页隐私政策链接 |
 | `flutter/lib/desktop/pages/desktop_setting_page.dart` | "关于"页：官网、隐私政策、版权行 |
+| `src/client.rs` | Linux 侧 X11 / Wayland 登录屏错误提示里的官方文档链接 |
+| `res/msi/Package/Language/Package.en-us.wxl` | MSI 文案：开始菜单项、服务显示名、卸载项 |
+| `res/msi/preprocess.py` | MSI 的 ARP 技术支持/帮助链接 |
+| `res/rustdesk.desktop` / `res/rustdesk-link.desktop` | Linux 桌面入口程序名 |
+
+必须是 ASCII 的场合（MSI 字符串表、Windows 服务显示名、Linux 桌面入口）走 `product_name`，
+其余走 `app_name`（可中文），详见 `custom.toml` 里的注释。
 
 > 公司名原文是 **`Purslane Tech Pte. Ltd.`**。网上流传的旧教程常写作 "Purslane Ltd"，
 > 那是过期信息，按旧值匹配会失败。
@@ -212,7 +233,7 @@ grep -nE 'APP_NAME|RENDEZVOUS_SERVERS|RS_PUB_KEY' libs/hbb_common/src/config.rs
 # 3. 确认没有残留官方兜底
 grep -rn "admin.rustdesk.com" src/ | grep -v "^src/bridge_generated"
 
-# 4. 补丁仍可重放（改了那 8 个文件后必做）
+# 4. 补丁仍可重放（改了这 13 个文件后必做）
 python upstream/verify_patch.py --regen
 python upstream/verify_patch.py
 ```

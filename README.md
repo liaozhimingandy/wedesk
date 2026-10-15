@@ -133,6 +133,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 | **拿到一个 exe** | [03b GitHub Actions 云构建](docs/03b-ci.md)（推荐）或 [03 本地构建](docs/03-build.md) |
 | **发一个正式版本** | `build\tag-release.bat` —— 打标签即自动构建并发布 Release（见 [03b](docs/03b-ci.md)）<br>一次产出：客户端便携版 / MSI + **服务端 hbbs/hbbr** + GHCR 镜像 |
 | **上线给用户用** | [04 部署指南](docs/04-deploy.md) |
+| **端口怎么规划 / 上公网怎么配防火墙** | [10 端口与网络规划](docs/10-ports.md)<br>对外只要 3 个：TCP 21115/21116 + UDP 21116 + TCP 21117 |
 | **不想用官方服务端镜像，要自己编译 hbbs/hbbr** | [09 服务端自编译](docs/09-server-build.md) |
 | **换 Logo、改服务器、砍功能** | [05 定制指南](docs/05-customize.md) |
 | **加一个新功能** | [06 维护手册](docs/06-maintenance.md) |
@@ -145,7 +146,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 ### 改代码前必须知道的三条
 
 1. **改了 `src/flutter_ffi.rs` 必须重跑 `python build/generate-bridge.py`**
-2. **改了 `customize.py` 覆盖的 8 个文件，必须重跑 `python upstream/verify_patch.py --regen`**
+2. **改了 `customize.py` 覆盖的 13 个文件，必须重跑 `python upstream/verify_patch.py --regen`**
 3. **带逻辑判断的源码改动要登记到 `upstream/UPSTREAM.md`**（升级时脚本不会帮你重建）
 
 ---
@@ -394,7 +395,7 @@ python <repo>\build\customize.py --restore
 | 定制规则命中 | **18 / 18**，0 失败 |
 | 幂等性（连跑两次） | 第二次 0 修改、0 未命中 |
 | 改配置后迁移旧值 | ✅ 公司名 A→B→A 双向迁移正确 |
-| 补丁可重放性 | ✅ 干净上游 + `custom.patch` 逐字节重建 8 个文件 |
+| 补丁可重放性 | ✅ 干净上游 + `custom.patch` 逐字节重建 13 个文件 |
 | 图标资源入库 | ✅ 122 个 png/svg 已解除上游 `.gitignore` 的误伤 |
 | 子模块实体化 | ✅ hbb_common 已是普通目录，clone 无需 `--recursive` |
 | `docker-compose.yml` | 通过 `docker compose config` 校验，服务器已真实运行 |

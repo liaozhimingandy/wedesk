@@ -182,7 +182,7 @@ flowchart LR
     C["① 生成 bridge<br/>build/generate-bridge.py<br/>cargo-expand + frb codegen"] --> D
     D["src/bridge_generated.rs<br/>flutter/lib/generated_bridge.dart"] --> E
 
-    E["② 注入品牌<br/>build/customize.py<br/>按 custom.toml 改 8 个文件"] --> F
+    E["② 注入品牌<br/>build/customize.py<br/>按 custom.toml 改 13 个文件"] --> F
 
     F["③ 编译<br/>python build.py --portable --flutter"] --> G
     G["flutter/build/windows/x64/runner/Release/<br/>nethelper.exe + DLL + data/"]

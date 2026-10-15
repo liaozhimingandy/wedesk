@@ -146,17 +146,23 @@ if os.environ.get("NO_COLOR") is None:
 class Rule:
     """一条替换规则"""
 
-    def __init__(self, note, relpath, old, new, required=False, count=None):
+    def __init__(self, note, relpath, old, new, required=False, count=None, residual=None):
         self.note = note
         self.relpath = relpath
         self.old = old
         self.new = new
         self.required = required  # True 时不命中按失败处理
         self.count = count  # 期望替换次数
+        # residual：这条规则"要消灭的东西"。
+        # 正则规则第二次跑必然匹配不到（旧值已被换掉），但它不像精确规则那样能用
+        # `new in text` 判断"早已生效"，于是每次都假报未命中。
+        # 填了本字段后，n==0 时改查它还在不在：不在 → 按已命中处理；
+        # 还在却没匹配上 → 才是真正的没命中（比如源码格式变了）。
+        self.residual = residual
 
     @staticmethod
-    def regex(note, relpath, pattern, repl, required=False):
-        r = Rule(note, relpath, pattern, repl, required)
+    def regex(note, relpath, pattern, repl, required=False, residual=None):
+        r = Rule(note, relpath, pattern, repl, required, residual=residual)
         r.is_regex = True
         return r
 
@@ -171,6 +177,7 @@ def build_rules(c: dict) -> "list[Rule]":
     host = srv.get("rendezvous_host", "").strip()
     key = srv.get("key", "").strip()
     app_name = brand.get("app_name", "RemoteDesk").strip()
+    product = brand.get("product_name", "RemoteDesk").strip()
     company = brand.get("company_name", "").strip()
     website = brand.get("website", "").strip()
     exe = brand.get("exe_name", app_name.lower()).strip() or "remotedesk"
@@ -320,6 +327,79 @@ def build_rules(c: dict) -> "list[Rule]":
                 "'https://rustdesk.com/privacy.html'",
                 "'%s/privacy.html'" % base,
             ),
+            # ---- 下面这些是 Rust 侧的文档链接常量 ---------------------------------
+            # 它们不像上面的 Dart 链接那样"点一下才访问"，而是会随错误消息返回给
+            # (server -> client) 的消息框。虽然 HELPER_URL 做过白名单校验，
+            # 但默认指向 rustdesk.com 依然会让员工看到官方域名，一并换掉。
+            Rule(
+                "文档首页链接常量",
+                "libs/hbb_common/src/config.rs",
+                'pub const LINK_DOCS_HOME: &str = "https://rustdesk.com/docs/en/";',
+                'pub const LINK_DOCS_HOME: &str = "%s";' % base,
+            ),
+            Rule(
+                "X11 必要说明链接常量",
+                "libs/hbb_common/src/config.rs",
+                'pub const LINK_DOCS_X11_REQUIRED: &str = '
+                '"https://rustdesk.com/docs/en/manual/linux/#x11-required";',
+                'pub const LINK_DOCS_X11_REQUIRED: &str = "%s";' % base,
+            ),
+            Rule(
+                "X11 参考链接（连接错误提示）",
+                "src/client.rs",
+                'pub const SCRAP_X11_REF_URL: &str = '
+                '"https://rustdesk.com/docs/en/manual/linux/#x11-required";',
+                'pub const SCRAP_X11_REF_URL: &str = "%s";' % base,
+            ),
+            Rule(
+                "Wayland 登录屏错误提示链接",
+                "src/client.rs",
+                'link: "https://rustdesk.com/docs/en/manual/linux/#login-screen",',
+                'link: "%s",' % base,
+            ),
+            # MSI 在"程序和功能"里显示的支持链接
+            Rule(
+                "MSI - 技术支持联系链接",
+                "res/msi/preprocess.py",
+                '"v": "https://github.com/rustdesk/rustdesk",',
+                '"v": "%s",' % base,
+            ),
+            Rule(
+                "MSI - 帮助在线链接",
+                "res/msi/preprocess.py",
+                '"v": "https://github.com/rustdesk/rustdesk/issues/",',
+                '"v": "%s",' % base,
+            ),
+        ]
+
+    # ------------------------------------------------- ASCII 品牌名（英文场合）
+    #
+    # app_name 是给用户看的产品名，可以是中文。但有几处必须是 ASCII 或文件名安全的：
+    # MSI 字符串资源、Windows 服务显示名、防火墙规则名、Linux 桌面入口。
+    # 把中文名填进去能编译，但 WiX 字符串表与部分注册表项会踩坑，所以单独设一项。
+    if product:
+        rules.append(
+            Rule.regex(
+                "MSI 界面文案（开始菜单/服务显示名/卸载项）",
+                "res/msi/Package/Language/Package.en-us.wxl",
+                r'(<String Id="[^"]+" Value="[^"]*?)RustDesk([^"]*?" />)',
+                r"\1%s\2" % product,
+                residual="RustDesk",
+            )
+        )
+        rules += [
+            Rule(
+                "Linux 桌面入口 - 程序名",
+                "res/rustdesk.desktop",
+                "Name=RustDesk",
+                "Name=%s" % product,
+            ),
+            Rule(
+                "Linux 桌面入口 - 卸载项名",
+                "res/rustdesk-link.desktop",
+                "Name=RustDesk",
+                "Name=%s" % product,
+            ),
         ]
 
     return rules
@@ -415,6 +495,9 @@ def apply_rules(root: Path, rules, dry_run=False, prev_state=None):
             # 这种情况不算失败，否则重跑脚本（比如只改公司名）会满屏报"未命中"，
             # 而且会误触发下面的 required 失败退出。
             if not r.is_regex and r.new and r.new in text:
+                hit.append((r, 0))
+            elif r.is_regex and r.residual and r.residual not in text:
+                # 正则匹配不到、且它要消灭的东西也找不到了 —— 同样是早已生效。
                 hit.append((r, 0))
             else:
                 miss.append((r, "未找到目标字符串（源码版本可能已变更）"))

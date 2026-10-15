@@ -8,25 +8,34 @@
 
 [server]
 # ============================ 自建服务器 ============================
-# ID/注册服务器地址，可写域名或 IP。不带端口时自动使用 21116。
+# ID/注册服务器地址，可写域名或 IP。不带端口时自动使用 21116（TCP 打洞 + UDP 注册/心跳）。
+#  填域名时的前提：客户端所在网络的 DNS 能解析它；解析到的是 hbbs 那台机器。
+#  端口若服务端改过，这里要显式写成 "wedesk.alsoapp.com:xxxx"。
 #  !! 不要用环回地址，必须填客户端真正能连到的那个地址 !!
-rendezvous_host = "192.168.2.114"
+rendezvous_host = "wedesk.alsoapp.com"
 
 # 服务器公钥：hbbs 首次启动后生成的 id_ed25519.pub 内容。
 #  获取方式： cd ../server && python rdctl.py key
 #  !! 必须与你服务器上的公钥完全一致，否则所有连接都会被拒绝 !!
-#  当前值来自本机自建服务器 D:\Git\wedesk\server\data\id_ed25519.pub
-#  换服务器后务必重新获取并替换，然后重新构建客户端。
+#  换域名/换服务器后务必重新获取并替换，然后重新构建客户端。
+#  注意：公钥绑定的是"hbbs 那台机器"，不是域名。同一个域名换 DNS 指向别的机器，
+#       公钥也会变，客户端必须跟着改。
 key = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0="
 
 # 中继服务器地址。留空表示与 rendezvous_host 同机、使用 21117 默认端口。
-relay_host = "192.168.2.114:21117"
+# 这里写域名 + 显式端口：hbbr 与 hbbs 监听端口不同，不带端口会被当成 21116。
+relay_host = "wedesk.alsoapp.com:21117"
 
 
 [brand]
 # ============================== 品牌定制 ==============================
-# 界面、标题栏、exe 名称中显示的产品名
+# 界面、标题栏、安装目录名中显示的产品名（可用中文）
 app_name = "企业网管助手"
+
+# ASCII 品牌名：用于必须是英文/文件名安全的场合 —— MSI 安装包的界面文案、
+#  Windows 服务显示名、Windows 防火墙规则名、Linux 桌面入口等。
+# 与 app_name 分开是因为中文名进 WiX 字符串资源和部分注册表项容易踩坑。
+product_name = "WeDesk"
 
 # 生成的可执行文件名（不含 .exe），只能用小写字母与数字，避免路径问题
 exe_name = "nethelper"
@@ -35,7 +44,7 @@ exe_name = "nethelper"
 company_name = "贵公司名称"
 
 # 官网域名，用于替换界面里的帮助/隐私政策链接
-website = "https://example.com"
+website = "https://wedesk.alsoapp.com"
 
 
 [advanced]

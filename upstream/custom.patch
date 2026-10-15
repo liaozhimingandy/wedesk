@@ -32,7 +32,7 @@ index eae55d5..f91da41 100644
      <string name="foreground_service_special_use_subtype">Keeps the RustDesk remote desktop host available for authorized unattended connections and foreground notifications without starting screen capture before user approval.</string>
  </resources>
 diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
-index b80e0b5..27c3b14 100644
+index b80e0b5..46219df 100644
 --- a/flutter/lib/common.dart
 +++ b/flutter/lib/common.dart
 @@ -3738,7 +3738,7 @@ Widget loadPowered(BuildContext context) {
@@ -40,12 +40,12 @@ index b80e0b5..27c3b14 100644
      child: GestureDetector(
        onTap: () {
 -        launchUrl(Uri.parse('https://rustdesk.com'));
-+        launchUrl(Uri.parse('https://example.com'));
++        launchUrl(Uri.parse('https://wedesk.alsoapp.com'));
        },
        child: Opacity(
            opacity: 0.5,
 diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
-index 4560b3d..bef6baf 100644
+index 4560b3d..c10986a 100644
 --- a/flutter/lib/desktop/pages/desktop_setting_page.dart
 +++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
 @@ -2596,7 +2596,7 @@ class _AboutState extends State<_About> {
@@ -53,7 +53,7 @@ index 4560b3d..bef6baf 100644
                InkWell(
                    onTap: () {
 -                    launchUrlString('https://rustdesk.com/privacy.html');
-+                    launchUrlString('https://example.com/privacy.html');
++                    launchUrlString('https://wedesk.alsoapp.com/privacy.html');
                    },
                    child: Text(
                      translate('Privacy Statement'),
@@ -62,7 +62,7 @@ index 4560b3d..bef6baf 100644
                InkWell(
                    onTap: () {
 -                    launchUrlString('https://rustdesk.com');
-+                    launchUrlString('https://example.com');
++                    launchUrlString('https://wedesk.alsoapp.com');
                    },
                    child: Text(
                      translate('Website'),
@@ -76,7 +76,7 @@ index 4560b3d..bef6baf 100644
                            ),
                            Text(
 diff --git a/flutter/lib/desktop/pages/install_page.dart b/flutter/lib/desktop/pages/install_page.dart
-index 8e72f8d..df187de 100644
+index 8e72f8d..b0ee46b 100644
 --- a/flutter/lib/desktop/pages/install_page.dart
 +++ b/flutter/lib/desktop/pages/install_page.dart
 @@ -213,9 +213,9 @@ class _InstallPageBodyState extends State<_InstallPageBody>
@@ -84,10 +84,10 @@ index 8e72f8d..df187de 100644
                              hoverColor: Colors.transparent,
                              onTap: () => launchUrlString(
 -                                'https://rustdesk.com/privacy.html'),
-+                                'https://example.com/privacy.html'),
++                                'https://wedesk.alsoapp.com/privacy.html'),
                              child: Tooltip(
 -                              message: 'https://rustdesk.com/privacy.html',
-+                              message: 'https://example.com/privacy.html',
++                              message: 'https://wedesk.alsoapp.com/privacy.html',
                                child: Row(children: [
                                  Icon(Icons.launch_outlined, size: 16)
                                      .marginOnly(right: 5),
@@ -116,7 +116,7 @@ index 88d1854..1d2ef53 100644
          END
      END
 diff --git a/libs/hbb_common/src/config.rs b/libs/hbb_common/src/config.rs
-index 6fe1004..974cf2b 100644
+index 6fe1004..bcd6b78 100644
 --- a/libs/hbb_common/src/config.rs
 +++ b/libs/hbb_common/src/config.rs
 @@ -69,7 +69,7 @@ lazy_static::lazy_static! {
@@ -128,17 +128,152 @@ index 6fe1004..974cf2b 100644
      static ref KEY_PAIR: Mutex<Option<KeyPair>> = Default::default();
      static ref USER_DEFAULT_CONFIG: RwLock<(UserDefaultConfig, Instant)> = RwLock::new((UserDefaultConfig::load(), Instant::now()));
      pub static ref NEW_STORED_PEER_CONFIG: Mutex<HashSet<String>> = Default::default();
+@@ -97,8 +97,8 @@ lazy_static::lazy_static! {
+     pub static ref APP_HOME_DIR: RwLock<String> = Default::default();
+ }
+ 
+-pub const LINK_DOCS_HOME: &str = "https://rustdesk.com/docs/en/";
+-pub const LINK_DOCS_X11_REQUIRED: &str = "https://rustdesk.com/docs/en/manual/linux/#x11-required";
++pub const LINK_DOCS_HOME: &str = "https://wedesk.alsoapp.com";
++pub const LINK_DOCS_X11_REQUIRED: &str = "https://wedesk.alsoapp.com";
+ 
+ lazy_static::lazy_static! {
+     pub static ref HELPER_URL: HashMap<&'static str, &'static str> = HashMap::from([
 @@ -114,8 +114,8 @@ const CHARS: &[char] = &[
      'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
  ];
  
 -pub const RENDEZVOUS_SERVERS: &[&str] = &["rs-ny.rustdesk.com"];
 -pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";
-+pub const RENDEZVOUS_SERVERS: &[&str] = &["192.168.2.114"];
++pub const RENDEZVOUS_SERVERS: &[&str] = &["wedesk.alsoapp.com"];
 +pub const RS_PUB_KEY: &str = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0=";
  
  pub const RENDEZVOUS_PORT: i32 = 21116;
  pub const RELAY_PORT: i32 = 21117;
+diff --git a/res/msi/Package/Language/Package.en-us.wxl b/res/msi/Package/Language/Package.en-us.wxl
+index 74919e0..9c604d3 100644
+--- a/res/msi/Package/Language/Package.en-us.wxl
++++ b/res/msi/Package/Language/Package.en-us.wxl
+@@ -10,13 +10,13 @@ This file contains the declaration of all the localizable strings.
+ 	<!-- General strings -->
+ 	<String Id="DowngradeError" Value="A newer version of [ProductName] is already installed." />
+ 
+-	<String Id="AR_Comment" Value="RustDesk" />
++	<String Id="AR_Comment" Value="WeDesk" />
+ 
+-	<String Id="F_App" Value="RustDesk" />
+-	<String Id="F_App_Desc" Value="RustDesk - Main programs installations." />
++	<String Id="F_App" Value="WeDesk" />
++	<String Id="F_App_Desc" Value="WeDesk - Main programs installations." />
+ 
+-	<String Id="SC_Uninstall" Value="Uninstall RustDesk" />
+-	<String Id="SC_Uninstall_Desc" Value="Removes RustDesk or parts of it from the computer" />
++	<String Id="SC_Uninstall" Value="Uninstall WeDesk" />
++	<String Id="SC_Uninstall_Desc" Value="Removes WeDesk or parts of it from the computer" />
+ 
+ 	<!-- Client related strings -->
+ 	<String Id="F_Client" Value="Client" />
+@@ -24,18 +24,18 @@ This file contains the declaration of all the localizable strings.
+ 	<String Id="F_LAVFilters" Value="LAV Filters" />
+ 	<String Id="F_LAVFilters_Desc" Value="Recommended directshow filters for best audio and video playback experience." />
+ 
+-	<String Id="SC_Client" Value="RustDesk" />
+-	<String Id="SC_Client_Desc" Value="Start RustDesk." />
++	<String Id="SC_Client" Value="WeDesk" />
++	<String Id="SC_Client_Desc" Value="Start WeDesk." />
+ 
+-	<String Id="SC_Client_Tray" Value="RustDesk Tray" />
+-	<String Id="SC_Client_Tray_Desc" Value="Start RustDesk tray." />
++	<String Id="SC_Client_Tray" Value="WeDesk Tray" />
++	<String Id="SC_Client_Tray_Desc" Value="Start WeDesk tray." />
+ 
+ 	<!-- Server related strings -->
+ 	<String Id="F_Server" Value="Server" />
+-	<String Id="F_Server_Desc" Value="The server part of RustDesk. Provides the MediaLibrary and other services." />
++	<String Id="F_Server_Desc" Value="The server part of WeDesk. Provides the MediaLibrary and other services." />
+ 
+-	<String Id="Service_DisplayName" Value="RustDesk Service" />
+-	<String Id="Service_Description" Value="This service runs the RustDesk Server." />
++	<String Id="Service_DisplayName" Value="WeDesk Service" />
++	<String Id="Service_Description" Value="This service runs the WeDesk Server." />
+ 
+ 	<!-- Launch Conditions -->
+ 	<String Id="LC_OS" Value="[ProductName] requires minimum Windows 7 / 2008 R2 as operating system." />
+@@ -47,6 +47,6 @@ This file contains the declaration of all the localizable strings.
+ 
+ 	<String Id="MyInstallDirDlgDesktopShortcuts" Value="Create desktop icon" />
+ 	<String Id="MyInstallDirDlgStartMenuShortcuts" Value="Create start menu shortcuts" />
+-	<String Id="MyInstallDirDlgPrinter" Value="Install RustDesk Printer" />
++	<String Id="MyInstallDirDlgPrinter" Value="Install WeDesk Printer" />
+ 
+ </WixLocalization>
+diff --git a/res/msi/preprocess.py b/res/msi/preprocess.py
+index ffbd478..43e787f 100644
+--- a/res/msi/preprocess.py
++++ b/res/msi/preprocess.py
+@@ -27,15 +27,15 @@ g_arpsystemcomponent = {
+     },
+     "Contact": {
+         "msi": "ARPCONTACT",
+-        "v": "https://github.com/rustdesk/rustdesk",
++        "v": "https://wedesk.alsoapp.com",
+     },
+     "HelpLink": {
+         "msi": "ARPHELPLINK",
+-        "v": "https://github.com/rustdesk/rustdesk/issues/",
++        "v": "https://wedesk.alsoapp.com",
+     },
+     "ReadMe": {
+         "msi": "ARPREADME",
+-        "v": "https://github.com/rustdesk/rustdesk",
++        "v": "https://wedesk.alsoapp.com",
+     },
+ }
+ 
+diff --git a/res/rustdesk-link.desktop b/res/rustdesk-link.desktop
+index c7a9bd5..cae8a31 100644
+--- a/res/rustdesk-link.desktop
++++ b/res/rustdesk-link.desktop
+@@ -1,5 +1,5 @@
+ [Desktop Entry]
+-Name=RustDesk
++Name=WeDesk
+ NoDisplay=true
+ MimeType=x-scheme-handler/rustdesk;
+ TryExec=rustdesk
+diff --git a/res/rustdesk.desktop b/res/rustdesk.desktop
+index 4e7d14f..7f32c72 100644
+--- a/res/rustdesk.desktop
++++ b/res/rustdesk.desktop
+@@ -1,5 +1,5 @@
+ [Desktop Entry]
+-Name=RustDesk
++Name=WeDesk
+ GenericName=Remote Desktop
+ Comment=Remote Desktop
+ Exec=rustdesk %u
+diff --git a/src/client.rs b/src/client.rs
+index 6d752d4..9ff94a9 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -127,7 +127,7 @@ pub const SCRAP_OTHER_VERSION_OR_X11_REQUIRED: &str =
+ pub const SCRAP_XDP_PORTAL_UNAVAILABLE: &str =
+     "xdp-portal-unavailable";
+ pub const SCRAP_X11_REQUIRED: &str = "x11 expected";
+-pub const SCRAP_X11_REF_URL: &str = "https://rustdesk.com/docs/en/manual/linux/#x11-required";
++pub const SCRAP_X11_REF_URL: &str = "https://wedesk.alsoapp.com";
+ 
+ #[cfg(not(target_os = "linux"))]
+ pub const AUDIO_BUFFER_MS: usize = 3000;
+@@ -4508,7 +4508,7 @@ lazy_static::lazy_static! {
+             msgtype: "error",
+             title: "Login Error",
+             text: "Login screen using Wayland is not supported",
+-            link: "https://rustdesk.com/docs/en/manual/linux/#login-screen",
++            link: "https://wedesk.alsoapp.com",
+             try_again: true,
+         }), (LOGIN_MSG_NO_PASSWORD_ACCESS, LoginErrorMsgBox{
+             msgtype: "wait-remote-accept-nook",
 diff --git a/src/common.rs b/src/common.rs
 index fa5c203..accacf2 100644
 --- a/src/common.rs

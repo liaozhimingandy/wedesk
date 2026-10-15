@@ -228,9 +228,9 @@ python upstream/verify_patch.py        # 退出码 0 才通过
 
 ## 四、改完之后的必做动作
 
-### 4.1 判断是否动了"定制覆盖的 8 个文件"
+### 4.1 判断是否动了"定制覆盖的 13 个文件"
 
-`customize.py` 会改这 8 个：`libs/hbb_common/src/config.rs`、`src/common.rs`、`Cargo.toml`、
+`customize.py` 会改这 13 个：`libs/hbb_common/src/config.rs`、`src/common.rs`、`Cargo.toml`、
 `flutter/windows/runner/Runner.rc`、`flutter/android/.../strings.xml`、`flutter/lib/common.dart`、
 `flutter/lib/desktop/pages/install_page.dart`、`flutter/lib/desktop/pages/desktop_setting_page.dart`。
 

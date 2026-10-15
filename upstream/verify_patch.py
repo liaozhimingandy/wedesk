@@ -44,15 +44,28 @@ import tempfile
 GIT = r"C:\Program Files\Git\cmd\git.exe"
 WEDESK = pathlib.Path(__file__).resolve().parent.parent
 PATCH = WEDESK / "upstream" / "custom.patch"
+# 这份清单 = customize.py 的规则覆盖文件 ∩ 需要第三方 Git 初检的文件。
+#
+# 判定标准：只要 customize.py 能完整重建，就不必进补丁；但为了让 custom.patch
+# 成为"从干净上游一键回到当前状态"的完整凭据，凡是被注入过的文件都应登记。
+# 漏登的后果不是构建失败 —— 而是某天升级上游时，这个文件被整包覆盖回原始值，
+# 且因为 verify_patch 也不看它，没人会发现。
+#
+# 新增/删除定制规则时同步本清单，并跑 `python upstream/verify_patch.py --regen`。
 CUSTOMIZED_FILES = [
     "Cargo.toml",
     "src/common.rs",
+    "src/client.rs",
     "libs/hbb_common/src/config.rs",
     "flutter/lib/common.dart",
     "flutter/lib/desktop/pages/desktop_setting_page.dart",
     "flutter/lib/desktop/pages/install_page.dart",
     "flutter/windows/runner/Runner.rc",
     "flutter/android/app/src/main/res/values/strings.xml",
+    "res/msi/Package/Language/Package.en-us.wxl",
+    "res/msi/preprocess.py",
+    "res/rustdesk.desktop",
+    "res/rustdesk-link.desktop",
 ]
 
 

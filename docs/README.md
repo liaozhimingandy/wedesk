@@ -24,10 +24,12 @@
 | 03b | [GitHub Actions 云构建](03b-ci.md) | 不想装工具链，怎么在云端编译？ |
 | 04 | [部署指南](04-deploy.md) | 服务端怎么起？密钥怎么管？客户端怎么发给员工？ |
 | 09 | [服务端自编译](09-server-build.md) | 服务端源码在哪？怎么自己编译 hbbs/hbbr？ |
+| 10 | [端口与网络规划](10-ports.md) | 用到哪些端口？怎么统一规划？改端口要动哪几处？ |
 
 > **没有工具链或不想折腾环境** → 走 03b（云构建）。
 > **要频繁调试、改代码** → 走 03（本地构建）。
 > **不想用官方服务端镜像** → 走 09，源码已在本仓库里，一次 `docker build` 就有自己的镜像。
+> **要上公网 / 想换端口 / 要开 host 网络** → 先读 10，端口是从主端口推导的，漏一个派生端口就是"连不上"。
 
 ---
 
@@ -65,7 +67,7 @@
 1. **改了 `src/flutter_ffi.rs` 必须重跑 `python build/generate-bridge.py`**
    否则 Dart 侧看不到新函数。这是"改了但没反应"的头号原因。
 
-2. **改了 `customize.py` 覆盖的 8 个文件，必须重跑 `python upstream/verify_patch.py --regen`**
+2. **改了 `customize.py` 覆盖的 13 个文件，必须重跑 `python upstream/verify_patch.py --regen`**
    否则下次升级上游时改动会静默丢失，而且没人会发现。
 
 3. **带 `if` 判断 / 新增函数 / 改控制流的改动，要登记到 `upstream/UPSTREAM.md`**

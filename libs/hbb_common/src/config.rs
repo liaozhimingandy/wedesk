@@ -97,8 +97,8 @@ lazy_static::lazy_static! {
     pub static ref APP_HOME_DIR: RwLock<String> = Default::default();
 }
 
-pub const LINK_DOCS_HOME: &str = "https://rustdesk.com/docs/en/";
-pub const LINK_DOCS_X11_REQUIRED: &str = "https://rustdesk.com/docs/en/manual/linux/#x11-required";
+pub const LINK_DOCS_HOME: &str = "https://wedesk.alsoapp.com";
+pub const LINK_DOCS_X11_REQUIRED: &str = "https://wedesk.alsoapp.com";
 
 lazy_static::lazy_static! {
     pub static ref HELPER_URL: HashMap<&'static str, &'static str> = HashMap::from([
@@ -114,7 +114,7 @@ const CHARS: &[char] = &[
     'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
 
-pub const RENDEZVOUS_SERVERS: &[&str] = &["192.168.2.114"];
+pub const RENDEZVOUS_SERVERS: &[&str] = &["wedesk.alsoapp.com"];
 pub const RS_PUB_KEY: &str = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0=";
 
 pub const RENDEZVOUS_PORT: i32 = 21116;

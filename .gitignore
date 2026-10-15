@@ -133,6 +133,11 @@ third_party/libdrmtap/
 !fastlane/**
 !libs/**
 
+# customize.py 每次注入生成的 *.rd.bak 备份 —— 必须排在"解禁白名单"之后，
+# 否则上面的 !res/** / !libs/** 会把落在这些目录里的备份重新纳入 untracked。
+*.rd.bak
+*.bak
+
 # 本地构建的临时工具目录（cargo install 的 codegen 二进制，可达数百 MB）
 build/.tools/
 build/__pycache__/

@@ -66,18 +66,36 @@
 
 ## 我们改了什么
 
-定制由 `build/customize.py` 按 `build/custom.toml` 注入，覆盖 8 个文件：
+定制由 `build/customize.py` 按 `build/custom.toml` 注入，覆盖 13 个文件：
 
 | 文件 | 改了什么 |
 | --- | --- |
-| `libs/hbb_common/src/config.rs` | **核心三值**：`RENDEZVOUS_SERVERS`、`RS_PUB_KEY`、`APP_NAME` |
+| `libs/hbb_common/src/config.rs` | **核心三值**：`RENDEZVOUS_SERVERS`、`RS_PUB_KEY`、`APP_NAME`；<br>附带 `LINK_DOCS_HOME` / `LINK_DOCS_X11_REQUIRED` 指向自家域名 |
 | `src/common.rs` | 清空官方 API 兜底地址，避免流量外泄到公网 |
+| `src/client.rs` | Linux 侧 X11 / Wayland 登录屏错误提示里的官方文档链接 |
 | `Cargo.toml` | 作者、描述、公司名、`LegalCopyright` |
 | `flutter/windows/runner/Runner.rc` | exe 文件属性：公司名、产品名、exe 名 |
 | `flutter/android/app/src/main/res/values/strings.xml` | 安卓端 app 名 |
 | `flutter/lib/common.dart` | "Powered by" 链接指向自家官网 |
 | `flutter/lib/desktop/pages/install_page.dart` | 安装页隐私政策链接 |
 | `flutter/lib/desktop/pages/desktop_setting_page.dart` | "关于"页：官网、隐私政策、版权行 |
+| `res/msi/Package/Language/Package.en-us.wxl` | MSI 文案：开始菜单项、服务显示名、卸载项（ASCII 品牌名，见下） |
+| `res/msi/preprocess.py` | MSI 的 ARP 技术支持/帮助链接 |
+| `res/rustdesk.desktop` / `res/rustdesk-link.desktop` | Linux 桌面入口里的程序名 |
+
+> **`product_name` 与 `app_name` 为什么是两项**：`app_name` 可以是中文，会写进标题栏、
+> 安装目录与用户配置目录；`product_name` 只给**必须 ASCII / 文件名安全**的场合用
+> （WiX 字符串资源、Windows 服务显示名、Linux 桌面入口）。中文进 WiX 字符串表容易踩坑。
+
+### 仍然保留 RustDesk 字样的位置（刻意未改）
+
+| 位置 | 为什么留着 |
+| --- | --- |
+| `rustdesk://` 深链 scheme | 改它需要同步改 MSI 注册表、`flutter/ios|macos` 的 `CFBundleURLSchemes`、`flutter/lib/common.dart` 的解析。方案集中在 [10 端口与网络规划](../docs/10-ports.md) 之外的话题，等哪天要做 SSO/门户集成再动 |
+| `#[cfg(test)]` 里的官方域名 | 改了会破坏测试意图 |
+| `src/platform/windows.rs` 里的日志/注释/临时文件名 | 只出现在调试日志与 `%TEMP%` 文件名里，用户看不到 |
+| `res/update/`、Linux/macOS/Android/iOS 工程文件 | 当前只构建 Windows；改动无收益且增加上游冲突面 |
+| Flutter 翻译键 `verify_rustdesk_password_tip` 等 | 纯 key，界面显示的是译文，无外显 |
 
 改"兜底默认值"而不是硬锁定，用户仍可在设置里改服务器；
 但出厂默认值一定指向我们自己的服务器。
@@ -106,7 +124,7 @@
 
 ```bash
 python upstream/verify_patch.py --regen     # 重新生成 custom.patch
-python upstream/verify_patch.py             # 验证 8/8（退出码 0 才算通过）
+python upstream/verify_patch.py             # 验证 13/13（退出码 0 才算通过）
 ```
 
 ## 服务端的定制改动
@@ -132,7 +150,7 @@ python upstream/verify_patch.py             # 验证 8/8（退出码 0 才算通
 
 ## 补丁与验证
 
-- `custom.patch` —— 客户端 8 个文件的完整 diff，可从干净上游重放
+- `custom.patch` —— 客户端 13 个文件的完整 diff，可从干净上游重放
 - `server.patch` —— 服务端 1 个文件的 diff
 - `verify_patch.py` —— 验证 custom.patch 仍能完整重建当前定制状态
 
@@ -142,7 +160,7 @@ python upstream/verify_patch.py --upstream D:/Git/rustdesk
 
 退出码 0 = 通过。**上游升级后务必跑一次。**
 
-**手工改了上面那 8 个文件里的任何一个，都必须重建补丁**，否则升级时会丢改动：
+**手工改了上面那 13 个文件里的任何一个，都必须重建补丁**，否则升级时会丢改动：
 
 ```bash
 python upstream/verify_patch.py --regen     # 重新生成 custom.patch
@@ -203,5 +221,5 @@ python upstream/verify_patch.py
 7. **上游多语言文档倒进 `docs/` 根目录** —— 上游有 60 份 `README-*.md` /
    `CONTRIBUTING-*.md` / `CODE_OF_CONDUCT-*.md` / `SECURITY-*.md`。
    它们会淹没我们自己的文档，应放进 `docs/upstream-i18n/`
-8. **覆盖掉 `docs/` 下我们自己的文档** —— `docs/README.md`、`01-*.md` ~ `07-*.md`
+8. **覆盖掉 `docs/` 下我们自己的文档** —— `docs/README.md`、`01-*.md` ~ `10-*.md`
    都是自建内容，**永不覆盖**。上游文档只进 `docs/upstream/` 与 `docs/upstream-i18n/`

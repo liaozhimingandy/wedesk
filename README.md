@@ -65,10 +65,18 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 │   ├── custom.patch             定制改动的可重放补丁
 │   └── verify_patch.py          验证补丁仍能重建当前定制状态
 │
-├── docs/
-│   ├── ARCHITECTURE.md          定制点原理图 —— 想改更多东西请看这里
-│   ├── IMPLEMENTATION.md        分阶段落地路线图
-│   └── upstream/                上游自带文档（README、AGENTS、多语言说明）
+├── docs/                        文档（见下方「文档导航」）
+│   ├── README.md                索引 —— 不知道看哪篇就从这里进
+│   ├── 01-architecture.md       架构总览：分层、目录职责、构建产物关系
+│   ├── 02-runtime.md            运行原理：ID 注册、打洞、中继、会话数据流
+│   ├── 03-build.md              本地构建（Windows）
+│   ├── 03b-ci.md                GitHub Actions 云构建
+│   ├── 04-deploy.md             部署：服务端上线、密钥管理、客户端分发
+│   ├── 05-customize.md          定制：换品牌、改服务器、裁剪功能
+│   ├── 06-maintenance.md        维护：新增功能 SOP、升级上游
+│   ├── 07-faq.md                故障排查
+│   ├── upstream/                上游自带文档（README、AGENTS.md 等）
+│   └── upstream-i18n/           上游 60 份多语言文档（留档，与本项目无关）
 │
 ├── README.md                    本文件
 ├── .gitignore                   见下方「为什么要自己写 .gitignore」
@@ -103,6 +111,30 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
   到新仓库后所有文件是 untracked，规则立刻生效）
   因此**末尾有解禁白名单，必须留在文件最后**才生效
 - 上游产物目录 `flutter/build/` 由 `flutter/.gitignore` 管，`build-pkg/` 在此处管
+
+---
+
+## 二·五、文档导航
+
+本文件是"怎么做"的速查手册。**想理解原理、想改代码，请进 `docs/`**：
+
+| 想干什么 | 读哪篇 |
+|---|---|
+| **搞懂这套东西怎么跑的** | [01 架构总览](docs/01-architecture.md) → [02 运行原理](docs/02-runtime.md) |
+| **拿到一个 exe** | [03b GitHub Actions 云构建](docs/03b-ci.md)（推荐）或 [03 本地构建](docs/03-build.md) |
+| **上线给用户用** | [04 部署指南](docs/04-deploy.md) |
+| **换 Logo、改服务器、砍功能** | [05 定制指南](docs/05-customize.md) |
+| **加一个新功能** | [06 维护手册](docs/06-maintenance.md) |
+| **出问题了** | [07 故障排查](docs/07-faq.md) |
+| **升级上游版本** | [`upstream/UPSTREAM.md`](upstream/UPSTREAM.md) |
+
+索引入口：[`docs/README.md`](docs/README.md)
+
+### 改代码前必须知道的三条
+
+1. **改了 `src/flutter_ffi.rs` 必须重跑 `python build/generate-bridge.py`**
+2. **改了 `customize.py` 覆盖的 8 个文件，必须重跑 `python upstream/verify_patch.py --regen`**
+3. **带逻辑判断的源码改动要登记到 `upstream/UPSTREAM.md`**（升级时脚本不会帮你重建）
 
 ---
 
@@ -191,7 +223,7 @@ git push
 **2026-10-15 实测进度**：MSVC ✅ / Windows SDK ✅ / Rust 1.75 ✅（已修）/ Flutter 3.24.5 ✅
 —— 还差 **vcpkg** 和 **LLVM 15**，见下方体检表。
 
-完整步骤、磁盘预算和已知坑见 [`docs/BUILD.md`](docs/BUILD.md)（比本节详细得多）。
+完整步骤、磁盘预算和已知坑见 [`docs/03-build.md`](docs/03-build.md)（比本节详细得多）。
 
 ### 4.1 必须先体检
 

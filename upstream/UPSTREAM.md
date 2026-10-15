@@ -130,7 +130,8 @@ git clone --recurse-submodules -b 1.5.2 https://github.com/rustdesk/rustdesk /tm
 #    docs/ 下的上游文档 → docs/upstream/
 #
 #    我们自己的东西（build/ server/ upstream/ README.md .gitignore
-#    .gitattributes docs/ARCHITECTURE.md 等）**一律不要动**。
+#    .gitattributes docs/（除 docs/upstream/ 与 docs/upstream-i18n/）
+#    等）**一律不要动**。
 #
 #    注意：hbb_common 要连同子模块内容一起复制，并删掉它的 .git 指针文件
 
@@ -159,3 +160,8 @@ python upstream/verify_patch.py
    应放进 `docs/upstream/`，否则会干扰后续会话
 6. **Flutter engine 没换** —— 必须用 RustDesk 自研 engine，
    官方 engine 会有窗口行为异常
+7. **上游多语言文档倒进 `docs/` 根目录** —— 上游有 60 份 `README-*.md` /
+   `CONTRIBUTING-*.md` / `CODE_OF_CONDUCT-*.md` / `SECURITY-*.md`。
+   它们会淹没我们自己的文档，应放进 `docs/upstream-i18n/`
+8. **覆盖掉 `docs/` 下我们自己的文档** —— `docs/README.md`、`01-*.md` ~ `07-*.md`
+   都是自建内容，**永不覆盖**。上游文档只进 `docs/upstream/` 与 `docs/upstream-i18n/`

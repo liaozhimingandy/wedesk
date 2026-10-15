@@ -1,6 +1,8 @@
-# 本地构建指南（Windows）
+# 03 · 本地构建指南（Windows）
 
-> 只想拿 exe？**建议直接用 GitHub Actions 云编译**，见 [`CI.md`](./CI.md)。
+> 文档索引：[`docs/README.md`](README.md) ｜ 上一篇：[02 运行原理](02-runtime.md)
+
+> 只想拿 exe？**建议直接用 GitHub Actions 云编译**，见 [03b · CI 云构建](03b-ci.md)。
 > 本机配齐工具链要吃掉约 18 GB 磁盘和数小时，且每一步都可能卡住。
 > 只有当你需要频繁改 Rust/Flutter 源码做调试时，本地构建才划算。
 

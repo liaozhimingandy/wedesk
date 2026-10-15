@@ -43,6 +43,12 @@ OUTPUTS = [
     "flutter/ios/Runner/bridge_generated.h",
 ]
 
+# 给 cargo install 指定固定的 target 目录。
+# 默认行为是每次建一个临时目录、跑完就删——意味着中途失败一次，
+# 前面 20 分钟编译出来的依赖全部作废，下次从零再来。
+# codegen 这套依赖里有 syntect/clap 这类重活，重编代价很高。
+BUILD_TARGET = HERE / ".tools" / "target"
+
 
 def run(cmd, cwd=None, check=True):
     print(f"  $ {' '.join(str(c) for c in cmd)}")
@@ -71,18 +77,28 @@ def install_codegen(force_reinstall: bool):
     if not shutil.which("cargo"):
         sys.exit("[x] 找不到 cargo。请先安装 Rust 1.75（winget install Rustlang.Rustup）")
 
+    env = os.environ.copy()
+    env["CARGO_TARGET_DIR"] = str(BUILD_TARGET)
+    print(f"[=] CARGO_TARGET_DIR = {BUILD_TARGET}（中断后可续编）")
+
     print(f"[1/3] 安装 cargo-expand {CARGO_EXPAND_VERSION}")
-    run([
-        "cargo", "install", "cargo-expand",
-        "--version", CARGO_EXPAND_VERSION, "--locked", "--root", str(TOOLS_DIR),
-    ])
+    rc = subprocess.run(
+        ["cargo", "install", "cargo-expand",
+         "--version", CARGO_EXPAND_VERSION, "--locked", "--root", str(TOOLS_DIR)],
+        env=env,
+    ).returncode
+    if rc != 0:
+        sys.exit(f"\n[x] cargo install cargo-expand 失败（退出码 {rc}）")
 
     print(f"[2/3] 安装 flutter_rust_bridge_codegen {FRB_VERSION}")
-    run([
-        "cargo", "install", "flutter_rust_bridge_codegen",
-        "--version", FRB_VERSION, "--features", "uuid", "--locked",
-        "--root", str(TOOLS_DIR),
-    ])
+    rc = subprocess.run(
+        ["cargo", "install", "flutter_rust_bridge_codegen",
+         "--version", FRB_VERSION, "--features", "uuid", "--locked",
+         "--root", str(TOOLS_DIR)],
+        env=env,
+    ).returncode
+    if rc != 0:
+        sys.exit(f"\n[x] cargo install flutter_rust_bridge_codegen 失败（退出码 {rc}）")
 
     if not FRB_BIN.is_file():
         sys.exit(f"[x] 安装完成但找不到 {FRB_BIN}")

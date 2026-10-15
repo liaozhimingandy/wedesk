@@ -1,4 +1,6 @@
-# GitHub Actions 云构建
+# 03b · GitHub Actions 云构建
+
+> 文档索引：[`docs/README.md`](README.md) ｜ 上一篇：[02 运行原理](02-runtime.md) ｜ 下一篇：[04 部署指南](04-deploy.md)
 
 在完全不用配置本地工具链的情况下产出 Windows 客户端。**推荐路线**。
 

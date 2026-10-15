@@ -78,4 +78,7 @@ python build/customize.py --dry-run        # 看品牌注入命中情况
 python build/generate-bridge.py --check    # bridge 是否就绪
 python upstream/verify_patch.py            # 补丁是否仍可重放
 cd server && python rdctl.py status        # 服务端状态
+
+build\tag-release.bat --dry                # 预演发版（看将要打什么标签）
+build\tag-release.bat                      # 发版：打标签 → CI 自动发布 Release
 ```

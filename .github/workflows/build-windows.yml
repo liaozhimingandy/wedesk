@@ -8,13 +8,19 @@
 #   2. 源码根 == 仓库根（扁平化），所有路径都是相对仓库根的。
 #   3. 构建前会执行 build/customize.py 做品牌/服务器注入，
 #      唯一输入是仓库里的 build/custom.toml（可用 workflow_dispatch 输入覆盖）。
-#   4. 不签名、不发布 Release，只产出可直接运行的产物供下载。
+#   4. 不签名。产物以 Artifact 供日常下载；推送 v* 标签时额外发布 GitHub Release。
 #
 # 流水线为什么是两个 job：
 #   bridge_generated.rs / generated_bridge.dart 是 flutter_rust_bridge 生成的，
 #   且被 .gitignore 排除（构建产物不属于源码）。它们的生成依赖 cargo-expand +
 #   dart pub get，跑起来不便宜，所以单独一个 job 做完再传给 Windows job，
 #   也方便本地复用同样的产物。
+#
+# 为什么没有用 paths-ignore：
+#   paths-ignore 对 tag push 同样生效（比较 tag 指向的 commit 与其父提交），
+#   于是"最后一次提交只改了文档然后再打 tag"会静默不触发 —— 版本发布凭空消失，
+#   且没有任何失败提示。所以改用 preflight 里的变更判断来跳构建，
+#   既保住"改文档不烧 40 分钟机时"的收益，又保证 tag 一定能触发。
 # =============================================================================
 
 name: Build Windows Client
@@ -22,10 +28,7 @@ name: Build Windows Client
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "upstream/**"
-      - "**.md"
+    tags: ["v*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -82,14 +85,64 @@ jobs:
   # ---------------------------------------------------------------------------
   preflight:
     runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.gate.outputs.should_build }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # 需要完整历史才能 diff 出变更文件（gate）与生成 Release Notes
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # ------------------------------------------------------------------
+      # 构建门禁：代替 on.push.paths-ignore。
+      # paths-ignore 会把"只改了文档的那次提交上打的 tag"一并过滤掉，
+      # 导致 Release 静默不发布；这里改成显式判断，tag 一定放行。
+      # ------------------------------------------------------------------
+      - name: 判断是否需要构建
+        id: gate
+        shell: bash
+        run: |
+          set -e
+          # tag push 必须构建：下游要发 Release，不能因为只改了文档就不产出
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "tag push（$GITHUB_REF_NAME）→ 构建并发布 Release"
+            exit 0
+          fi
+          # 手动触发：用户点了就跑
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "${{ github.event_name }} → 构建"
+            exit 0
+          fi
+          BEFORE="${{ github.event.before }}"
+          # 首次推送时 before 是全 0，取不到 diff
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "首次推送 → 构建"
+            exit 0
+          fi
+          CHANGED="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null || true)"
+          if [ -z "$CHANGED" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "无法判定变更范围 → 保守起见构建"
+            exit 0
+          fi
+          if echo "$CHANGED" | grep -qvE '^(docs/|upstream/|.*\.md$)'; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "有代码变更 → 构建"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "仅文档 / 上游说明变更 → 跳过构建（省约 40 分钟机时）"
+          fi
+          echo ""
+          echo "变更文件："
+          echo "$CHANGED"
 
       - name: 确认仓库是自包含的（子模块已实体化）
         run: |
@@ -126,10 +179,13 @@ jobs:
   #    产物平台无关，所以在 Linux 上生成（与上流 CI 完全同版本组合，风险最低）
   # ---------------------------------------------------------------------------
   generate-bridge:
-    # PR 只做 preflight，不烧 40 分钟构建机时。
+    # PR 只做 preflight，不烧 40 分钟构建机时；仅文档变更的提交同理跳过。
     # 注意不是用 concurrency 取消，而是直接不触发：vcpkg 的二进制缓存有读写竞争，
     # 频繁取消/重跑反而容易把缓存写坏。
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' }}
+    # 必须显式 needs 才能访问 needs.preflight.outputs —— 否则 context 为空，
+    # 上面那个 == 'true' 恒不成立，这个 job 永远不跑
+    needs: [preflight]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -218,7 +274,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-windows:
     name: x86_64-pc-windows-msvc
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' }}
     needs: [preflight, generate-bridge]
     runs-on: windows-2022
 
@@ -240,7 +296,9 @@ jobs:
     # 绝不能简写成 if: ${{ env.ENABLE_HWCODEC }}。
     env:
       ENABLE_HWCODEC: ${{ github.event_name != 'workflow_dispatch' || inputs.hwcodec == true }}
-      BUILD_MSI: ${{ github.event_name == 'workflow_dispatch' && inputs.build_msi == true }}
+      # 末尾的 || github.ref_type == 'tag'：发版时 Release 应该同时提供安装包形态，
+      # 而 tag push 的 event_name 是 push，不加这一项 MSI 会被静默跳过。
+      BUILD_MSI: ${{ github.event_name == 'workflow_dispatch' && inputs.build_msi == true || github.ref_type == 'tag' }}
 
     steps:
       # vcpkg 的 x-gha 二进制缓存后端需要这两个运行时变量，
@@ -519,7 +577,196 @@ jobs:
               echo "- MSI 未构建（本次未启用 build_msi）"
             fi
             echo ""
-            echo "> 产物是 Actions Artifact，不是 GitHub Release —— 本流水线不建 Release。"
+            if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+              echo ""
+              echo "> 本次是标签构建，稍后 release job 会把上述产物发布为 GitHub Release。"
+            else
+              echo ""
+              echo "> 产物是 Actions Artifact（保留 14 天）。"
+              echo "> 需要长期保存、带版本号的可分发包，请推送 \`v*\` 标签触发 Release。"
+            fi
             echo ""
             echo "若上表 hwcodec 为 false 却期望开启，检查是否手动触发时取消了勾选。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 3. 发布 GitHub Release（仅 v* 标签）
+  #
+  #    为什么单独一个 job 而不在 build-windows 里顺手做：
+  #    发布需要 contents: write 权限。单独一个 job 能把权限收敛到最小范围，
+  #    构建环节依然只有 read —— 构建机上的第三方 action 碰不到发布能力。
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish Release
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    needs: [build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # 版本号必须与 Cargo.toml 一致。发错的 Recovery 成本远高于构建失败：
+      # 发出去的版本号是错的，用户下载后无法判断自己装的是什么，
+      # 而删除重发又会让已发出去的链接失效。
+      - name: 校验标签版本与 Cargo.toml 一致
+        id: ver
+        shell: bash
+        run: |
+          set -e
+          CARGO_VER="$(grep -m1 -E '^version = ' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          TAG="$GITHUB_REF_NAME"
+          TAG_VER="${TAG#v}"
+          echo "Cargo.toml 版本: $CARGO_VER"
+          echo "标签:            $TAG （解析为 $TAG_VER）"
+          if [ "$CARGO_VER" != "$TAG_VER" ]; then
+            echo "::error::标签 $TAG 与 Cargo.toml 的 $CARGO_VER 不一致。"
+            echo "::error::请先对齐版本再打标签 —— 用 build/tag-release.bat 可自动取 Cargo.toml 的版本号。"
+            exit 1
+          fi
+          echo "version=$CARGO_VER" >> "$GITHUB_OUTPUT"
+          # v1.2.3-beta.1 / -rc1 算预发布：不抢 latest 标签
+          case "$TAG_VER" in
+            *-*) echo "prerelease=true"  >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      # 只警告不阻断：偶尔确有需要在非 main 提交上发版的场景
+      - name: 检查标签是否指向 main
+        shell: bash
+        run: |
+          set -e
+          git fetch origin main 2>/dev/null || true
+          if git rev-parse --verify -q origin/main >/dev/null; then
+            if git merge-base --is-ancestor "$GITHUB_SHA" origin/main 2>/dev/null; then
+              echo "✓ 标签指向的提交已在 main 上"
+            else
+              echo "::warning::标签指向的提交不在 main 上 —— 请确认这是预期的发布点"
+            fi
+          else
+            echo "::warning::取不到 origin/main，跳过分支归属校验"
+          fi
+
+      - name: 下载便携版
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-windows-x64
+          path: dist/portable
+
+      - name: 下载 MSI（若构建）
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-windows-x64-msi
+          path: dist/msi
+
+      - name: 打包并生成校验和
+        id: pack
+        shell: bash
+        run: |
+          set -e
+          V="${{ steps.ver.outputs.version }}"
+          mkdir -p out
+          # exe 名由 build.py 决定（当前硬编码 rustdesk.exe），不写死，
+          # 免得以后改了名字 Release 说明还在指向不存在的文件
+          EXE="$(cd dist/portable && ls *.exe 2>/dev/null | head -1 || true)"
+          echo "exe=${EXE:-rustdesk.exe}" >> "$GITHUB_OUTPUT"
+          (cd dist/portable && zip -q -r "$GITHUB_WORKSPACE/out/wedesk-${V}-windows-x64-portable.zip" .)
+          if [ -f dist/msi/wedesk-x64.msi ]; then
+            cp -f dist/msi/wedesk-x64.msi "out/wedesk-${V}-windows-x64.msi"
+            echo "has_msi=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_msi=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::未找到 MSI，本次 Release 只含便携版"
+          fi
+          cd out
+          sha256sum ./* > SHA256SUMS.txt
+          echo "=== 待发布文件 ==="
+          ls -lh
+          echo "=== SHA256SUMS.txt ==="
+          cat SHA256SUMS.txt
+
+      - name: 生成 Release Notes
+        shell: bash
+        run: |
+          set -e
+          V="${{ steps.ver.outputs.version }}"
+          TAG="$GITHUB_REF_NAME"
+          EXE="${{ steps.pack.outputs.exe }}"
+          REPO="${{ github.repository }}"
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          {
+            echo "## 企业网管助手 v${V}"
+            echo ""
+            echo "Windows x64 客户端，已内置私有服务器地址与公钥，开箱即连。"
+            echo ""
+            echo "### 下载"
+            echo ""
+            echo "| 文件 | 说明 |"
+            echo "|---|---|"
+            echo "| \`wedesk-${V}-windows-x64-portable.zip\` | 便携版：解压后运行 \`${EXE}\`，无需安装 |"
+            if [ "${{ steps.pack.outputs.has_msi }}" = "true" ]; then
+              echo "| \`wedesk-${V}-windows-x64.msi\` | 安装包：适合域控 / 组策略批量部署 |"
+            fi
+            echo "| \`SHA256SUMS.txt\` | 校验和，分发前请核对 |"
+            echo ""
+            echo "### 更新内容"
+            echo ""
+            if [ -n "$PREV" ]; then
+              git log --no-merges --pretty=format:'- %s (%h)' "$PREV..$TAG"
+              echo ""
+              echo ""
+              echo "完整对比：[\`${PREV}...${TAG}\`](https://github.com/${REPO}/compare/${PREV}...${TAG})"
+            else
+              echo "- 首个版本"
+            fi
+            echo ""
+            echo "### 部署提示"
+            echo ""
+            echo "- 服务端需与本客户端使用**同一套密钥**，否则连不上"
+            echo "- 便携版请整体拷贝目录，单独拷 exe 会缺依赖 DLL 与驱动"
+            echo "- 首次被控若提示安装虚拟显示器驱动（usbmmidd），允许即可"
+            echo ""
+            echo "详细步骤见 [部署指南](https://github.com/${REPO}/blob/main/docs/04-deploy.md)。"
+            echo ""
+            echo "### 许可证"
+            echo ""
+            echo "本软件基于 RustDesk 二次开发，遵循 **AGPL-3.0**。"
+            echo "下方 Source code 附件由 GitHub 自动生成，即完整源码，满足许可证要求。"
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Publish GitHub Release
+        id: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "wedesk v${{ steps.ver.outputs.version }}"
+          body_path: RELEASE_NOTES.md
+          prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.ver.outputs.prerelease != 'true' }}
+          # MSI 缺失是允许的（构建步骤有 continue-on-error 保护），
+          # 但不该因为少一个文件就让整个 Release 失败
+          fail_on_unmatched_files: false
+          files: |
+            out/*.zip
+            out/*.msi
+            out/SHA256SUMS.txt
+
+      - name: Release 摘要
+        shell: bash
+        run: |
+          {
+            echo "## Release 已发布"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 版本 | \`v${{ steps.ver.outputs.version }}\` |"
+            echo "| 预发布 | ${{ steps.ver.outputs.prerelease }} |"
+            echo "| 含 MSI | ${{ steps.pack.outputs.has_msi }} |"
+            echo "| 地址 | ${{ steps.publish.outputs.url }} |"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -8,34 +8,42 @@
 
 ## 一、流水线概览
 
-`.github/workflows/build-windows.yml` 一条龙，三个 job：
+`.github/workflows/build-windows.yml` 一条龙，四个 job：
 
 ```
 preflight (10s)  ─┐
                   ├─→  generate-bridge (~10min)  ──→  build-windows (~40-60min)  ──→  artifact
+                                                                                        │
+                                                                       （仅 v* 标签）  ↓
+                                                                                    release (2min)
 ```
 
 | Job | Runner | 做什么 | 耗时 |
 |---|---|---|---|
-| `preflight` | ubuntu-latest | 校验子模块已实体化、品牌已注入、服务器地址已改 | ~10 s |
+| `preflight` | ubuntu-latest | 判断是否需要构建、校验子模块已实体化、品牌已注入 | ~10 s |
 | `generate-bridge` | ubuntu-22.04 | 生成 flutter-rust-bridge 胶水代码 | ~10 min |
 | `build-windows` | windows-2022 | vcpkg 依赖 → 品牌注入 → 编译 → 打包 | 40–60 min |
+| `release` | ubuntu-latest | **仅 `v*` 标签**：打包 zip、算校验和、发布 Release | ~2 min |
 
 产物：
 
-- `wedesk-windows-x64` —— 便携版目录，解压即用（保存 14 天）
-- `wedesk-windows-x64-msi` —— MSI 安装包（可选，需手动触发时勾选）
+- `wedesk-windows-x64` —— 便携版目录，解压即用（Artifact，保存 14 天）
+- `wedesk-windows-x64-msi` —— MSI 安装包（手动触发时勾选，或打标签时自动构建）
+- GitHub Release —— 打 `v*` 标签时发布，长期保存，适合分发给员工
 
-### 为什么拆成两个 job
+### 为什么拆成多个 job
 
 bridge 产物平台无关，生成器依赖 `cargo install` + `dart pub get`，跑起来不便宜，
 单独一个 job 做完再传给 Windows job，失败时可以单独重跑，不必连带重编 C++ 依赖。
-更实际的原因是：**这两步的失败模式完全不同**，分开后看日志一眼就知道挂在哪。
+更实际的原因是：**这几步的失败模式完全不同**，分开后看日志一眼就知道挂在哪。
+
+release 单独成 job 则是为了**权限收敛**：发布需要 `contents: write`，
+而构建环节只有 `contents: read`。构建机上的第三方 action 因此碰不到发布能力。
 
 ### 为什么 PR 不跑全量构建
 
 ```yaml
-if: ${{ github.event_name != 'pull_request' }}
+if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' }}
 ```
 
 不是用 cancellation，而是直接不触发——vcpkg 的二进制缓存有读写竞争，
@@ -47,14 +55,45 @@ if: ${{ github.event_name != 'pull_request' }}
 
 ### 自动触发
 
-推送到 `main` 即触发。`docs/**`、`upstream/**`、`*.md` 的改动被 `paths-ignore` 排除——
-改文档不该烧 40 分钟机器时间。
+推送到 `main` 即触发。仅改动 `docs/`、`upstream/`、`*.md` 时会在 preflight 里判定为
+**不需要构建**而跳过——改文档不该烧 40 分钟机器时间。
 
 ```bash
 git add build/custom.toml
 git commit -m "chore: 更新服务器地址"
 git push
 ```
+
+> 这里的"跳过"是 preflight 里的 `should_build` 门禁实现的，**不是** `paths-ignore`。
+> 原因见 [关键设计点 8](#8-没有用-paths-ignore)。
+
+### 打标签发布 Release（推荐的分发方式）
+
+推送 `v*` 标签 → 自动构建 → 自动发布 Release：
+
+```bat
+build\tag-release.bat
+```
+
+脚本会做四件事，任何一件不通过就停下：
+
+1. 从 `Cargo.toml` 读取版本号（**不手工输入**，避免与 CI 校验冲突）
+2. 检查工作区干净、且与 `origin/main` 一致
+3. 检查标签未重复
+4. 打标签并推送，最后打印 Actions 与 Release 页面链接
+
+先 `build\tag-release.bat --dry` 看一遍将要做什么，确认无误再真跑。
+
+Release 里会有：
+
+| 文件 | 说明 |
+|---|---|
+| `wedesk-<版本>-windows-x64-portable.zip` | 便携版，解压即用 |
+| `wedesk-<版本>-windows-x64.msi` | 安装包，适合域控/组策略批量部署 |
+| `SHA256SUMS.txt` | 校验和，分发前核对 |
+| Source code (zip/tar.gz) | GitHub 自动生成，即 AGPL 要求的完整源码 |
+
+带 `-` 的标签（如 `v1.5.2-rc1`）会自动标记为**预发布**，不会抢占 `latest`。
 
 ### 手动触发
 
@@ -217,6 +256,56 @@ fatal error C1083: Cannot open include file: 'libavutil/pixfmt.h': No such file 
 
 改这个值前请确认 `vcpkg.json` 里 ffmpeg 条目的 platform 条件仍然要求 `static`。
 
+### 8. 没有用 `paths-ignore`
+
+最初用了 `on.push.paths-ignore` 排除 `docs/**`、`upstream/**`、`*.md`。
+加上标签发布后必须去掉，因为 **paths 过滤器对 tag push 同样生效**：
+GitHub 会拿标签指向的提交与其父提交做 diff 来判断是否匹配。
+
+于是这个序列会静默失效：
+
+```
+最后一次提交只改了文档 → 打 v1.5.1 标签 → 推送
+→ diff 全是 .md，被 paths-ignore 过滤 → 流水线不触发 → Release 不发布
+```
+
+没有任何失败提示，只是"版本没发出来"，排查时会怀疑标签、怀疑权限、怀疑 action 版本，
+很难想到是文档过滤规则干的。
+
+现在改成 preflight 里的 `should_build` 门禁：同样能省掉只改文档时的 40 分钟机时，
+但**标签一定放行**。
+
+### 9. 标签版本必须与 `Cargo.toml` 一致
+
+`release` job 第一件事就是比对，不一致直接失败：
+
+```
+::error::标签 v1.5.2 与 Cargo.toml 的 1.5.1 不一致。
+```
+
+为什么卡这么死：版本号写错在构建阶段没有任何症状，客户端照常编译通过，
+只有发布后才会发现 Release 上写的版本和实际二进制对不上。
+而发出去的东西回收成本很高——已分发给员工的链接会失效，
+别人也无从判断自己装的是哪一版。
+
+所以版本号**只从 `Cargo.toml` 取**，用 `build/tag-release.bat` 打标签，不要手敲。
+
+### 10. 发布权限收敛在单个 job
+
+```yaml
+permissions:
+  contents: read      # 顶层：构建只需要读
+
+jobs:
+  release:
+    permissions:
+      contents: write  # 只有发布这一步能写
+```
+
+构建环节跑着一堆第三方 action（vcpkg、flutter、LLVM、msbuild），
+它们都不应该具备发布能力。把 `write` 收在最后一个 job 里，
+万一上游 action 出问题，影响范围也止于构建。
+
 ---
 
 ## 四、上游工作流都去哪了
@@ -243,6 +332,11 @@ GitHub 只加载 `workflows/*.yml`，所以移过去 = 停用，纯做存档参�
 | `Patch flutter` 报 already applied | 换了 Flutter 版本 | 此补丁只适用于 3.24.5，脚本已做版本判断跳过 |
 | 构建成功但客户端连不上 | 公钥不匹配 | 核对 `build/custom.toml` 的 `key` 与 hbbs 的 `id_ed25519.pub` |
 | 首次构建后想改服务器 IP | 地址是编译期注入的 | 改 `custom.toml` 后重新构建（用户仍可在界面临时改服务器） |
+| 打了标签但没发 Release | 标签名不是 `v` 开头 | release job 的条件是 `startsWith(github.ref_name, 'v')` |
+| 打了标签但流水线没跑 | 见[设计点 8](#8-没有用-paths-ignore) | 若自行加回了 `paths-ignore`，只改文档的提交上打的标签会被过滤掉 |
+| release job 报版本不一致 | 标签与 `Cargo.toml` 版本不同 | 先改 `Cargo.toml` 的 `version` 再打标签；用 `build/tag-release.bat` 不会出这问题 |
+| Release 里没有 MSI | MSI 构建失败 | 该步骤有 `continue-on-error` 保护，看构建日志；便携版不受影响 |
+| 想重发某个版本 | 标签已存在 | 先改版本号再发；或删标签重发（已下载旧版的人不会自动更新，慎做） |
 
 ---
 

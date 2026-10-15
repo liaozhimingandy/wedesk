@@ -123,6 +123,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 |---|---|
 | **搞懂这套东西怎么跑的** | [01 架构总览](docs/01-architecture.md) → [02 运行原理](docs/02-runtime.md) |
 | **拿到一个 exe** | [03b GitHub Actions 云构建](docs/03b-ci.md)（推荐）或 [03 本地构建](docs/03-build.md) |
+| **发一个正式版本** | `build\tag-release.bat` —— 打标签即自动构建并发布 Release（见 [03b](docs/03b-ci.md)） |
 | **上线给用户用** | [04 部署指南](docs/04-deploy.md) |
 | **换 Logo、改服务器、砍功能** | [05 定制指南](docs/05-customize.md) |
 | **加一个新功能** | [06 维护手册](docs/06-maintenance.md) |

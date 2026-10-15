@@ -4,8 +4,8 @@
 
 > 如果你之前翻遍仓库只找到客户端（exe / MSI）产物，那不是你漏了：
 > 上游把服务端拆成了**另一个仓库** `rustdesk/rustdesk-server`，
-> 客户端仓库里那条 `src/hbbs_http.rs` 只是"客户端访问服务器 API"的代码，不是服务端本身。
-> 本仓库已把服务端源码实体化（vendored）到 `server/rustdesk-server/`，之后两者同版发布。
+> 客户端仓库里那条 `client/src/hbbs_http.rs` 只是"客户端访问服务器 API"的代码，不是服务端本身。
+> 本仓库已把服务端源码实体化（vendored）到 `server/src/`，之后两者同版发布。
 
 ---
 
@@ -13,24 +13,34 @@
 
 ```
 server/
-├── Dockerfile              # 容器内从源码编译 → 运行镜像（本机零 Rust 环境时用这个）
-├── Dockerfile.prebuilt     # 直接 COPY 已编译二进制（CI 里用这个）
-├── .dockerignore           # 关键：把 data/ 私钥挡在镜像之外
-├── docker-compose.yml      # 已改为 build 到本地镜像，不再拉官方镜像
-├── rustdesk-server/        # ← 服务端源码（独立 Cargo workspace）
+├── src/                     # ← 服务端源码（vendored 上游 rustdesk-server，独立 Cargo workspace）
 │   ├── Cargo.toml / Cargo.lock
-│   ├── src/                # hbbs、hbbr、rustdesk-utils 三个 bin
-│   ├── libs/hbb_common/    # 上游的 submodule，已实体化
-│   ├── db_v2.sqlite3       # 不是运行数据！是 sqlx 编译期校验 SQL 用的模板库
-│   └── systemd/            # 裸机部署的 service 文件
+│   ├── src/                 # hbbs、hbbr、rustdesk-utils 三个 bin（注意是 src/src/，不是笔误）
+│   ├── libs/hbb_common/     # 上游的 submodule，已实体化
+│   ├── db_v2.sqlite3        # 不是运行数据！是 sqlx 编译期校验 SQL 用的模板库
+│   └── systemd/             # 裸机部署的 service 文件
+├── deploy/                  # 部署资产：怎么把 src/ 编译出来的二进制跑起来
+│   ├── Dockerfile           # 容器内从源码编译 → 运行镜像（本机零 Rust 环境时用这个）
+│   ├── Dockerfile.prebuilt  # 直接 COPY 已编译二进制（CI 里用这个）
+│   ├── docker-compose.yml   # 已改为 build 到本地镜像，不再拉官方镜像
+│   ├── build-musl.sh        # 真正的编译命令（Dockerfile 与 CI 共用）
+│   ├── check-bins.sh        # 构建期自检：三个二进制必须真能执行
+│   ├── rdctl.py             # 运维入口（start/stop/logs/backup/ports/key/build）
+│   └── .env.example         # 端口与中继地址配置模板
+├── .dockerignore            # 关键：把 data/ 私钥挡在镜像之外（必须在 context 根）
+└── data/                    # 运行时：id_ed25519 私钥 + db_v2.sqlite3（gitignore，勿提交）
 ```
+
+`src/` 与 `deploy/` 分开的理由：前者是"编译输入"，会随上游版本更新而变动；
+后者是"我们自己的部署方式"，基本不动。混在一起时，追上游的一次同步很容易
+把部署文件一起覆盖掉。
 
 两个 Dockerfile 的分工：
 
 | 文件 | 输入 | 用在哪 | 首次耗时 |
 |---|---|---|---|
-| `Dockerfile` | 源码 | 本机构建（有 Docker 就行，不用装 Rust） | 15–25 分钟 |
-| `Dockerfile.prebuilt` | 编译好的二进制 | CI：上一个 job 刚编完，直接装包 | 约 10 秒 |
+| `deploy/Dockerfile` | 源码 | 本机构建（有 Docker 就行，不用装 Rust） | 15–25 分钟 |
+| `deploy/Dockerfile.prebuilt` | 编译好的二进制 | CI：上一个 job 刚编完，直接装包 | 约 10 秒 |
 
 ---
 
@@ -38,7 +48,7 @@ server/
 
 ```mermaid
 flowchart LR
-    A["server/rustdesk-server/<br/>源码（本仓库内）"] --> B1["① CI：push/tag 触发"]
+    A["server/src/<br/>源码（本仓库内）"] --> B1["① CI：push/tag 触发"]
     A --> B2["② 本机 Docker 构建"]
     A --> B3["③ 本机 cargo 编译"]
     B1 --> C1["GitHub Release<br/>hbbs / hbbr zip + 裸二进制"]
@@ -65,7 +75,7 @@ Docker Hub（`liaozhiming/wedesk-server`）。
 Settings → Secrets and variables → Actions 里配置。
 
 那个 job **不是在 runner 上直接 `cargo build --target musl`**，而是起一个 `rust:alpine` 容器、
-在里面本机编译（`server/build-musl.sh`）。原因见第 6 节那条 OpenSSL 报错的说明。
+在里面本机编译（`server/deploy/build-musl.sh`）。原因见第 6 节那条 OpenSSL 报错的说明。
 跑完后同一个 GitHub Release 里同时有：
 
 | 产物 | 形态 | 用途 |
@@ -82,21 +92,21 @@ Settings → Secrets and variables → Actions 里配置。
 没有 Rust、没有 musl、没有 MSVC 也能做，编译全在容器里：
 
 ```bash
-build\build-server-image.bat                 # → wedesk-server:latest (linux/amd64)
-build\build-server-image.bat 1.1.17          # 指定标签
+build\server\build-server-image.bat               # → wedesk-server:latest (linux/amd64)
+build\server\build-server-image.bat 1.1.17        # 指定标签
 ```
 
 等价于手动执行：
 
 ```bash
 cd server
-docker build --platform linux/amd64 -t wedesk-server:latest -f Dockerfile .
+docker build --platform linux/amd64 -t wedesk-server:latest -f deploy/Dockerfile .
 ```
 
 > `--platform linux/amd64` 别省：在 Windows / Apple Silicon 的 Docker Desktop 上，
 > 默认平台是本机架构，编出来的镜像丢到 x86 Linux 服务器上会跑不起来。
 >
-> 这条命令和 CI 里的 `build-server` job 走的是**同一份脚本** `server/build-musl.sh`。
+> 这条命令和 CI 里的 `build-server` job 走的是**同一份脚本** `server/deploy/build-musl.sh`。
 > 所以改编译环境（加系统依赖、加 feature、换 target）只改那一处，
 > 不要单独给 CI 写一套 —— 两套配方迟早漂移成"CI 绿但本机 docker build 红"。
 
@@ -149,8 +159,8 @@ environment:
 ### 4.1 容器（推荐）
 
 ```bash
-cd server
-cp .env.example .env          # 编辑 RELAY_HOST = 服务器 IP
+cd server\deploy
+copy .env.example .env        # 编辑 RELAY_HOST = 服务器 IP
 python rdctl.py build         # 从源码构建镜像（首次）
 python rdctl.py start         # 启动，并打印服务器公钥
 python rdctl.py key           # 再打印一次公钥（填进客户端 custom.toml）
@@ -161,7 +171,7 @@ python rdctl.py key           # 再打印一次公钥（填进客户端 custom.t
 （会同时失去上面那条本地化补丁）。
 
 ⚠️ 这里有个容易踩的坑：**`docker compose up`（不带 `--build`）不会因为源码变了就重新构建**，
-只要本地存在同 tag 的镜像就直接复用。改过 `server/rustdesk-server/` 源码或本 Dockerfile 之后，
+只要本地存在同 tag 的镜像就直接复用。改过 `server/src/` 源码或本 Dockerfile 之后，
 必须显式构建一次，否则跑的还是旧镜像：
 
 ```bash
@@ -199,7 +209,7 @@ sudo systemctl enable --now rustdesk-hbbr rustdesk-hbbs
 | 端 | 位置 |
 |---|---|
 | 服务端 | 首次启动自动生成于工作目录；已有密钥请整体拷贝，不要重新生成 |
-| 客户端 | `libs/hbb_common/src/config.rs` 的 `RS_PUB_KEY`，由 `build/custom.toml` 注入 |
+| 客户端 | `client/libs/hbb_common/src/config.rs` 的 `RS_PUB_KEY`，由 `build/client/custom.toml` 注入 |
 
 ---
 
@@ -209,7 +219,7 @@ sudo systemctl enable --now rustdesk-hbbr rustdesk-hbbs
 
 ```bash
 # 1. 改新版本的 commit sha 并重跑导出（会整包覆盖 rustdesk-server/）
-python build/vendor-server.py --server-rev <新commit>
+python build/server/vendor-server.py --server-rev <新commit>
 
 # 2. 先确认补丁还能重放。这一步必须在 apply 之前 ——
 #    已经 apply 过再 --check 会因为"改动已存在"而失败，那是假阴性。
@@ -226,7 +236,7 @@ build\build-server.bat
 `src/common.rs` 的 `check_software_update()` 现状重新做补丁，
 并把新 diff 写回 `upstream/server.patch`。
 
-脚本会把锁定的两个 sha 写进 `build/server-vendor.json`（服务端自身 + 它的 hbb_common），
+脚本会把锁定的两个 sha 写进 `build/server/server-vendor.json`（服务端自身 + 它的 hbb_common），
 下次升级有据可查。**不要手工去修改 `rustdesk-server/` 里的文件**
 ——它下次会被整包覆盖，改动会静默消失；要改就走补丁 + 登记。
 
@@ -237,13 +247,13 @@ build\build-server.bat
 | 报错 / 现象 | 原因 | 处理 |
 |---|---|---|
 | `lock file version 4 requires -Znext-lockfile-bump` | cargo < 1.78 | 用 stable toolchain：`RUSTUP_TOOLCHAIN=stable` |
-| `Could not find directory of OpenSSL installation ... set the OPENSSL_DIR` | 在 glibc 机器上交叉编译到 musl，openssl-sys 找不到**目标平台**的 OpenSSL | 改在 musl 容器里本机编译（`server/build-musl.sh`）。<br>详情见下方第 6.1 节 |
+| `Could not find directory of OpenSSL installation ... set the OPENSSL_DIR` | 在 glibc 机器上交叉编译到 musl，openssl-sys 找不到**目标平台**的 OpenSSL | 改在 musl 容器里本机编译（`server/deploy/build-musl.sh`）。<br>详情见下方第 6.1 节 |
 | `DATABASE_URL must be set` / `No such file or directory: db_v2.sqlite3` | sqlx 宏编译期要连 SQLite | 脚本里已设 `DATABASE_URL=sqlite:///src/db_v2.sqlite3`；<br>手动编译时需自己设，路径必须是**绝对**的 |
 | 容器内 `hbbs: not found` | 二进制是 glibc 版，却拷进了 alpine | 必须用 musl 静态编译；检查 target 是否为 `*-unknown-linux-musl` |
 | `perl: not found`（构建阶段） | ring(TLS) 的构建脚本依赖 perl | `build-musl.sh` 里已装 perl；别精简掉 `build-base musl-dev perl` |
 | 构建阶段 `git: command not found` | Cargo.lock 钉了 7 个 git 依赖（reqwest/confy/sysinfo 等），cargo 要现场 clone | 容器内装 git（脚本里已装） |
 | 启动就报端口占用 | 本机已有进程占着派生端口 | `python rdctl.py stop` 后再起，或整体平移 `HBBS_PORT` / `HBBR_PORT`。<br>**别只改主端口** —— P-1 与 P+2 也要一并挪开，见 [10 端口规划](10-ports.md) |
-| 客户端连不上，日志无报错 | 两端公钥不一致 | 核对 `rdctl.py key` 与 `build/custom.toml` 的 key 是否相同 |
+| 客户端连不上，日志无报错 | 两端公钥不一致 | 核对 `rdctl.py key` 与 `build/client/custom.toml` 的 key 是否相同 |
 | `docker build` 卡在 crates.io 下载 | 容器内网络慢 | 重试一次即可；CI 里有 cargo registry 缓存，本机建议 `--platform` 保持一致以复用层缓存 |
 | CI 里 `cp: cannot stat 'target//release/hbbs'`（注意路径里的**双斜杠**） | 打包步骤拼路径用的三元组变量为空 | 见下方第 6.2 节 |
 | `docker compose up` 报 `exec: "hbbr": executable file not found in $PATH` | 跑起来的镜像里根本没有可执行的 `hbbr`。<br>两种成因：① Dockerfile 编译阶段把 cargo 的 target 目录挂成了 BuildKit cache mount，产物不进镜像层；② `.env` 的 `RD_IMAGE` 指向了别的镜像，本地 Dockerfile 压根没参与构建 | 见下方第 6.3 节 |
@@ -287,7 +297,7 @@ GitHub 换一次 runner image、本机换一台机器就重新失效；而且 Op
 ```bash
 docker run --rm \
   -v "$PWD/server/rustdesk-server:/src" \
-  -v "$PWD/server/build-musl.sh:/build-musl.sh:ro" \
+  -v "$PWD/server/deploy/build-musl.sh:/build-musl.sh:ro" \
   -e TARGET=x86_64-unknown-linux-musl \
   rust:1.90-alpine sh /build-musl.sh
 ```
@@ -322,7 +332,7 @@ Error: Process completed with exit code 1
 **注意 `target//release` 中间那个双斜杠** —— 它不是笔误，而是拼路径的变量为空，
 `target/${TRIPLE}/release` 变成了 `target//release`。
 
-根因是"目标三元组"有两个真源：`server/build-musl.sh` 里 `TARGET` 有默认值
+根因是"目标三元组"有两个真源：`server/deploy/build-musl.sh` 里 `TARGET` 有默认值
 `x86_64-unknown-linux-musl`，而打包步骤直接读 workflow 的 `env.SERVER_TARGET`。
 一旦 env 里漏配，编译按脚本默认值把产物放进 `target/x86_64-unknown-linux-musl/release/`，
 打包却去 `target//release` 找 —— 编译是成功的，只是两边对不上。
@@ -336,8 +346,8 @@ Error: Process completed with exit code 1
 | 位置 | 用途 |
 |---|---|
 | `.github/workflows/build-windows.yml` 的 `env.SERVER_TARGET` | CI 打包与缓存路径 |
-| `server/build-musl.sh` 的 `TARGET="${TARGET:-...}"` | 未收到环境变量时的兜底 |
-| `server/Dockerfile` 的 `ARG TARGET=...` | 最终 `COPY --from=builder` 的源路径 |
+| `server/deploy/build-musl.sh` 的 `TARGET="${TARGET:-...}"` | 未收到环境变量时的兜底 |
+| `server/deploy/Dockerfile` 的 `ARG TARGET=...` | 最终 `COPY --from=builder` 的源路径 |
 
 ### 6.3 `exec: "hbbr": executable file not found in $PATH`
 
@@ -366,7 +376,7 @@ docker run --rm --entrypoint sh <镜像名> -c "command -v hbbs; command -v hbbr
 两条都空 → 镜像里确实没有这两个二进制，往下看成因 A / B；都有路径 → 是别的问题
 （多半是动态链接器缺失，见第 6.1 节的"静态性自检"）。
 
-更省事的办法是直接跑 `python server/rdctl.py start` —— 它会在启动前自动检查
+更省事的办法是直接跑 `python server/deploy/rdctl.py start` —— 它会在启动前自动检查
 镜像里有没有可执行的 hbbs / hbbr，并区分下面三种成因给出对应的处理命令。
 
 **成因 A：Dockerfile 把 cargo 的产物目录挂成了 BuildKit cache mount**
@@ -463,7 +473,7 @@ docker compose up -d
 | 组件 | 版本来源 | 说明 |
 |---|---|---|
 | 客户端 | 仓库根 `Cargo.toml`（当前 1.5.1） | `build\tag-release.bat` 取的就是它 |
-| 服务端 | `server/rustdesk-server/Cargo.toml`（当前 1.1.17） | 与客户端版本各自演进，互不绑定 |
+| 服务端 | `server/src/Cargo.toml`（当前 1.1.17） | 与客户端版本各自演进，互不绑定 |
 | 容器镜像标签 | 沿用 Release 标签 | `liaozhiming/wedesk-server:<tag>` |
 
 两者没有版本号必须对齐的要求 —— 只要**交互协议兼容**即可。

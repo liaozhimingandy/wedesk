@@ -2,7 +2,7 @@
 
 > 文档索引：[`docs/README.md`](README.md) ｜ 上一篇：[06 维护手册](06-maintenance.md)
 
-> 按症状查表。**构建类问题先跑 `python build/check-env.py`**，它会告诉你缺什么。
+> 按症状查表。**构建类问题先跑 `python build/client/check-env.py`**，它会告诉你缺什么。
 
 ---
 
@@ -10,26 +10,26 @@
 
 ### `file not found for module bridge_generated`
 
-**原因**：`src/bridge_generated.rs` 不存在 —— bridge 胶水代码没生成。
+**原因**：`client/src/bridge_generated.rs` 不存在 —— bridge 胶水代码没生成。
 这是**本地构建最容易漏的一步**，官方 CI 是单独 job 生成的，本地脚本早期没覆盖。
 
 ```bash
-python build/generate-bridge.py     # 首次约 10-25 分钟（要编译 codegen）
+python build/client/generate-bridge.py     # 首次约 10-25 分钟（要编译 codegen）
 ```
 
 生成成功后会产出 4 个文件：
 
 | 文件 | 用途 |
 |---|---|
-| `src/bridge_generated.rs` | Rust 侧桥（**构建必需**） |
-| `src/bridge_generated.io.rs` | Rust 侧 IO 桥 |
-| `flutter/lib/generated_bridge.dart` | Dart 侧桥（**构建必需**） |
-| `flutter/lib/generated_bridge.freezed.dart` | Dart 冻结类 |
+| `client/src/bridge_generated.rs` | Rust 侧桥（**构建必需**） |
+| `client/src/bridge_generated.io.rs` | Rust 侧 IO 桥 |
+| `client/flutter/lib/generated_bridge.dart` | Dart 侧桥（**构建必需**） |
+| `client/flutter/lib/generated_bridge.freezed.dart` | Dart 冻结类 |
 
 用 `--check` 可以快速确认是否就绪（秒级）：
 
 ```bash
-python build/generate-bridge.py --check
+python build/client/generate-bridge.py --check
 ```
 
 ---
@@ -40,8 +40,8 @@ python build/generate-bridge.py --check
 通常发生在**并发跑 rustup 或中途 kill 掉 rustup** 的时候。
 
 ```bash
-python build/fix-rust.py --check    # 诊断
-python build/fix-rust.py            # 修复
+python build/client/fix-rust.py --check    # 诊断
+python build/client/fix-rust.py            # 修复
 ```
 
 **修复时的两条硬规则**：
@@ -130,7 +130,7 @@ CI 上对应的是 `Run workflow` 时的 **hwcodec 勾选框**，默认**开启*
 > —— 手写清单会漏掉 FFmpeg。`install-vcpkg-deps.bat` 已改为读 `vcpkg.json`，别再手写。
 
 > 顺带说一句：`localtime` / `sprintf` 的 C4996 弃用警告、
-> 以及 `res/vcpkg/libyuv` 那条"用 MSVC 编译 libyuv 会很慢"的提示，
+> 以及 `client/res/vcpkg/libyuv` 那条"用 MSVC 编译 libyuv 会很慢"的提示，
 > 都**只是警告**，不是构建失败的原因。真正致命的只有 C1083。
 
 ### 构建很慢 / 卡住不动
@@ -160,7 +160,7 @@ cargo 的子进程被挂起），杀掉重跑。若在变 → 只是慢，等着
 **检查**：
 
 ```bash
-python build/customize.py --dry-run    # 看命中数与未命中项
+python build/client/customize.py --dry-run    # 看命中数与未命中项
 ```
 
 若显示未命中，确认 `build/.custom-state.json` 还在（它已入库，别删）。
@@ -171,8 +171,8 @@ python build/customize.py --dry-run    # 看命中数与未命中项
 
 按顺序排查：
 
-1. `python build/customize.py --dry-run` —— 是否全命中
-2. `grep -n APP_NAME libs/hbb_common/src/config.rs` —— 值是否落地
+1. `python build/client/customize.py --dry-run` —— 是否全命中
+2. `grep -n APP_NAME client/libs/hbb_common/src/config.rs` —— 值是否落地
 3. **构建前是否重新注入过**（上游升级/还原代码后必须重跑）
 4. **Windows 图标缓存**：删 `%LOCALAPPDATA%\IconCache.db` 或重启资源管理器
 
@@ -246,7 +246,7 @@ HBBR_PORT=9101          # 建议 = HBBS_PORT + 1（客户端兜底推导依赖�
 `HBBS_PORT` / `HBBR_PORT` 同时决定**主机侧映射**与**容器里的 `-p` 参数**，
 所以两侧永远一致，不会出现"端口开着但没人监听"。
 
-> 改完之后 **`build/custom.toml` 的 `rendezvous_host` 必须跟着改到新端口并重新编译客户端**，
+> 改完之后 **`build/client/custom.toml` 的 `rendezvous_host` 必须跟着改到新端口并重新编译客户端**，
 > 否则客户端还在按旧端口去连。`python rdctl.py ports` 可以随时打印当前规划做对照。
 
 ### 审计日志里来源 IP 全是网关地址
@@ -274,8 +274,8 @@ cd server && python rdctl.py restart     # 服务端
 
 | 现象 | 谁生成的 | 源码位置 |
 |---|---|---|
-| **ID** | 客户端自己 | `libs/hbb_common/src/config.rs` → `get_auto_id()`：取本机 MAC 地址后 4 字节，拼成 u32 后 `& 0x1FFFFFFF` |
-| **随机密码** | 客户端自己 | `libs/hbb_common/src/password_security.rs` → `TEMPORARY_PASSWORD`：进程启动时用 PRNG 生成 6 位串 |
+| **ID** | 客户端自己 | `client/libs/hbb_common/src/config.rs` → `get_auto_id()`：取本机 MAC 地址后 4 字节，拼成 u32 后 `& 0x1FFFFFFF` |
+| **随机密码** | 客户端自己 | `client/libs/hbb_common/src/password_security.rs` → `TEMPORARY_PASSWORD`：进程启动时用 PRNG 生成 6 位串 |
 
 它们走的是同一条路径：**生成 → 存本地配置 → 再上报给 `custom.toml` 里写的那台 hbbs**。
 所以无论你把服务器指向内网还是公网，ID 与随机密码都会照常出现；

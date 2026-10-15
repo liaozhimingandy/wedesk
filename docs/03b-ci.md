@@ -81,7 +81,7 @@ if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_bu
 **不需要构建**而跳过——改文档不该烧 40 分钟机器时间。
 
 ```bash
-git add build/custom.toml
+git add build/client/custom.toml
 git commit -m "chore: 更新服务器地址"
 git push
 ```
@@ -123,7 +123,7 @@ Release 里会有：
 
 | 输入项 | 说明 |
 |---|---|
-| `company_name` | 覆盖 `build/custom.toml` 的 `brand.company_name` |
+| `company_name` | 覆盖 `build/client/custom.toml` 的 `brand.company_name` |
 | `website` | 覆盖 `brand.website` |
 | `hwcodec` | **硬件编解码开关，默认开启**（见下方说明） |
 | `build_args` | 传给 `build.py` 的额外参数，默认 `--vram`（显存编码，进一步降低延迟与 CPU） |
@@ -201,7 +201,7 @@ if: ${{ env.ENABLE_HWCODEC }}              # 错：值为 "false" 时仍然执�
 submodules: false
 ```
 
-`libs/hbb_common` 等子模块已实体化（vendored），仓库是自包含的。
+`client/libs/hbb_common` 等子模块已实体化（vendored），仓库是自包含的。
 这是本仓库与上游 CI 最本质的差异——上游每次都要 `--recursive`，
 也因此常遇到 submodule 拉不下来导致整条流水线红。
 
@@ -244,7 +244,7 @@ VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
 ### 5. 品牌注入是幂等的
 
 ```bash
-python build/customize.py --source . --config build/custom.toml
+python build/client/customize.py --source client --config build/client/custom.toml
 ```
 
 源码已是目标值时什么都不做，所以重复构建不会产生脏 diff。
@@ -310,7 +310,7 @@ GitHub 会拿标签指向的提交与其父提交做 diff 来判断是否匹配�
 而发出去的东西回收成本很高——已分发给员工的链接会失效，
 别人也无从判断自己装的是哪一版。
 
-所以版本号**只从 `Cargo.toml` 取**，用 `build/tag-release.bat` 打标签，不要手敲。
+所以版本号**只从 `Cargo.toml` 取**，用 `build/common/tag-release.bat` 打标签，不要手敲。
 
 ### 10. 发布权限收敛在单个 job
 
@@ -360,7 +360,7 @@ GitHub 报的是：
 2. 拿到"第 N 行第 M 列"的报错，若那一列落在 `|` / `>` 上，
    往下找该块标量内部最近的 `${{ }}`。
 
-`build/check-workflow.py` 已把这条固化：它会解析全部 `${{ }}` 的语法，
+`build/common/check-workflow.py` 已把这条固化：它会解析全部 `${{ }}` 的语法，
 空表达式、括号/引号不闭合、多余内容、未知函数、未知上下文根都会报出来，并给出所在 job / step。
 
 ---
@@ -383,18 +383,18 @@ GitHub 只加载 `workflows/*.yml`，所以移过去 = 停用，纯做存档参�
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| preflight 报"服务器地址仍是官方默认值" | `build/custom.toml` 没改 | 填真实 `rendezvous_host` |
-| preflight 报"仍残留上游公司名" | 忘了跑 customize.py | `python build/customize.py` |
+| preflight 报"服务器地址仍是官方默认值" | `build/client/custom.toml` 没改 | 填真实 `rendezvous_host` |
+| preflight 报"仍残留上游公司名" | 忘了跑 customize.py | `python build/client/customize.py` |
 | vcpkg 步骤卡住超 60 min | x-gha 缓存没生效 | 确认已导出 `ACTIONS_CACHE_URL`；或首次本来就会慢 |
 | `Patch flutter` 报 already applied | 换了 Flutter 版本 | 此补丁只适用于 3.24.5，脚本已做版本判断跳过 |
-| 构建成功但客户端连不上 | 公钥不匹配 | 核对 `build/custom.toml` 的 `key` 与 hbbs 的 `id_ed25519.pub` |
+| 构建成功但客户端连不上 | 公钥不匹配 | 核对 `build/client/custom.toml` 的 `key` 与 hbbs 的 `id_ed25519.pub` |
 | 首次构建后想改服务器 IP | 地址是编译期注入的 | 改 `custom.toml` 后重新构建（用户仍可在界面临时改服务器） |
 | 打了标签但没发 Release | 标签名不是 `v` 开头 | release job 的条件是 `startsWith(github.ref_name, 'v')` |
 | 打了标签但流水线没跑 | 见[设计点 8](#8-没有用-paths-ignore) | 若自行加回了 `paths-ignore`，只改文档的提交上打的标签会被过滤掉 |
-| release job 报版本不一致 | 标签与 `Cargo.toml` 版本不同 | 先改 `Cargo.toml` 的 `version` 再打标签；用 `build/tag-release.bat` 不会出这问题 |
+| release job 报版本不一致 | 标签与 `Cargo.toml` 版本不同 | 先改 `Cargo.toml` 的 `version` 再打标签；用 `build/common/tag-release.bat` 不会出这问题 |
 | Release 里没有 MSI | MSI 构建失败 | 该步骤有 `continue-on-error` 保护，看构建日志；便携版不受影响 |
 | 想重发某个版本 | 标签已存在 | 先改版本号再发；或删标签重发（已下载旧版的人不会自动更新，慎做） |
-| GitHub 提示"无效的工作流文件：…（第 N 行，第 M 列）：预期出现表达式" | 工作流里有空的或语法错的 `${{ }}` | 见[设计点 11](#11-run-脚本里的--也要过语法校验)；用 `python build/check-workflow.py` 定位 |
+| GitHub 提示"无效的工作流文件：…（第 N 行，第 M 列）：预期出现表达式" | 工作流里有空的或语法错的 `${{ }}` | 见[设计点 11](#11-run-脚本里的--也要过语法校验)；用 `python build/common/check-workflow.py` 定位 |
 
 ---
 
@@ -403,8 +403,8 @@ GitHub 只加载 `workflows/*.yml`，所以移过去 = 停用，纯做存档参�
 改动工作流后，推送前先跑：
 
 ```bash
-python build/check-workflow.py                  # 检查 .github/workflows/*.yml
-python build/check-workflow.py <file.yml>       # 检查指定文件
+python build/common/check-workflow.py                  # 检查 .github/workflows/*.yml
+python build/common/check-workflow.py <file.yml>       # 检查指定文件
 ```
 
 退出码 `0` = 没问题，`1` = 发现错误。它检查四类问题：

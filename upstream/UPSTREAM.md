@@ -22,23 +22,26 @@
 | 上游版本 | 1.1.17 |
 | 服务端 commit | `873230e` |
 | 它的 hbb_common commit | `69cea8d` |
-| 落地位置 | `server/rustdesk-server/`（**独立 workspace**，不参与根目录构建） |
-| 版本指针 | `build/server-vendor.json` |
+| 落地位置 | `server/src/`（**独立 workspace**，不参与根目录构建） |
+| 版本指针 | `build/server/server-vendor.json` |
 | 定制补丁 | `server.patch` |
 | 许可证 | AGPL-3.0 |
 
-> ⚠️ **客户端与服务端的 `libs/hbb_common` 是两个不同的副本，不要合并。**
+> ⚠️ **客户端与服务端的 `client/libs/hbb_common` 是两个不同的副本，不要合并。**
 > 虽然它们来自同一个上游仓库 `rustdesk/hbb_common`，但锁定的 commit 不同
 > （客户端 `229b904` / 服务端 `69cea8d`），强行共用会让其中一边编译不过，
 > 而且客户端那份里还带着我们的品牌注入。
 
-## 整合方式：vendored + 扁平化
+## 整合方式：vendored + 按端分目录
 
-上游源码**扁平化到仓库根**——`Cargo.toml`、`build.py`、`libs/`、`src/`、`flutter/`
-都在最外层，**不是 submodule，不是 subtree，也没有 `rustdesk/` 子目录**。
+上游源码以 **vendored** 方式进仓库，**不是 submodule、不是 subtree**：
 
-源码根即仓库根的好处：`build.py`、官方 CI 脚本、各类教程里写的相对路径
-都能直接对上，不用再做一层目录换算。
+- 客户端（`rustdesk/rustdesk`）→ `client/`
+- 服务端（`rustdesk/rustdesk-server`）→ `server/src/`
+
+`client/` 内部保持上游原样（`Cargo.toml`、`build.py`、`libs/`、`src/`、`flutter/`
+的相对关系不变），这样 `build.py`、官方 CI 脚本、各类教程里写的相对路径都能直接对上，
+追上游时也能按文件对照。之所以没有 `rustdesk/` 这层子目录，就是为了免掉一层目录换算。
 
 这样做的取舍：
 
@@ -54,8 +57,8 @@
 
 ### 关键改动：hbb_common 已实体化
 
-上游 `libs/hbb_common` 是 submodule。整合时已：
-- 删除 `libs/hbb_common/.git`（原本是指向 `.git/modules/...` 的指针文件）
+上游 `client/libs/hbb_common` 是 submodule。整合时已：
+- 删除 `client/libs/hbb_common/.git`（原本是指向 `.git/modules/...` 的指针文件）
 - 删除 `.gitmodules`
 
 **结果**：hbb_common 现在是普通目录，跟随主仓一起提交。
@@ -66,22 +69,22 @@
 
 ## 我们改了什么
 
-定制由 `build/customize.py` 按 `build/custom.toml` 注入，覆盖 13 个文件：
+定制由 `build/client/customize.py` 按 `build/client/custom.toml` 注入，覆盖 13 个文件：
 
 | 文件 | 改了什么 |
 | --- | --- |
-| `libs/hbb_common/src/config.rs` | **核心三值**：`RENDEZVOUS_SERVERS`、`RS_PUB_KEY`、`APP_NAME`；<br>附带 `LINK_DOCS_HOME` / `LINK_DOCS_X11_REQUIRED` 指向自家域名 |
+| `client/libs/hbb_common/src/config.rs` | **核心三值**：`RENDEZVOUS_SERVERS`、`RS_PUB_KEY`、`APP_NAME`；<br>附带 `LINK_DOCS_HOME` / `LINK_DOCS_X11_REQUIRED` 指向自家域名 |
 | `src/common.rs` | 清空官方 API 兜底地址，避免流量外泄到公网 |
-| `src/client.rs` | Linux 侧 X11 / Wayland 登录屏错误提示里的官方文档链接 |
+| `client/src/client.rs` | Linux 侧 X11 / Wayland 登录屏错误提示里的官方文档链接 |
 | `Cargo.toml` | 作者、描述、公司名、`LegalCopyright` |
-| `flutter/windows/runner/Runner.rc` | exe 文件属性：公司名、产品名、exe 名 |
-| `flutter/android/app/src/main/res/values/strings.xml` | 安卓端 app 名 |
-| `flutter/lib/common.dart` | "Powered by" 链接指向自家官网 |
-| `flutter/lib/desktop/pages/install_page.dart` | 安装页隐私政策链接 |
-| `flutter/lib/desktop/pages/desktop_setting_page.dart` | "关于"页：官网、隐私政策、版权行 |
-| `res/msi/Package/Language/Package.en-us.wxl` | MSI 文案：开始菜单项、服务显示名、卸载项（ASCII 品牌名，见下） |
-| `res/msi/preprocess.py` | MSI 的 ARP 技术支持/帮助链接 |
-| `res/rustdesk.desktop` / `res/rustdesk-link.desktop` | Linux 桌面入口里的程序名 |
+| `client/flutter/windows/runner/Runner.rc` | exe 文件属性：公司名、产品名、exe 名 |
+| `client/flutter/android/app/src/main/res/values/strings.xml` | 安卓端 app 名 |
+| `client/flutter/lib/common.dart` | "Powered by" 链接指向自家官网 |
+| `client/flutter/lib/desktop/pages/install_page.dart` | 安装页隐私政策链接 |
+| `client/flutter/lib/desktop/pages/desktop_setting_page.dart` | "关于"页：官网、隐私政策、版权行 |
+| `client/res/msi/Package/Language/Package.en-us.wxl` | MSI 文案：开始菜单项、服务显示名、卸载项（ASCII 品牌名，见下） |
+| `client/res/msi/preprocess.py` | MSI 的 ARP 技术支持/帮助链接 |
+| `client/res/rustdesk.desktop` / `client/res/rustdesk-link.desktop` | Linux 桌面入口里的程序名 |
 
 > **`product_name` 与 `app_name` 为什么是两项**：`app_name` 可以是中文，会写进标题栏、
 > 安装目录与用户配置目录；`product_name` 只给**必须 ASCII / 文件名安全**的场合用
@@ -91,10 +94,10 @@
 
 | 位置 | 为什么留着 |
 | --- | --- |
-| `rustdesk://` 深链 scheme | 改它需要同步改 MSI 注册表、`flutter/ios|macos` 的 `CFBundleURLSchemes`、`flutter/lib/common.dart` 的解析。方案集中在 [10 端口与网络规划](../docs/10-ports.md) 之外的话题，等哪天要做 SSO/门户集成再动 |
+| `rustdesk://` 深链 scheme | 改它需要同步改 MSI 注册表、`client/flutter/ios|macos` 的 `CFBundleURLSchemes`、`client/flutter/lib/common.dart` 的解析。方案集中在 [10 端口与网络规划](../docs/10-ports.md) 之外的话题，等哪天要做 SSO/门户集成再动 |
 | `#[cfg(test)]` 里的官方域名 | 改了会破坏测试意图 |
-| `src/platform/windows.rs` 里的日志/注释/临时文件名 | 只出现在调试日志与 `%TEMP%` 文件名里，用户看不到 |
-| `res/update/`、Linux/macOS/Android/iOS 工程文件 | 当前只构建 Windows；改动无收益且增加上游冲突面 |
+| `client/src/platform/windows.rs` 里的日志/注释/临时文件名 | 只出现在调试日志与 `%TEMP%` 文件名里，用户看不到 |
+| `client/res/update/`、Linux/macOS/Android/iOS 工程文件 | 当前只构建 Windows；改动无收益且增加上游冲突面 |
 | Flutter 翻译键 `verify_rustdesk_password_tip` 等 | 纯 key，界面显示的是译文，无外显 |
 
 改"兜底默认值"而不是硬锁定，用户仍可在设置里改服务器；
@@ -113,7 +116,7 @@
 
 **为什么需要它**：官方更新检查请求的是 `https://api.rustdesk.com/version/latest`。
 上游只在 `check_software_update()`（自动检查）里加了 `is_custom_client()` 早退，
-但用户在"关于"页手动点检查更新时，`src/updater.rs` 会**绕过那道闸**直接调用
+但用户在"关于"页手动点检查更新时，`client/src/updater.rs` 会**绕过那道闸**直接调用
 `do_check_software_update()`，于是照样打到官方域名。这里补的是最后一道防线。
 
 **为什么返回 `Ok` 而不是 `Err`**：`updater.rs` 读 `SOFTWARE_UPDATE_URL` 为空时会走
@@ -133,7 +136,7 @@ python upstream/verify_patch.py             # 验证 13/13（退出码 0 才算�
 
 | 文件 | 改动 | 为什么 |
 | --- | --- | --- |
-| `server/rustdesk-server/src/common.rs` `check_software_update()` | 开头加 `if std::env::var("WEDESK_CHECK_UPDATE").is_err() { return; }` | 见下 |
+| `server/src/src/common.rs` `check_software_update()` | 开头加 `if std::env::var("WEDESK_CHECK_UPDATE").is_err() { return; }` | 见下 |
 
 **为什么需要它**：hbbs/hbbr 启动后会常驻一个线程，每 24 小时向
 `https://api.rustdesk.com/version/latest` POST 一次。服务端跑在私有网络里，
@@ -144,8 +147,8 @@ python upstream/verify_patch.py             # 验证 13/13（退出码 0 才算�
 
 补丁文件：`server.patch`，位置相对**仓库根**（可直接 `git apply upstream/server.patch`）。
 
-> ⚠️ 不要再手工修改 `server/rustdesk-server/` 里的其它文件。
-> 追上游时要跑 `python build/vendor-server.py --server-rev <commit>`，
+> ⚠️ 不要再手工修改 `server/src/` 里的其它文件。
+> 追上游时要跑 `python build/server/vendor-server.py --server-rev <commit>`，
 > 它会把整个目录**整包覆盖**，任何没登记进 `server.patch` 的改动都会静默消失。
 
 ## 补丁与验证
@@ -182,7 +185,7 @@ git checkout -b upgrade-1.5.2
 git clone --recurse-submodules -b 1.5.2 https://github.com/rustdesk/rustdesk /tmp/rd-1.5.2
 
 # 3. 覆盖上游部分：把新版本的这些条目搬到仓库根，覆盖同名项
-#    libs/ src/ flutter/ res/ examples/ fastlane/ flatpak/ appimage/
+#    client/libs/ client/src/ client/flutter/ client/res/ client/examples/ client/fastlane/ client/flatpak/ client/appimage/
 #    .github/ .cargo/ Cargo.toml Cargo.lock build.py build.rs
 #    Dockerfile entrypoint.sh vcpkg.json LICENCE
 #    docs/ 下的上游文档 → docs/upstream/
@@ -194,8 +197,8 @@ git clone --recurse-submodules -b 1.5.2 https://github.com/rustdesk/rustdesk /tm
 #    注意：hbb_common 要连同子模块内容一起复制，并删掉它的 .git 指针文件
 
 # 4. 重新注入定制（推荐，比打补丁更能容忍上游改动）
-python build/customize.py --dry-run
-python build/customize.py
+python build/client/customize.py --dry-run
+python build/client/customize.py
 
 # 4'. 或者重放补丁（上游改动大时容易冲突，按需选择）
 #     git apply upstream/custom.patch

@@ -47,7 +47,7 @@ E 还要保证新旧客户端协议兼容（否则老客户端连不上）。
 
 **步骤**：
 
-1. 改 `flutter/lib/` 下的 Dart 代码
+1. 改 `client/flutter/lib/` 下的 Dart 代码
 2. 如果需要读持久化配置，用 `bind.mainGetOptionSync(key)` / `bind.mainSetOption(key, value)`
 3. 本地验证：`flutter run -d windows`（或直接在构建产物上看效果）
 
@@ -61,7 +61,7 @@ E 还要保证新旧客户端协议兼容（否则老客户端连不上）。
 
 **步骤**：
 
-1. **在 `src/flutter_ffi.rs` 加导出函数**：
+1. **在 `client/src/flutter_ffi.rs` 加导出函数**：
 
    ```rust
    #[inline]
@@ -74,7 +74,7 @@ E 还要保证新旧客户端协议兼容（否则老客户端连不上）。
 2. ⚠️ **重新生成 bridge**（最容易漏的一步）：
 
    ```bash
-   python build/generate-bridge.py
+   python build/client/generate-bridge.py
    ```
 
    不跑这一步，Dart 侧根本看不到 `bind.getMyNewValue`，会报 `undefined name`。
@@ -94,7 +94,7 @@ E 还要保证新旧客户端协议兼容（否则老客户端连不上）。
 
 **步骤**：
 
-1. **在 `src/flutter_ffi.rs` 加带 `StreamSink` 的导出函数**：
+1. **在 `client/src/flutter_ffi.rs` 加带 `StreamSink` 的导出函数**：
 
    ```rust
    pub fn start_my_event_stream(s: StreamSink<String>) -> ResultType<()> {
@@ -127,13 +127,13 @@ E 还要保证新旧客户端协议兼容（否则老客户端连不上）。
 
 | 你想改什么 | 入口文件 |
 |---|---|
-| 注册 ID / 心跳 / 打洞 / 中继协调 | `src/rendezvous_mediator.rs` |
-| 被控端单条会话的处理 | `src/server/connection.rs` |
-| 屏幕采集 | `src/server/video_service.rs` |
-| 键鼠注入 | `src/server/input_service.rs` |
-| 控制端收包与渲染 | `src/client/io_loop.rs` |
-| 服务进程与 UI 进程通信 | `src/ipc.rs` |
-| 启动与命令行 | `src/core_main.rs` |
+| 注册 ID / 心跳 / 打洞 / 中继协调 | `client/src/rendezvous_mediator.rs` |
+| 被控端单条会话的处理 | `client/src/server/connection.rs` |
+| 屏幕采集 | `client/src/server/video_service.rs` |
+| 键鼠注入 | `client/src/server/input_service.rs` |
+| 控制端收包与渲染 | `client/src/client/io_loop.rs` |
+| 服务进程与 UI 进程通信 | `client/src/ipc.rs` |
+| 启动与命令行 | `client/src/core_main.rs` |
 
 **改完要自问三件事**：
 
@@ -147,9 +147,9 @@ E 还要保证新旧客户端协议兼容（否则老客户端连不上）。
 
 **例子**：新增一种消息类型、改握手流程。
 
-1. 改 `libs/hbb_common/protos/*.proto`
+1. 改 `client/libs/hbb_common/protos/*.proto`
 2. 重新生成 protobuf Rust 代码（构建期自动，`build.rs`）
-3. **两端都要改**：控制端 `src/client/` + 被控端 `src/server/`
+3. **两端都要改**：控制端 `client/src/client/` + 被控端 `client/src/server/`
 4. ⚠️ **兼容性**：老客户端装的还是旧协议。要么做版本协商，要么**强制全量升级**
 
 > 除非确有必要，**避免改协议**。绝大多数需求可以在现有消息里加字段解决。
@@ -160,7 +160,7 @@ E 还要保证新旧客户端协议兼容（否则老客户端连不上）。
 
 ```
 □ 判断了属于哪一类（A~E）
-□ 改了 src/flutter_ffi.rs → 已重跑 generate-bridge.py
+□ 改了 client/src/flutter_ffi.rs → 已重跑 generate-bridge.py
 □ Dart 侧能拿到新函数（编译期不报 undefined）
 □ 需要推事件的：StreamSink 已接上，UI 有响应
 □ 改了那 8 个定制文件之一 → 已重跑 verify_patch.py --regen
@@ -178,7 +178,7 @@ E 还要保证新旧客户端协议兼容（否则老客户端连不上）。
 ### 3.1 核心原则
 
 ```
-上游的东西：libs/ src/ flutter/ res/ examples/ fastlane/ flatpak/ appimage/
+上游的东西：client/libs/ client/src/ client/flutter/ client/res/ client/examples/ client/fastlane/ client/flatpak/ client/appimage/
             .github/patches/ Cargo.toml Cargo.lock build.py build.rs
             Dockerfile entrypoint.sh vcpkg.json LICENCE docs/upstream/
             → 可以覆盖
@@ -200,11 +200,11 @@ git clone --recurse-submodules -b 1.5.2 https://github.com/rustdesk/rustdesk /tm
 # 3. 覆盖上游部分（注意 hbb_common 要删掉它的 .git 指针文件）
 
 # 4. 重新注入定制（推荐，比打补丁更能容忍上游改动）
-python build/customize.py --dry-run
-python build/customize.py
+python build/client/customize.py --dry-run
+python build/client/customize.py
 
 # 5. 手工源码改动要重做 —— 查 upstream/UPSTREAM.md 的「手工源码改动」表
-#    当前有 1 处：src/common.rs 的 do_check_software_update()
+#    当前有 1 处：client/src/common.rs 的 do_check_software_update()
 
 # 6. 重建并验证补丁
 python upstream/verify_patch.py --regen
@@ -230,9 +230,9 @@ python upstream/verify_patch.py        # 退出码 0 才通过
 
 ### 4.1 判断是否动了"定制覆盖的 13 个文件"
 
-`customize.py` 会改这 13 个：`libs/hbb_common/src/config.rs`、`src/common.rs`、`Cargo.toml`、
-`flutter/windows/runner/Runner.rc`、`flutter/android/.../strings.xml`、`flutter/lib/common.dart`、
-`flutter/lib/desktop/pages/install_page.dart`、`flutter/lib/desktop/pages/desktop_setting_page.dart`。
+`customize.py` 会改这 13 个：`client/libs/hbb_common/src/config.rs`、`client/src/common.rs`、`Cargo.toml`、
+`client/flutter/windows/runner/Runner.rc`、`client/flutter/android/.../strings.xml`、`client/flutter/lib/common.dart`、
+`client/flutter/lib/desktop/pages/install_page.dart`、`client/flutter/lib/desktop/pages/desktop_setting_page.dart`。
 
 **只要动了其中任何一个，就必须重建补丁**：
 
@@ -252,7 +252,7 @@ python upstream/verify_patch.py             # 验证（退出码 0 才通过）
 
 | 文件 | 改动 | 为什么必须这样 |
 |---|---|---|
-| `src/common.rs` `do_check_software_update()` | 开头加 `if is_custom_client() { return Ok(()); }` | 上游只在自动检查处设了闸，手动点"检查更新"会绕过它打到官方域名 |
+| `client/src/common.rs` `do_check_software_update()` | 开头加 `if is_custom_client() { return Ok(()); }` | 上游只在自动检查处设了闸，手动点"检查更新"会绕过它打到官方域名 |
 
 > **为什么返回 `Ok` 而不是 `Err`**：`updater.rs` 读到空的更新 URL 时走
 > `"No update available."` 分支，UI 显示"已是最新"，不会弹任何报错。
@@ -276,19 +276,19 @@ python upstream/verify_patch.py             # 验证（退出码 0 才通过）
 
 ```bash
 # 环境体检（构建失败时第一个跑这个）
-python build/check-env.py
+python build/client/check-env.py
 
 # Rust 工具链坏了（转发壳 0 字节、命令不可用）
-python build/fix-rust.py --check
-python build/fix-rust.py
+python build/client/fix-rust.py --check
+python build/client/fix-rust.py
 
 # 品牌注入
-python build/customize.py --dry-run
-python build/customize.py
+python build/client/customize.py --dry-run
+python build/client/customize.py
 
 # bridge 胶水代码（改了 flutter_ffi.rs 后必跑）
-python build/generate-bridge.py --check
-python build/generate-bridge.py
+python build/client/generate-bridge.py --check
+python build/client/generate-bridge.py
 
 # 补丁验证（改了定制覆盖的文件后必跑）
 python upstream/verify_patch.py --regen
@@ -303,7 +303,7 @@ cd server && python rdctl.py backup
 
 ## 六、什么时候该怀疑"定制被冲掉了"
 
-出现下面任一现象，先跑 `python build/customize.py --dry-run` 看命中数：
+出现下面任一现象，先跑 `python build/client/customize.py --dry-run` 看命中数：
 
 - 客户端标题又变回 "RustDesk"
 - 连不上自家服务器，但填官方服务器能连

@@ -214,7 +214,7 @@ INFO [src/rendezvous_server.rs:223] Start
 
 ### 4.1 服务器地址的五层优先级
 
-客户端不是只有一个地方能指定服务器。`libs/hbb_common/src/config.rs` 的
+客户端不是只有一个地方能指定服务器。`client/libs/hbb_common/src/config.rs` 的
 解析链（**从高到低**）：
 
 ```
@@ -431,7 +431,7 @@ cd server && python rdctl.py backup
 
 ### 6.1 服务端可调参数
 
-改 `server/docker-compose.yml` 的 `environment:` 段，然后 `restart`。
+改 `server/deploy/docker-compose.yml` 的 `environment:` 段，然后 `restart`。
 
 **hbbr 的限流参数**（`src/relay_server.rs` 的 `check_params()`）：
 
@@ -500,14 +500,14 @@ sqlite3 server/data/db_v2.sqlite3 "select id, created_at, status from peer order
 | 改限流 / 改日志级别 / 改强制中继 | `docker-compose.yml` 的 `environment` | 否，重启即可 |
 | 封禁某些 IP | `data/blacklist.txt` | 否，重启 hbbr |
 | 改端口 | `.env` + `custom.toml` + 防火墙 | **是**，客户端要重新构建 |
-| 改服务端业务逻辑 | `server/rustdesk-server/src/` | 是，重编镜像 |
+| 改服务端业务逻辑 | `server/src/src/` | 是，重编镜像 |
 | 改客户端 UI / 加功能 | 见 [06-maintenance.md](06-maintenance.md) 的 SOP | 是 |
 | 接自己的认证 / 审计 | 上游没有现成钩子，需要改源码或外挂代理 | 是，且最重 |
 
 **服务端二次开发的入口**：
 
 ```
-server/rustdesk-server/
+server/src/
 ├── src/main.rs               # hbbs 入口（命令行参数在这定义）
 ├── src/hbbr.rs               # hbbr 入口
 ├── src/rendezvous_server.rs  # hbbs 主逻辑：注册、心跳、打洞协调
@@ -553,7 +553,7 @@ hbbr 改听 **5189**（PORT 会 +1），或者 `RELAY_HOST` 里的值覆盖掉
 `HBBS_PORT` / `HBBS_NAT_PORT` / `HBBR_PORT` 同时决定**宿主机映射**和**容器内 `-p`**，
 两侧永远一致。但改完之后：
 
-- `build/custom.toml` 的 `rendezvous_host` 必须跟着改
+- `build/client/custom.toml` 的 `rendezvous_host` 必须跟着改
 - **客户端必须重新构建分发**，否则还在按旧端口连
 
 `HBBS_NAT_PORT` 必须等于 `HBBS_PORT - 1`（源码 `nat_port = port - 1`，没有开关）。

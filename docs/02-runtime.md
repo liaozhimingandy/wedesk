@@ -116,7 +116,7 @@ hbbs 的作用是**告诉双方对方的外网地址是什么**，它不参与�
 
 ```mermaid
 flowchart LR
-    subgraph S["被控端 src/server/"]
+    subgraph S["被控端 client/src/server/"]
         V["video_service.rs<br/>屏幕采集 + 编码 VP9/AV1"]
         A["audio_service.rs<br/>音频采集"]
         I["input_service.rs<br/>键鼠注入"]
@@ -132,16 +132,16 @@ flowchart LR
     F --> NET
     T --> NET
 
-    NET -->|"P2P 或 中继"| SUB["src/client/<br/>解码 · 渲染 · 回放"]
+    NET -->|"P2P 或 中继"| SUB["client/src/client/<br/>解码 · 渲染 · 回放"]
 ```
 
 | 流 | 被控端实现 | 控制端实现 | 降级/限制点 |
 |---|---|---|---|
-| 视频 | `video_service.rs` | `client/io_loop.rs` | `video_qos/` 会按网络质量降码率 |
-| 音频 | `audio_service.rs` | `client/audio_playback.rs` | 有断流恢复逻辑 |
+| 视频 | `video_service.rs` | `client/src/client/io_loop.rs` | `video_qos/` 会按网络质量降码率 |
+| 音频 | `audio_service.rs` | `client/src/client/audio_playback.rs` | 有断流恢复逻辑 |
 | 输入 | `input_service.rs` | 键鼠事件上行 | 权限控制（是否允许控制） |
 | 剪贴板 | `clipboard_service.rs` | 双向同步 | 可单独禁用 |
-| 文件 | 文件传输服务 | `client/file_trait.rs` | **防泄密重点关注** |
+| 文件 | 文件传输服务 | `client/src/client/file_trait.rs` | **防泄密重点关注** |
 | 终端 | `terminal_service.rs` | — | Linux/macOS 为主 |
 
 > **想禁用某条流做合规（比如禁文件传输）**，最彻底的做法是**两端同时改**：
@@ -156,12 +156,12 @@ Windows 上有两种运行形态：
 ```mermaid
 flowchart TB
     subgraph SYS["系统服务进程（SYSTEM 权限）"]
-        SV["--service 模式<br/>src/service.rs"]
+        SV["--service 模式<br/>client/src/service.rs"]
     end
     subgraph USR["用户界面进程（当前用户）"]
         UI["Flutter UI"]
     end
-    SV <-->|"IPC：命名管道 / Unix socket<br/>src/ipc.rs"| UI
+    SV <-->|"IPC：命名管道 / Unix socket<br/>client/src/ipc.rs"| UI
 ```
 
 **为什么需要服务进程**：
@@ -171,7 +171,7 @@ flowchart TB
 - 切换用户不掉线
 
 **IPC 通信内容**：连接请求、权限确认弹窗、配置同步、状态上报。
-`is_service_ipc_postfix()`（`libs/hbb_common/src/config.rs`）保护 `_service` 这个跨用户 IPC 通道名。
+`is_service_ipc_postfix()`（`client/libs/hbb_common/src/config.rs`）保护 `_service` 这个跨用户 IPC 通道名。
 
 > 单人单机使用可以不装服务，双击 exe 就行。
 > **要做"网管随时能接管"就必须装服务**（`--silent-install` / 服务安装）。
@@ -187,17 +187,17 @@ flowchart TB
 
 | 位置 | 函数 | 状态 |
 |---|---|---|
-| `src/common.rs` | `check_software_update()`（自动检查） | 上游本来就有 `is_custom_client()` 早退 |
-| `src/common.rs` | `do_check_software_update()`（手动点"检查更新"） | ⭐ **我们补的** —— 上游漏了这道 |
+| `client/src/common.rs` | `check_software_update()`（自动检查） | 上游本来就有 `is_custom_client()` 早退 |
+| `client/src/common.rs` | `do_check_software_update()`（手动点"检查更新"） | ⭐ **我们补的** —— 上游漏了这道 |
 
-**为什么必须补第二道**：用户在"关于"页手动点检查更新时，`src/updater.rs` 会**绕过第一道闸**直接调 `do_check_software_update()`。
+**为什么必须补第二道**：用户在"关于"页手动点检查更新时，`client/src/updater.rs` 会**绕过第一道闸**直接调 `do_check_software_update()`。
 上游只在自动检查处设了卡点，手动路径是敞开的。
 
 **为什么返回 `Ok` 而不是 `Err`**：`updater.rs` 读到空的更新 URL 时会走 `"No update available."` 分支，
 UI 显示"已是最新版本"，不会弹任何报错。断网这个动作对用户是**无感的**。
 
 ```rust
-// src/common.rs — do_check_software_update() 开头
+// client/src/common.rs — do_check_software_update() 开头
 if is_custom_client() {
     return Ok(());
 }

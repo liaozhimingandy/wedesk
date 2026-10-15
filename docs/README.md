@@ -8,10 +8,13 @@
 
 | # | 文档 | 回答什么问题 |
 |---|---|---|
+| 00 | [仓库结构导览](00-repo-layout.md) | **先读这篇。** 仓库里都有什么？我想改 X 该动哪个文件？ |
 | 01 | [架构总览](01-architecture.md) | 分几层？各目录干什么？exe 是怎么拼出来的？ |
 | 02 | [运行原理](02-runtime.md) | 输入 ID 按下连接，中间发生了什么？打洞和中继怎么工作的？ |
 
-> **先看这两篇。** 跳过它们直接改代码，很容易出现"改了但没反应"——
+> **先看 00。** 它有一张全仓目录树和一张「改 X 动哪里」速查表，
+> 后面所有文档都默认你已经知道文件在哪。
+> 跳过它直接读其它篇，很容易出现"改了但没反应"——
 > 因为不知道 Rust 和 Flutter 之间隔着一层自动生成的代码桥。
 
 ---
@@ -66,7 +69,7 @@
 
 改这个项目前，请把这三条记住 —— 它们是过去踩坑的总结：
 
-1. **改了 `src/flutter_ffi.rs` 必须重跑 `python build/generate-bridge.py`**
+1. **改了 `client/src/flutter_ffi.rs` 必须重跑 `python build/client/generate-bridge.py`**
    否则 Dart 侧看不到新函数。这是"改了但没反应"的头号原因。
 
 2. **改了 `customize.py` 覆盖的 13 个文件，必须重跑 `python upstream/verify_patch.py --regen`**
@@ -80,14 +83,21 @@
 ## 七、一分钟速查
 
 ```bash
-python build/check-env.py                  # 环境体检（构建失败时第一个跑）
-python build/customize.py --dry-run        # 看品牌注入命中情况
-python build/generate-bridge.py --check    # bridge 是否就绪
+python build/client/check-env.py                  # 环境体检（构建失败时第一个跑）
+python build/client/customize.py --dry-run        # 看品牌注入命中情况
+python build/client/generate-bridge.py --check    # bridge 是否就绪
 python upstream/verify_patch.py            # 补丁是否仍可重放
-cd server && python rdctl.py status        # 服务端状态
-python rdctl.py build         # 服务端：从源码构建镜像（首次）
+python build/common/check-workflow.py             # 工作流审计（推送前跑）
 
-build\tag-release.bat --dry                # 预演发版（看将要打什么标签）
-build\tag-release.bat                      # 发版：打标签 → CI 自动发布 Release
-                                           #        同时产出客户端 exe/MSI 与服务端 hbbs/hbbr
+cd server/deploy
+python rdctl.py status        # 服务端状态
+python rdctl.py ports         # 端口映射核对
+python rdctl.py build         # 服务端：从源码构建镜像（首次，15-25 分钟）
+
+cd ../../build/common
+tag-release.bat --dry         # 预演发版（看将要打什么标签）
+tag-release.bat               # 发版：打标签 → CI 自动发布 Release
+                              #        同时产出客户端 exe/MSI 与服务端 hbbs/hbbr
 ```
+
+> 各脚本归哪一段、什么时候跑，见 [`../build/README.md`](../build/README.md)。

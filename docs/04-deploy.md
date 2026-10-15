@@ -49,17 +49,17 @@ flowchart TB
 ### 2.2 三步启动
 
 ```bash
-cd server
-cp .env.example .env        # 复制配置模板
+cd server\deploy
+copy .env.example .env      # 复制配置模板
 # 编辑 .env，把 RELAY_HOST 改成服务器的实际 IP 或域名
 python rdctl.py start       # 没有本地镜像时会先自动从源码构建（首次约 15-25 分钟）
 python rdctl.py key         # 打印公钥 —— 记下来，客户端要用
 ```
 
-`rdctl.py key` 输出的这串 Base64 就是 `RS_PUB_KEY`，需要填进 `build/custom.toml`。
+`rdctl.py key` 输出的这串 Base64 就是 `RS_PUB_KEY`，需要填进 `build/client/custom.toml`。
 
 > **容器里的二进制是自己编译出来的**，不是 `rustdesk/rustdesk-server` 官方镜像。
-> 源码就在 `server/rustdesk-server/`，编译过程见 [09 服务端自编译](09-server-build.md)。
+> 源码就在 `server/src/`，编译过程见 [09 服务端自编译](09-server-build.md)。
 > 想手工重新构建：`python rdctl.py build`（等价于 `docker compose build`）。
 
 ### 2.3 常用命令
@@ -151,7 +151,7 @@ server/data/
 
 ## 四、客户端分发
 
-构建产物在 `flutter/build/windows/x64/runner/Release/`：
+构建产物在 `client/flutter/build/windows/x64/runner/Release/`：
 
 ```
 Release/

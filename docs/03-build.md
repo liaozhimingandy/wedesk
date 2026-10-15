@@ -115,7 +115,7 @@ build-local.bat
 
 ## 3. 关于 bridge（最容易漏的一步）
 
-`src/bridge_generated.rs` 和 `flutter/lib/generated_bridge.dart` 是
+`client/src/bridge_generated.rs` 和 `client/flutter/lib/generated_bridge.dart` 是
 **flutter-rust-bridge 生成的**，被 `.gitignore` 排除，仓库里没有。少了它们：
 
 ```
@@ -126,34 +126,34 @@ flutter build -> Target of URI hasn't been generated: 'generated_bridge.dart'
 `build-local.bat` 会自动检查并在缺失时生成，你也可以单独跑：
 
 ```bat
-python build\generate-bridge.py --check     REM 只看是否就绪
-python build\generate-bridge.py             REM 生成
-python build\generate-bridge.py --force     REM 改了 src/flutter_ffi.rs 后强制重生成
+python build\client\generate-bridge.py --check     REM 只看是否就绪
+python build\client\generate-bridge.py             REM 生成
+python build\client\generate-bridge.py --force     REM 改了 client/src/flutter_ffi.rs 后强制重生成
 ```
 
 生成器本身是从源码 `cargo install` 的，首次约 5–15 分钟。
-**中途别 kill** —— 半途中断会留下损坏的二进制，只能删掉 `build\.tools\frb` 重来。
+**中途别 kill** —— 半途中断会留下损坏的二进制，只能删掉 `build\client\.tools\frb` 重来。
 
 ---
 
 ## 4. 品牌注入
 
 ```bat
-python build\customize.py --dry-run    REM 先预览，不写盘
-python build\customize.py              REM 再写入
+python build\client\customize.py --dry-run    REM 先预览，不写盘
+python build\client\customize.py              REM 再写入
 ```
 
 脚本是**幂等**的：源码已是目标值时什么都不会做，也没有脏 diff，可以放心反复跑。
-改了 `build\custom.toml` 后重跑即可生效。临时改某一项不用编辑文件：
+改了 `build\client\custom.toml` 后重跑即可生效。临时改某一项不用编辑文件：
 
 ```bat
-python build\customize.py --set brand.company_name="某某科技"
+python build\client\customize.py --set brand.company_name="某某科技"
 ```
 
 撤销（依赖 `*.rd.bak` 备份）：
 
 ```bat
-python build\customize.py --restore
+python build\client\customize.py --restore
 ```
 
 ---
@@ -168,11 +168,11 @@ python build\customize.py --restore
 截断成 0 字节——它们是 rustup.exe 的硬链接，rustup 靠 `argv[0]` 判断自己该扮演谁，
 所以 0 字节就等于全废。
 
-**修复**（`build\fix-rust.py`，已内置全部要点）：
+**修复**（`build\client\fix-rust.py`，已内置全部要点）：
 
 ```bat
-python build\fix-rust.py --check    REM 体检
-python build\fix-rust.py            REM 修复
+python build\client\fix-rust.py --check    REM 体检
+python build\client\fix-rust.py            REM 修复
 ```
 
 关键两点，脚本里都有注释说明为什么：

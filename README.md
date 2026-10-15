@@ -27,45 +27,60 @@
 ## 二、目录说明
 
 这是一个**自包含仓库**：`git clone` 一次即可构建，不需要 `--recurse-submodules`，
-也不依赖 GitHub。上游 RustDesk 源码已**扁平化到仓库根**——源码根即仓库根，
-`build.py`、`Cargo.toml` 都在最外层，与上游的目录约定一致，脚本和 CI 都不需要额外跳目录。
+也不依赖 GitHub。上游 RustDesk 源码以 **vendored** 方式进仓库，按端分成两大块：
+客户端在 `client/`，服务端在 `server/src/`。
 
 ```
-wedesk/                          ← 最终仓库，自主可控（源码根 = 仓库根）
+wedesk/                          ← 最终仓库，自主可控
 │
-├── ── 上游源码（v1.5.1，已注入定制）──────────────
-├── libs/                        核心库，hbb_common 已实体化（不再是 submodule）
-├── src/                         Rust 侧：被控端 / 控制端
-├── flutter/                     Flutter UI
-├── res/                         图标、logo 等品牌资源
-├── build.py                     上游构建入口（python build.py ...）
-├── Cargo.toml  Cargo.lock
-├── LICENCE                      AGPL-3.0，随仓库保留以满足合规
-├── .github/  .cargo/  examples/  fastlane/  flatpak/  appimage/
+├── ── 客户端（上游 rustdesk，v1.5.1，已注入定制）──────────
+├── client/
+│   ├── src/                         Rust 侧：被控端 / 控制端
+│   ├── libs/                        核心库，hbb_common 已实体化（不再是 submodule）
+│   ├── flutter/                     Flutter UI
+│   ├── res/                         图标、logo 等品牌资源
+│   ├── build.py  Cargo.toml        构建入口与 workspace 定义（上游原样，未改）
+│   ├── LICENCE                      AGPL-3.0，随仓库保留以满足合规
+│   └── .cargo/  examples/  fastlane/  flatpak/  appimage/  vcpkg.json
+│       Dockerfile                  注意：这是【客户端】的 Linux 构建镜像，与服务端无关
 │
-├── ── 我们自己的东西 ──────────────────────────
-├── server/                      自建服务器端
-│   ├── rustdesk-server/         ★ 服务端源码（hbbs/hbbr），上游另一仓库，已 vendor
-│   ├── Dockerfile               容器内从源码编译 → 自有镜像
-│   ├── Dockerfile.prebuilt      CI 用：直接装已编译二进制
-│   ├── build-musl.sh            ★ 编译脚本 —— Dockerfile 与 CI 共用这一份
-│   ├── docker-compose.yml       hbbs(ID/注册) + hbbr(中继)，默认本地构建
-│   ├── .env.example             配置项模板，复制为 .env 后填写
-│   └── rdctl.py                 跨平台管理工具（构建/启停/端口/查公钥/备份）
+├── ── 服务端（上游 rustdesk-server，已 vendor）────────────
+├── server/
+│   ├── src/                     ★ 服务端源码（hbbs/hbbr），独立 Cargo workspace
+│   │   ├── src/                 hbbs、hbbr、rustdesk-utils 三个 bin
+│   │   ├── libs/hbb_common/     服务端自己那份（勿与客户端合并，锁定 commit 不同）
+│   │   └── systemd/             裸机部署的 service 文件
+│   ├── deploy/                  部署资产：怎么把 src/ 编出来的二进制跑起来
+│   │   ├── Dockerfile           容器内从源码编译 → 自有镜像
+│   │   ├── Dockerfile.prebuilt   CI 用：直接装已编译二进制
+│   │   ├── build-musl.sh        ★ 编译脚本 —— Dockerfile 与 CI 共用这一份
+│   │   ├── docker-compose.yml   hbbs(ID/注册) + hbbr(中继)，默认本地构建
+│   │   ├── .env.example         配置项模板，复制为 .env 后填写
+│   │   ├── rdctl.py             跨平台管理工具（构建/启停/端口/查公钥/备份）
+│   │   └── check-bins.sh        构建期自检：三个二进制必须真能执行
+│   ├── .dockerignore            把 data/ 私钥挡在镜像之外（必须在 context 根）
+│   └── data/                    运行时：id_ed25519 私钥 + SQLite（gitignore，勿提交）
 │
-├── build/                       客户端定制与构建
-│   ├── custom.toml              ★ 唯一需要你改的配置文件
-│   ├── customize.py             注入器，可反复运行（改配置后重跑即可）
-│   ├── .custom-state.json       记录上次注入的值，自动维护
-│   ├── patch-ci.py              CI 补丁工具（GitHub Actions 云编译用）
-│   ├── check-env.bat            环境体检
-│   ├── install-vcpkg-deps.bat   vcpkg + C++ 依赖（30–120 min）
-│   ├── apply-rustdesk-engine.bat Flutter SDK + 替换自研 engine
-│   ├── build-local.bat          一键构建客户端
-│   ├── build-server.bat         编译服务端 Windows exe
-│   ├── build-server-image.bat   docker 构建服务端镜像（本机无需 Rust）
-│   ├── vendor-server.py         追上游服务端版本并重新导出源码
-│   └── branding/                放你的图标、logo（替换客户端图标）
+├── ── 我们自己的工具 ──────────────────────────────
+├── build/                       构建与定制脚本，按服务对象分三段
+│   ├── client/                  只服务客户端
+│   │   ├── custom.toml          ★ 唯一需要你改的配置文件
+│   │   ├── customize.py         注入器，可反复运行（改配置后重跑即可）
+│   │   ├── generate-bridge.py   生成 Rust↔Dart 胶水代码（改 flutter_ffi.rs 后必跑）
+│   │   ├── check-env.py/.bat    环境体检
+│   │   ├── install-vcpkg-deps.bat  vcpkg + C++ 依赖（30–120 min）
+│   │   ├── apply-rustdesk-engine.bat Flutter SDK + 替换自研 engine
+│   │   ├── build-local.bat      一键构建客户端
+│   │   └── fix-rust.py  patch-ci.py  branding/  .tools/
+│   ├── server/                  只服务服务端
+│   │   ├── vendor-server.py     追上游服务端版本并重新导出源码
+│   │   ├── server-vendor.json   记录上游 commit
+│   │   ├── build-server.bat     编译服务端 Windows exe
+│   │   └── build-server-image.bat  docker 构建服务端镜像（本机无需 Rust）
+│   └── common/                  跨端共用
+│       ├── check-workflow.py    工作流静态审计（推送前跑）
+│       ├── get-version.py       从 Cargo.toml 取版本号
+│       └── tag-release.bat      打 v* 标签 → CI 自动发布
 │
 ├── upstream/                    上游基线与升级
 │   ├── UPSTREAM.md              版本信息、改了什么、升级流程
@@ -75,6 +90,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 │
 ├── docs/                        文档（见下方「文档导航」）
 │   ├── README.md                索引 —— 不知道看哪篇就从这里进
+│   ├── 00-repo-layout.md        ★ 仓库结构导览 + 「改 X 动哪里」速查表
 │   ├── 01-architecture.md       架构总览：分层、目录职责、构建产物关系
 │   ├── 02-runtime.md            运行原理：ID 注册、打洞、中继、会话数据流
 │   ├── 03-build.md              本地构建（Windows）
@@ -85,6 +101,8 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 │   ├── 07-faq.md                故障排查
 │   ├── 08-performance.md        性能：硬件编解码、画质取舍、资源占用
 │   ├── 09-server-build.md       服务端自编译：源码位置、三条产出路径、裸机部署
+│   ├── 10-ports.md              端口与网络规划
+│   ├── 11-server-ops.md         服务端运维与客户端接入
 │   ├── upstream/                上游自带文档（README、AGENTS.md 等）
 │   └── upstream-i18n/           上游 60 份多语言文档（留档，与本项目无关）
 │
@@ -92,6 +110,10 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 ├── .gitignore                   见下方「为什么要自己写 .gitignore」
 └── .gitattributes               换行策略：*.bat 强制 CRLF，其余 LF
 ```
+
+> **不知道某个文件是干什么的，或想改 X 不知道动哪里** → 看
+> [`docs/00-repo-layout.md`](docs/00-repo-layout.md)，里面有完整的
+> 「改 X 动哪里」速查表。
 
 ### 为什么把上游源码直接放进仓库
 
@@ -104,13 +126,13 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 选 vendored 的理由：这是最终交付仓库，第一诉求是"clone 下来就能构建"。
 历史丢失用 `upstream/custom.patch` + `UPSTREAM.md` 补偿。
 
-> ⚠️ **`libs/hbb_common` 已被实体化**（删掉了它的 `.git` 指针和 `.gitmodules`）。
+> ⚠️ **`client/libs/hbb_common` 已被实体化**（删掉了它的 `.git` 指针和 `.gitmodules`）。
 > 服务器地址、公钥、APP_NAME 都定义在这里。若误恢复成 submodule，定制会静默失效。
 
 ### 为什么要自己维护 `.gitignore`（而不是沿用上游的）
 
 上游 `.gitignore` 第 1 行是 `/build`。在它自己的仓库里这条规则无害
-（上游根本没有顶层 `build/` 目录，它的产物在 `flutter/build/` 和 `build-pkg/`），
+（上游根本没有顶层 `build/` 目录，它的产物在 `client/flutter/build/` 和 `build-pkg/`），
 但本仓库的 `build/` 放的是**构建脚本**，照搬就会把整个脚本目录忽略掉。
 
 本仓库的 `.gitignore` 是三套规则合并的结果，特别注意：
@@ -120,7 +142,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
   （在上游仓库因文件早已 tracked 而失效，问题被掩盖；
   到新仓库后所有文件是 untracked，规则立刻生效）
   因此**末尾有解禁白名单，必须留在文件最后**才生效
-- 上游产物目录 `flutter/build/` 由 `flutter/.gitignore` 管，`build-pkg/` 在此处管
+- 上游产物目录 `client/flutter/build/` 由 `client/flutter/.gitignore` 管，`build-pkg/` 在此处管
 
 ---
 
@@ -132,7 +154,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 |---|---|
 | **搞懂这套东西怎么跑的** | [01 架构总览](docs/01-architecture.md) → [02 运行原理](docs/02-runtime.md) |
 | **拿到一个 exe** | [03b GitHub Actions 云构建](docs/03b-ci.md)（推荐）或 [03 本地构建](docs/03-build.md) |
-| **发一个正式版本** | `build\tag-release.bat` —— 打标签即自动构建并发布 Release（见 [03b](docs/03b-ci.md)）<br>一次产出：客户端便携版 / MSI + **服务端 hbbs/hbbr** + Docker Hub 镜像 |
+| **发一个正式版本** | `build\common\tag-release.bat` —— 打标签即自动构建并发布 Release（见 [03b](docs/03b-ci.md)）<br>一次产出：客户端便携版 / MSI + **服务端 hbbs/hbbr** + Docker Hub 镜像 |
 | **上线给用户用** | [04 部署指南](docs/04-deploy.md) |
 | **端口怎么规划 / 上公网怎么配防火墙** | [10 端口与网络规划](docs/10-ports.md)<br>对外只要 3 个：TCP 5186/5187 + UDP 5187 + TCP 5188 |
 | **不想用官方服务端镜像，要自己编译 hbbs/hbbr** | [09 服务端自编译](docs/09-server-build.md) |
@@ -146,7 +168,7 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 
 ### 改代码前必须知道的三条
 
-1. **改了 `src/flutter_ffi.rs` 必须重跑 `python build/generate-bridge.py`**
+1. **改了 `client/src/flutter_ffi.rs` 必须重跑 `python build/client/generate-bridge.py`**
 2. **改了 `customize.py` 覆盖的 13 个文件，必须重跑 `python upstream/verify_patch.py --regen`**
 3. **带逻辑判断的源码改动要登记到 `upstream/UPSTREAM.md`**（升级时脚本不会帮你重建）
 
@@ -160,8 +182,8 @@ wedesk/                          ← 最终仓库，自主可控（源码根 = �
 ### 第 1 步：起服务器（`server/`）
 
 ```bash
-cd server
-cp .env.example .env          # 编辑 .env，把 RELAY_HOST 改成你的 IP/域名
+cd server\deploy
+copy .env.example .env         # 编辑 .env，把 RELAY_HOST 改成你的 IP/域名
 python rdctl.py start
 ```
 
@@ -177,7 +199,7 @@ python rdctl.py start
 > `TCP 5186, 5187, 5188` 和 `UDP 5187`。
 > 只开 TCP 不开 UDP 会导致"ID 能注册但连不上"——这是最常见的坑。
 
-### 第 2 步：改配置（`build/custom.toml`）
+### 第 2 步：改配置（`build/client/custom.toml`）
 
 ```toml
 [server]
@@ -196,11 +218,11 @@ website   = "https://你的内网地址"
 
 ### 第 3 步：提交并触发构建
 
-**不需要再 fork RustDesk —— 上游源码已经在仓库里了**（`libs/hbb_common` 等子模块已
+**不需要再 fork RustDesk —— 上游源码已经在仓库里了**（`client/libs/hbb_common` 等子模块已
 实体化，clone 下来就能编译）。直接：
 
 ```bash
-git add build/custom.toml && git commit -m "chore: 更新服务器地址与品牌信息"
+git add build/client/custom.toml && git commit -m "chore: 更新服务器地址与品牌信息"
 git push
 ```
 
@@ -211,13 +233,13 @@ git push
 
 | 输入项 | 说明 |
 |---|---|
-| `company_name` / `website` | 覆盖 `build/custom.toml` 里的值 |
+| `company_name` / `website` | 覆盖 `build/client/custom.toml` 里的值 |
 | `build_args` | 传给 `build.py` 的参数，默认 `--hwcodec --vram` |
 | `skip_customize` | 跳过品牌注入（调试 CI 用） |
 | `build_msi` | 额外产出 MSI 安装包 |
 
 > **为什么 IP 变了必须重新构建**：服务器地址是**编译期注入**的。
-> 换成新服务器后要改 `build/custom.toml` 里的 `rendezvous_host` 和 `key`，再重新构建。
+> 换成新服务器后要改 `build/client/custom.toml` 里的 `rendezvous_host` 和 `key`，再重新构建。
 > （用户自己仍可以在客户端界面临时改服务器——我们改的是兜底默认值，不是硬锁定。）
 
 ### 第 4 步：下载产物
@@ -235,7 +257,7 @@ git push
 
 ## 四、本地构建（当前主线）
 
-源码已整合到本仓库根目录（`Cargo.toml`、`build.py` 都在最外层），定制也已注入完成。
+源码已整合到本仓库的 `client/` 下（`Cargo.toml`、`build.py` 都在其中），定制也已注入完成。
 
 **2026-10-15 实测进度**：MSVC ✅ / Windows SDK ✅ / Rust 1.75 ✅（已修）/ Flutter 3.24.5 ✅
 —— 还差 **vcpkg** 和 **LLVM 15**，见下方体检表。
@@ -245,7 +267,7 @@ git push
 ### 4.1 必须先体检
 
 ```bat
-cd <repo>\build
+cd <repo>\build\client
 check-env.bat
 ```
 
@@ -327,24 +349,24 @@ Flutter/vcpkg 装到 D 盘 —— 改两个脚本里的路径即可）。
 
 ```bash
 # 1. 注入定制（可反复运行，改了 custom.toml 后重跑即可）
-python <repo>\build\customize.py --dry-run   # 先预览
-python <repo>\build\customize.py             # 再写入
+python <repo>\build\client\customize.py --dry-run   # 先预览
+python <repo>\build\client\customize.py             # 再写入
 
 # 2. 生成 flutter-rust-bridge 胶水代码（首次约 5-15 分钟，build-local.bat 会自动做）
-python <repo>\build\generate-bridge.py --check    # 先看是否就绪
-python <repo>\build\generate-bridge.py            # 缺了就生成
+python <repo>\build\client\generate-bridge.py --check    # 先看是否就绪
+python <repo>\build\client\generate-bridge.py            # 缺了就生成
 
-# 3. 构建（在仓库根执行，不再有 rustdesk/ 子目录）
-cd <repo>
+# 3. 构建（在 client/ 下执行，源码整棵树都在里面）
+cd <repo>\client
 python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
 ```
 
-产物在 `<repo>\flutter\build\windows\x64\runner\Release`。
+产物在 `<repo>\client\flutter\build\windows\x64\runner\Release`。
 
 想撤销定制（还原到注入前，依赖 `*.rd.bak` 备份）：
 
 ```bash
-python <repo>\build\customize.py --restore
+python <repo>\build\client\customize.py --restore
 ```
 
 > ⚠️ `--restore` 是回到**最初的上游原始值**（RustDesk / 官方服务器），
@@ -383,7 +405,7 @@ python <repo>\build\customize.py --restore
 `server.key` 与服务器上 `data/id_ed25519.pub` 必须逐字节一致。用 `python rdctl.py key` 重新取。
 
 **ID 能注册但连接失败**
-99% 是 UDP 5187 没放行，或 relay 地址配错，检查 `server/.env` 的 `RELAY_HOST`。
+99% 是 UDP 5187 没放行，或 relay 地址配错，检查 `server/deploy/.env` 的 `RELAY_HOST`。
 
 **定制没生效**
 检查 `git clone` 是否带了 `--recursive`；再看 CI 日志里是否有定制步骤的输出。
@@ -431,25 +453,25 @@ python upstream/verify_patch.py
 
 | 位置 | 当前占位 | 需要改成 |
 | --- | --- | --- |
-| `build/custom.toml` → `company_name` | `贵公司名称` | 你的真实公司名 |
-| `build/custom.toml` → `website` | `https://example.com` | 你的内网帮助站点 |
-| `build/branding/` | 空 | 你的图标、logo（替换客户端图标） |
+| `build/client/custom.toml` → `company_name` | `贵公司名称` | 你的真实公司名 |
+| `build/client/custom.toml` → `website` | `https://example.com` | 你的内网帮助站点 |
+| `build/client/branding/` | 空 | 你的图标、logo（替换客户端图标） |
 
 改完执行：
 
 ```bash
-python build\customize.py --dry-run   # 预览
-python build\customize.py             # 写入
+python build\client\customize.py --dry-run   # 预览
+python build\client\customize.py             # 写入
 ```
 
-客户端图标目前仍是 RustDesk 原版。替换图标需要覆盖仓库根的 `res/` 与
-`flutter/assets/` 下的对应文件，并重新构建。主要几个：
+客户端图标目前仍是 RustDesk 原版。替换图标需要覆盖仓库根的 `client/res/` 与
+`client/flutter/assets/` 下的对应文件，并重新构建。主要几个：
 
 | 用途 | 文件 |
 | --- | --- |
-| Windows exe / 任务栏图标 | `res/icon.ico`、`res/tray-icon.ico` |
-| 安装包与 About 图标 | `res/32x32.png`、`res/128x128.png` |
-| Flutter UI 内嵌 | `flutter/assets/`、各端 `Runner/Assets` |
+| Windows exe / 任务栏图标 | `client/res/icon.ico`、`client/res/tray-icon.ico` |
+| 安装包与 About 图标 | `client/res/32x32.png`、`client/res/128x128.png` |
+| Flutter UI 内嵌 | `client/flutter/assets/`、各端 `Runner/Assets` |
 
 ### 阻塞项
 

@@ -24,7 +24,7 @@
 
 客户端不需要任何固定的入站端口。员工机器只需要能**出站**访问上面三个端口。
 
-`server/docker-compose.yml` 默认就只 publish 前三个 —— 直接用即可，不用改。
+`server/deploy/docker-compose.yml` 默认就只 publish 前三个 —— 直接用即可，不用改。
 
 ---
 
@@ -48,7 +48,7 @@ hbbr  →  TCP  R           中继主端口
          TCP  127.0.0.1:R      管理 console（仅当 bind 到指定 IP 时）
 ```
 
-源码依据（vendored 在 `server/rustdesk-server/`）：
+源码依据（vendored 在 `server/src/`）：
 
 - `src/rendezvous_server.rs` 的 `start_with_bind()` — `nat_port = port - 1` / `ws_port = port + 2`
 - `src/relay_server.rs` 的 `start_with_bind()` — `let port2 = port + 2`
@@ -72,7 +72,7 @@ hbbr  →  TCP  R           中继主端口
 > `docker exec rd-hbbs ss -ltnp` 能看到它们在容器里听着。
 
 > **客户端自己还有一个端口：21118。**
-> 它来自 `libs/hbb_common/src/config.rs` 的 `RENDEZVOUS_PORT + 2`，是员工电脑上"IP 直连"
+> 它来自 `client/libs/hbb_common/src/config.rs` 的 `RENDEZVOUS_PORT + 2`，是员工电脑上"IP 直连"
 > 功能的监听端口。**我们没有改这个常量** —— 改它会连带把服务器的 5189 也挤走。
 > 它与服务端端口互不相干，UI 里那个 `21118` 的示例数字是对的，不用跟着改成 5189。
 
@@ -93,7 +93,7 @@ WS  = P+2 ≤ 5189   →   P ≤ 5187          ⟹  P = 5187
 
 **约束二：hbbr 必须等于 hbbs + 1 —— 这不是审美，是客户端的兜底公式。**
 
-客户端里 `get_relay_server()`（`src/rendezvous_mediator.rs`）的顺序是：
+客户端里 `get_relay_server()`（`client/src/rendezvous_mediator.rs`）的顺序是：
 
 ```rust
 Config::get_option("relay-server")            // 用户手动指定
@@ -153,7 +153,7 @@ $ python rdctl.py ports
 ### 坑 2：`hbbr` 的环境变量 `PORT` 会 +1
 
 ```rust
-// server/rustdesk-server/src/hbbr.rs
+// server/src/src/hbbr.rs
 let mut port = RELAY_PORT;                       // 常量 21117（服务端那份 hbb_common）
 if let Some(v) = common::get_arg_opt("PORT") {   // ← 注意：读的是环境变量
     let v: i32 = v.parse().unwrap_or_default();
@@ -174,14 +174,14 @@ if let Some(v) = common::get_arg_opt("PORT") {   // ← 注意：读的是环境
 
 | # | 位置 | 改什么 |
 |---|---|---|
-| 1 | `server/.env.example` → `.env` | `HBBS_PORT` / `HBBS_NAT_PORT` / `HBBR_PORT`，并保持 `NAT = PORT-1` |
-| 2 | `server/docker-compose.yml` | 不用改 —— `ports:` 段与 `command` 都引用同一批变量，会自动跟着走 |
-| 3 | **客户端 `build/custom.toml`** | `rendezvous_host = "wedesk.alsoapp.com:P"`，**然后重新编译客户端** |
+| 1 | `server/deploy/.env.example` → `.env` | `HBBS_PORT` / `HBBS_NAT_PORT` / `HBBR_PORT`，并保持 `NAT = PORT-1` |
+| 2 | `server/deploy/docker-compose.yml` | 不用改 —— `ports:` 段与 `command` 都引用同一批变量，会自动跟着走 |
+| 3 | **客户端 `build/client/custom.toml`** | `rendezvous_host = "wedesk.alsoapp.com:P"`，**然后重新编译客户端** |
 
 第 3 点最容易漏：客户端碰到不带端口的域名时，兜底用 `RENDEZVOUS_PORT`(21116)。
 服务端改了端口而客户端没改，现象是"ID 一直转圈，最后超时"，看日志还以为是鉴权失败。
 
-> `build/custom.toml` 里的 `relay_host` **不会被注入到源码**，它只是一致性记录：
+> `build/client/custom.toml` 里的 `relay_host` **不会被注入到源码**，它只是一致性记录：
 > 中继地址由 hbbs 下发、或按上文"+1"兜底。`customize.py` 会检查
 > `relay_host 端口 == rendezvous_host 端口 + 1`，不满足就告警提醒你去给 hbbs 加 `-r`。
 
@@ -194,7 +194,7 @@ if let Some(v) = common::get_arg_opt("PORT") {   // ← 注意：读的是环境
 域名 `wedesk.alsoapp.com` 解析到 hbbs/hbbr 所在机器，端口用 **5186 / 5187 / 5188**。
 客户端 `rendezvous_host = "wedesk.alsoapp.com:5187"`，`relay_host = "wedesk.alsoapp.com:5188"`。
 
-**这是当前 `build/custom.toml` 与 `docker-compose.yml` 里已经配好的状态，什么都不用改。**
+**这是当前 `build/client/custom.toml` 与 `docker-compose.yml` 里已经配好的状态，什么都不用改。**
 
 ### 方案 B：宿主端口冲突 —— 整体平移
 

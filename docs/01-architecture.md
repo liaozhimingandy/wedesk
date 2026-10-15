@@ -10,8 +10,8 @@ wedesk = **RustDesk v1.5.1 的源码** + **我们自己的品牌/服务器注入
 
 客户端是一个 **Rust 内核 + Flutter 外壳** 的双层程序：
 
-- **Rust 内核**（`src/`、`libs/`）：干所有重活 —— 屏幕采集、编解码、网络、加密、输入注入、IPC。
-- **Flutter UI**（`flutter/`）：只负责画界面。它通过一层**自动生成的代码桥**（bridge）调用 Rust，自己不实现任何远程桌面逻辑。
+- **Rust 内核**（`client/src/`、`client/libs/`）：干所有重活 —— 屏幕采集、编解码、网络、加密、输入注入、IPC。
+- **Flutter UI**（`client/flutter/`）：只负责画界面。它通过一层**自动生成的代码桥**（bridge）调用 Rust，自己不实现任何远程桌面逻辑。
 
 这两层之间**没有手写胶水代码**，全靠构建期代码生成。这是理解整个项目最关键的一点，也是最容易卡住构建的地方（见 [03-build.md](03-build.md)）。
 
@@ -25,7 +25,7 @@ flowchart TB
         direction TB
 
         subgraph UI["Flutter UI 层 — Dart"]
-            MAIN["flutter/lib/main.dart<br/>程序入口"]
+            MAIN["client/flutter/lib/main.dart<br/>程序入口"]
             DESK["desktop/ 桌面端页面"]
             MOB["mobile/ 移动端页面"]
             MODELS["models/ 状态管理"]
@@ -38,8 +38,8 @@ flowchart TB
         end
 
         subgraph BRIDGE["桥接层 — flutter_rust_bridge"]
-            FFI["src/flutter_ffi.rs<br/>所有 #[flutter_rust_bridge::frb] 导出函数"]
-            GEN_RS["src/bridge_generated.rs<br/>（自动生成，勿手改）"]
+            FFI["client/src/flutter_ffi.rs<br/>所有 #[flutter_rust_bridge::frb] 导出函数"]
+            GEN_RS["client/src/bridge_generated.rs<br/>（自动生成，勿手改）"]
         end
 
         subgraph CORE["Rust 内核 — librustdesk"]
@@ -73,10 +73,10 @@ flowchart TB
 
 **要点**：
 
-- 控制端和被控端**在同一个二进制里**。同一个 exe，发起连接时它是 client，被连接时它是 server。所以 `src/client/` 和 `src/server/` 是两套并列逻辑，不是一个 C/S 程序的两端。
-- **服务端（hbbs/hbbr）源码就在本仓库** `server/rustdesk-server/`，镜像是本地编译出来的，
+- 控制端和被控端**在同一个二进制里**。同一个 exe，发起连接时它是 client，被连接时它是 server。所以 `client/src/client/` 和 `client/src/server/` 是两套并列逻辑，不是一个 C/S 程序的两端。
+- **服务端（hbbs/hbbr）源码就在本仓库** `server/src/`，镜像是本地编译出来的，
   与官方镜像无关。升级/自编译见 [09 服务端自编译](09-server-build.md)。
-- Flutter 侧**不存在任何网络代码**。要找"连接是怎么建立的"，去 `src/rendezvous_mediator.rs`。
+- Flutter 侧**不存在任何网络代码**。要找"连接是怎么建立的"，去 `client/src/rendezvous_mediator.rs`。
 
 ---
 
@@ -84,9 +84,9 @@ flowchart TB
 
 | 层 | 目录 | 语言 | 职责 | 你不能在这里做什么 |
 |---|---|---|---|---|
-| UI | `flutter/lib/` | Dart | 窗口、页面、状态、交互 | 不能直接碰网络、不能读写摄像头/屏幕 |
-| 桥 | `src/flutter_ffi.rs` | Rust | 把 Rust 函数导出给 Dart 调 | 不写业务逻辑，只做转发 |
-| 内核 | `src/`、`libs/` | Rust | 全部业务逻辑 | 不直接画 UI，通过 `flutter_ffi.rs` 回推事件 |
+| UI | `client/flutter/lib/` | Dart | 窗口、页面、状态、交互 | 不能直接碰网络、不能读写摄像头/屏幕 |
+| 桥 | `client/src/flutter_ffi.rs` | Rust | 把 Rust 函数导出给 Dart 调 | 不写业务逻辑，只做转发 |
+| 内核 | `client/src/`、`client/libs/` | Rust | 全部业务逻辑 | 不直接画 UI，通过 `flutter_ffi.rs` 回推事件 |
 
 ### 数据流是双向的
 
@@ -125,10 +125,10 @@ sequenceDiagram
 
 | 路径 | 是什么 | 升级上游时要不要覆盖 |
 |---|---|---|
-| `src/` | Rust 内核源码 | ✅ 覆盖 |
-| `libs/` | Rust 内核依赖库（含 `hbb_common`） | ✅ 覆盖 |
-| `flutter/` | Flutter UI 全部代码 | ✅ 覆盖 |
-| `res/` | 图标、安装包素材、构建辅助脚本 | ✅ 覆盖 |
+| `client/src/` | Rust 内核源码 | ✅ 覆盖 |
+| `client/libs/` | Rust 内核依赖库（含 `hbb_common`） | ✅ 覆盖 |
+| `client/flutter/` | Flutter UI 全部代码 | ✅ 覆盖 |
+| `client/res/` | 图标、安装包素材、构建辅助脚本 | ✅ 覆盖 |
 | `Cargo.toml` / `Cargo.lock` / `build.py` / `build.rs` | 构建定义 | ✅ 覆盖 |
 | `.github/` | CI 工作流（我们自己那份在 workflows/） | ⚠️ 只覆盖 `patches/` |
 | **`build/`** | **我们的脚本与配置（customize.py 等）** | ❌ **永不覆盖** |
@@ -137,37 +137,37 @@ sequenceDiagram
 | **`docs/`** | **我们的文档** | ❌ **永不覆盖** |
 | `README.md` / `.gitignore` / `.gitattributes` | 自有文件 | ❌ **永不覆盖** |
 
-> `libs/hbb_common` 上游是 submodule，整合时已**实体化为普通目录**。
+> `client/libs/hbb_common` 上游是 submodule，整合时已**实体化为普通目录**。
 > 服务器地址、公钥、APP_NAME 都定义在里面。若哪天被误恢复成 submodule，所有定制会**静默失效**。
 
 ### Rust 内核关键文件
 
 | 文件 | 干什么 | 什么时候会动它 |
 |---|---|---|
-| `src/main.rs` | 进程入口，分发到 UI 或 CLI | 几乎不动 |
-| `src/core_main.rs` | 启动逻辑、命令行参数、`--connect` 等 | 加命令行功能时 |
-| `src/rendezvous_mediator.rs` | **连接的核心**：注册 ID、心跳、打洞、中继协调 | 改连接行为、加审计埋点 |
-| `src/flutter_ffi.rs` | **Dart ⇄ Rust 的所有导出函数** | **新增 UI 功能必改** |
-| `src/server/connection.rs` | 被控端单条连接的处理循环 | 改会话逻辑、权限校验 |
-| `src/server/video_service.rs` | 屏幕采集 | 改采集策略/帧率 |
-| `src/server/input_service.rs` | 键鼠注入 | 加输入限制 |
-| `src/client/io_loop.rs` | 控制端收包循环 | 改解码/渲染 |
-| `src/ipc.rs` | UI 进程与服务进程通信（Windows 服务场景） | 服务化部署相关 |
-| `src/common.rs` | 全局工具、API 地址、更新检查 | **已改过：封死官方更新通道** |
-| `src/updater.rs` | 自动更新 | 改更新策略 |
-| `libs/hbb_common/src/config.rs` | **配置中枢**：服务器地址、公钥、APP_NAME、端口 | **已改过：注入品牌三值** |
+| `client/src/main.rs` | 进程入口，分发到 UI 或 CLI | 几乎不动 |
+| `client/src/core_main.rs` | 启动逻辑、命令行参数、`--connect` 等 | 加命令行功能时 |
+| `client/src/rendezvous_mediator.rs` | **连接的核心**：注册 ID、心跳、打洞、中继协调 | 改连接行为、加审计埋点 |
+| `client/src/flutter_ffi.rs` | **Dart ⇄ Rust 的所有导出函数** | **新增 UI 功能必改** |
+| `client/src/server/connection.rs` | 被控端单条连接的处理循环 | 改会话逻辑、权限校验 |
+| `client/src/server/video_service.rs` | 屏幕采集 | 改采集策略/帧率 |
+| `client/src/server/input_service.rs` | 键鼠注入 | 加输入限制 |
+| `client/src/client/io_loop.rs` | 控制端收包循环 | 改解码/渲染 |
+| `client/src/ipc.rs` | UI 进程与服务进程通信（Windows 服务场景） | 服务化部署相关 |
+| `client/src/common.rs` | 全局工具、API 地址、更新检查 | **已改过：封死官方更新通道** |
+| `client/src/updater.rs` | 自动更新 | 改更新策略 |
+| `client/libs/hbb_common/src/config.rs` | **配置中枢**：服务器地址、公钥、APP_NAME、端口 | **已改过：注入品牌三值** |
 
 ### Flutter 侧关键文件
 
 | 文件 | 干什么 |
 |---|---|
-| `flutter/lib/main.dart` | Dart 入口 |
-| `flutter/lib/common.dart` | 全局工具、常量、`appName` getter |
-| `flutter/lib/consts.dart` | UI 常量（颜色、尺寸、能力开关） |
-| `flutter/lib/models/` | 状态管理（每个 `*_model.dart` 管一块状态） |
-| `flutter/lib/desktop/pages/` | 桌面端页面 |
-| `flutter/lib/desktop/widgets/` | 桌面端可复用组件 |
-| `flutter/lib/generated_bridge.dart` | **自动生成，不要手改**（构建会覆盖） |
+| `client/flutter/lib/main.dart` | Dart 入口 |
+| `client/flutter/lib/common.dart` | 全局工具、常量、`appName` getter |
+| `client/flutter/lib/consts.dart` | UI 常量（颜色、尺寸、能力开关） |
+| `client/flutter/lib/models/` | 状态管理（每个 `*_model.dart` 管一块状态） |
+| `client/flutter/lib/desktop/pages/` | 桌面端页面 |
+| `client/flutter/lib/desktop/widgets/` | 桌面端可复用组件 |
+| `client/flutter/lib/generated_bridge.dart` | **自动生成，不要手改**（构建会覆盖） |
 
 ---
 
@@ -180,13 +180,13 @@ flowchart LR
     A["Flutter 3.24.5<br/>（必须换成 RustDesk 自研 engine）"] --> C
     B["Rust 1.75<br/>+ MSVC + vcpkg C++ 依赖"] --> C
 
-    C["① 生成 bridge<br/>build/generate-bridge.py<br/>cargo-expand + frb codegen"] --> D
-    D["src/bridge_generated.rs<br/>flutter/lib/generated_bridge.dart"] --> E
+    C["① 生成 bridge<br/>build/client/generate-bridge.py<br/>cargo-expand + frb codegen"] --> D
+    D["client/src/bridge_generated.rs<br/>client/flutter/lib/generated_bridge.dart"] --> E
 
-    E["② 注入品牌<br/>build/customize.py<br/>按 custom.toml 改 13 个文件"] --> F
+    E["② 注入品牌<br/>build/client/customize.py<br/>按 custom.toml 改 13 个文件"] --> F
 
     F["③ 编译<br/>python build.py --portable --flutter"] --> G
-    G["flutter/build/windows/x64/runner/Release/<br/>nethelper.exe + DLL + data/"]
+    G["client/flutter/build/windows/x64/runner/Release/<br/>nethelper.exe + DLL + data/"]
 
     style C fill:#fff4e6,stroke:#d9822b
     style E fill:#e8f4fd,stroke:#1f77b4
@@ -197,7 +197,7 @@ flowchart LR
 
 | 阶段 | 典型失败 | 排查入口 |
 |---|---|---|
-| ① 生成 bridge | `file not found for module bridge_generated` | 说明 `src/bridge_generated.rs` 没生成出来 |
+| ① 生成 bridge | `file not found for module bridge_generated` | 说明 `client/src/bridge_generated.rs` 没生成出来 |
 | ② 注入品牌 | 编译通过但连的是官方服务器 | `customize.py --dry-run` 看命中数 |
 | ③ 编译 | vcpkg 缺库、engine 没换、LLVM 版本不对 | 见 [07-faq.md](07-faq.md) |
 
@@ -209,11 +209,11 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    T["build/custom.toml<br/>唯一需要手改的配置"] --> P["build/customize.py<br/>幂等注入器"]
-    P -->|"精确匹配 + 正则替换"| F1["libs/hbb_common/src/config.rs<br/>服务器地址 · 公钥 · APP_NAME"]
-    P --> F2["src/common.rs<br/>清空官方 API 地址"]
+    T["build/client/custom.toml<br/>唯一需要手改的配置"] --> P["build/client/customize.py<br/>幂等注入器"]
+    P -->|"精确匹配 + 正则替换"| F1["client/libs/hbb_common/src/config.rs<br/>服务器地址 · 公钥 · APP_NAME"]
+    P --> F2["client/src/common.rs<br/>清空官方 API 地址"]
     P --> F3["Cargo.toml / Runner.rc / strings.xml<br/>署名 · exe 属性 · 安卓名"]
-    P --> F4["flutter/lib/*.dart<br/>官网链接 · 关于页"]
+    P --> F4["client/flutter/lib/*.dart<br/>官网链接 · 关于页"]
     P --> S["build/.custom-state.json<br/>记录上次注入值"]
 
     style T fill:#fff4e6,stroke:#d9822b

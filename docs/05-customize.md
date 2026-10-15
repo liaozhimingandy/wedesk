@@ -13,7 +13,7 @@
 
 | 层次 | 手段 | 改在哪 | 升级上游时 |
 |---|---|---|---|
-| ① 配置注入 | 改 `build/custom.toml` 再跑 `customize.py` | 13 个文件的字符串 | ✅ 重跑脚本即可 |
+| ① 配置注入 | 改 `build/client/custom.toml` 再跑 `customize.py` | 13 个文件的字符串 | ✅ 重跑脚本即可 |
 | ② 资源替换 | 直接换文件 | 图标、安装包素材 | ✅ 不受影响（除非上游也改了同名文件） |
 | ③ 源码直改 | 手写 Rust/Dart 逻辑 | 任意文件 | ⚠️ **必须手工重做**，且要重建补丁 |
 
@@ -26,7 +26,7 @@
 
 ### 2.1 唯一需要手改的文件
 
-`build/custom.toml`：
+`build/client/custom.toml`：
 
 ```toml
 [server]
@@ -43,7 +43,7 @@ website      = "https://wedesk.alsoapp.com"
 ```
 
 > **`rendezvous_host` 必须写端口。**
-> 客户端内置的兜底端口是 `21116`（`libs/hbb_common/src/config.rs` 的 `RENDEZVOUS_PORT`，
+> 客户端内置的兜底端口是 `21116`（`client/libs/hbb_common/src/config.rs` 的 `RENDEZVOUS_PORT`，
 > 本文第 3.3 节），而服务端跑在 **5187** —— 不带端口时客户端会去连 `wedesk.alsoapp.com:21116`，
 > 表现是"ID 一直显示未就绪"，抓包才会发现方向就不对。
 > 服务端改端口时这里必须跟着改，并**重新编译客户端**。端口推导规则见
@@ -51,7 +51,7 @@ website      = "https://wedesk.alsoapp.com"
 
 > **`relay_host` 不会被注入到源码里**，它只是一致性记录。
 > 客户端的中继地址永远来自 hbbs 握手时下发的内容；只有在 hbbs **没有**给的时候，
-> 才会按 `rendezvous 端口 + 1` 兜底（见 `src/rendezvous_mediator.rs` 的 `get_relay_server`）。
+> 才会按 `rendezvous 端口 + 1` 兜底（见 `client/src/rendezvous_mediator.rs` 的 `get_relay_server`）。
 > 所以本仓库把 hbbr 定在 `hbbs + 1`（5188）是刻意的 —— 它让这条兜底路径自动成立。
 > `customize.py` 会校验 `relay_host 端口 == rendezvous_host 端口 + 1`，
 > 不满足就告警提醒你去给 hbbs 加 `-r host:port`。
@@ -67,9 +67,9 @@ WiX 字符串资源、Windows 服务显示名、Linux 桌面入口。中文进 W
 ### 2.2 注入命令
 
 ```bash
-python build/customize.py --dry-run    # 先预览，看命中几项
-python build/customize.py              # 确认无误后写入
-python build/customize.py --restore    # 后悔了，还原到定制前
+python build/client/customize.py --dry-run    # 先预览，看命中几项
+python build/client/customize.py              # 确认无误后写入
+python build/client/customize.py --restore    # 后悔了，还原到定制前
 ```
 
 **脚本是幂等的**，可以反复跑。改了 `custom.toml` 后重跑即可，不用担心重复注入。
@@ -77,7 +77,7 @@ python build/customize.py --restore    # 后悔了，还原到定制前
 **命令行临时覆盖**（CI 或一次性构建用）：
 
 ```bash
-python build/customize.py --set brand.company_name="某某科技有限公司"
+python build/client/customize.py --set brand.company_name="某某科技有限公司"
 ```
 
 ### 2.3 为什么需要 `.custom-state.json`
@@ -96,7 +96,7 @@ python build/customize.py --set brand.company_name="某某科技有限公司"
 
 ### 3.1 服务器地址是怎么选出来的
 
-`libs/hbb_common/src/config.rs` 的解析链（优先级从高到低）：
+`client/libs/hbb_common/src/config.rs` 的解析链（优先级从高到低）：
 
 ```rust
 pub fn get_rendezvous_server(...) -> String {
@@ -119,14 +119,14 @@ pub fn get_rendezvous_server(...) -> String {
 ### 3.2 应用名只改一处就够了
 
 ```rust
-// libs/hbb_common/src/config.rs:72
+// client/libs/hbb_common/src/config.rs:72
 pub static ref APP_NAME: RwLock<String> = RwLock::new("企业网管助手".to_owned());
 ```
 
 **Flutter 侧不写死应用名**，而是运行时从 Rust 读：
 
 ```dart
-// flutter/lib/common.dart
+// client/flutter/lib/common.dart
 String get appName {
   if (_appName.isEmpty) {
     _appName = bind.mainGetAppNameSync();   // ← 从 Rust 的 APP_NAME 取
@@ -142,7 +142,7 @@ String get appName {
 
 ### 3.3 端口号
 
-客户端 `libs/hbb_common/src/config.rs` 里这四个常量**我们没有改动**：
+客户端 `client/libs/hbb_common/src/config.rs` 里这四个常量**我们没有改动**：
 
 ```rust
 pub const RENDEZVOUS_PORT:     i32 = 21116;  // 地址不带端口时的兜底值
@@ -157,14 +157,14 @@ pub const WS_RELAY_PORT:       i32 = 21119;
 WebSocket 端口撞上（hbbs 必然监听 P+2）。两害相权，这里保持原值。
 
 服务端那四个端口（5186/5187/5188/5189）在 **服务端源码**里也没写死，
-是靠 `hbbs -p 5187` / `hbbr -p 5188` 命令行参数传入的 —— 见 `server/docker-compose.yml`。
+是靠 `hbbs -p 5187` / `hbbr -p 5188` 命令行参数传入的 —— 见 `server/deploy/docker-compose.yml`。
 
 改端口属于"有成套要做的事"（compose 映射、防火墙、客户端同步），**一般不建议动**。
 
 ### 3.4 官方 API 兜底域名
 
 ```rust
-// src/common.rs
+// client/src/common.rs
 fn get_api_server_(...) -> String {
     ...
     "https://admin.rustdesk.com".to_owned()   // ← 官方兜底
@@ -182,18 +182,18 @@ fn get_api_server_(...) -> String {
 
 | 文件 | 改了什么 |
 |---|---|
-| `libs/hbb_common/src/config.rs` | **核心三值**：`RENDEZVOUS_SERVERS`、`RS_PUB_KEY`、`APP_NAME` |
-| `src/common.rs` | 清空官方 API 兜底地址 |
+| `client/libs/hbb_common/src/config.rs` | **核心三值**：`RENDEZVOUS_SERVERS`、`RS_PUB_KEY`、`APP_NAME` |
+| `client/src/common.rs` | 清空官方 API 兜底地址 |
 | `Cargo.toml` | 作者、描述、公司名、`LegalCopyright` |
-| `flutter/windows/runner/Runner.rc` | exe 文件属性：公司名、产品名、exe 名 |
-| `flutter/android/app/src/main/res/values/strings.xml` | 安卓端 app 名 |
-| `flutter/lib/common.dart` | "Powered by" 链接指向自家官网 |
-| `flutter/lib/desktop/pages/install_page.dart` | 安装页隐私政策链接 |
-| `flutter/lib/desktop/pages/desktop_setting_page.dart` | "关于"页：官网、隐私政策、版权行 |
-| `src/client.rs` | Linux 侧 X11 / Wayland 登录屏错误提示里的官方文档链接 |
-| `res/msi/Package/Language/Package.en-us.wxl` | MSI 文案：开始菜单项、服务显示名、卸载项 |
-| `res/msi/preprocess.py` | MSI 的 ARP 技术支持/帮助链接 |
-| `res/rustdesk.desktop` / `res/rustdesk-link.desktop` | Linux 桌面入口程序名 |
+| `client/flutter/windows/runner/Runner.rc` | exe 文件属性：公司名、产品名、exe 名 |
+| `client/flutter/android/app/src/main/res/values/strings.xml` | 安卓端 app 名 |
+| `client/flutter/lib/common.dart` | "Powered by" 链接指向自家官网 |
+| `client/flutter/lib/desktop/pages/install_page.dart` | 安装页隐私政策链接 |
+| `client/flutter/lib/desktop/pages/desktop_setting_page.dart` | "关于"页：官网、隐私政策、版权行 |
+| `client/src/client.rs` | Linux 侧 X11 / Wayland 登录屏错误提示里的官方文档链接 |
+| `client/res/msi/Package/Language/Package.en-us.wxl` | MSI 文案：开始菜单项、服务显示名、卸载项 |
+| `client/res/msi/preprocess.py` | MSI 的 ARP 技术支持/帮助链接 |
+| `client/res/rustdesk.desktop` / `client/res/rustdesk-link.desktop` | Linux 桌面入口程序名 |
 
 必须是 ASCII 的场合（MSI 字符串表、Windows 服务显示名、Linux 桌面入口）走 `product_name`，
 其余走 `app_name`（可中文），详见 `custom.toml` 里的注释。
@@ -209,14 +209,14 @@ fn get_api_server_(...) -> String {
 
 | 想换的东西 | 文件 |
 |---|---|
-| 应用图标 | `res/icon.png`、`res/icon.ico` |
-| 托盘图标 | `res/tray-icon.ico` |
-| 各尺寸 | `res/32x32.png`、`res/64x64.png`、`res/128x128.png`、`res/128x128@2x.png` |
-| Windows 安装包素材 | `res/msi/banner.bmp` 等 |
-| macOS | `flutter/macos/Runner/Assets.xcassets/AppIcon.appiconset/` |
-| Android | `flutter/android/app/src/main/res/mipmap-*/ic_launcher.png` |
+| 应用图标 | `client/res/icon.png`、`client/res/icon.ico` |
+| 托盘图标 | `client/res/tray-icon.ico` |
+| 各尺寸 | `client/res/32x32.png`、`client/res/64x64.png`、`client/res/128x128.png`、`client/res/128x128@2x.png` |
+| Windows 安装包素材 | `client/res/msi/`（WiX 对话框/横幅图，按需添加） |
+| macOS | `client/flutter/macos/Runner/Assets.xcassets/AppIcon.appiconset/` |
+| Android | `client/flutter/android/app/src/main/res/mipmap-*/ic_launcher.png` |
 
-`build/branding/` 目录目前是空的 —— 把你的素材放进去占位，替换时从那里拷。
+`build/client/branding/` 目录目前是空的 —— 把你的素材放进去占位，替换时从那里拷。
 
 > 图标改了但 exe 还显示旧的：Windows 有图标缓存，删 `%LOCALAPPDATA%\IconCache.db` 或重启资源管理器。
 
@@ -226,12 +226,12 @@ fn get_api_server_(...) -> String {
 
 | 想做的事 | 入手点 |
 |---|---|
-| 隐藏"设置服务器"入口，防员工误改 | `flutter/lib/desktop/pages/desktop_setting_page.dart` 的网络设置区块 |
+| 隐藏"设置服务器"入口，防员工误改 | `client/flutter/lib/desktop/pages/desktop_setting_page.dart` 的网络设置区块 |
 | 预设固定密码做无人值守 | 搜索 `permanent password` / `approve-mode` |
-| **去掉文件传输（防泄密）** | `src/server/` 文件服务模块 **+ Flutter 侧对应 UI**，两端都要改 |
+| **去掉文件传输（防泄密）** | `client/src/server/` 文件服务模块 **+ Flutter 侧对应 UI**，两端都要改 |
 | 加连接审计 | 服务端 SQLite（`server/data/db_v2.sqlite3`），配合 `rdctl.py backup` 归档 |
 | 禁止连接外部 ID | **服务端层面限制更彻底**，比改客户端可靠 |
-| 禁用剪贴板同步 | `src/server/clipboard_service.rs` + 设置项 |
+| 禁用剪贴板同步 | `client/src/server/clipboard_service.rs` + 设置项 |
 
 > ⚠️ **只隐藏 UI 是假禁用。** 协议还在，对面用别的客户端照样能触发。
 > 真禁用必须 Rust 侧不提供服务。
@@ -242,13 +242,13 @@ fn get_api_server_(...) -> String {
 
 ```bash
 # 1. 看注入命中数（应该全命中，无未命中项）
-python build/customize.py --dry-run
+python build/client/customize.py --dry-run
 
 # 2. 确认核心三值落地
-grep -nE 'APP_NAME|RENDEZVOUS_SERVERS|RS_PUB_KEY' libs/hbb_common/src/config.rs
+grep -nE 'APP_NAME|RENDEZVOUS_SERVERS|RS_PUB_KEY' client/libs/hbb_common/src/config.rs
 
 # 3. 确认没有残留官方兜底
-grep -rn "admin.rustdesk.com" src/ | grep -v "^src/bridge_generated"
+grep -rn "admin.rustdesk.com" client/src/ | grep -v "^client/src/bridge_generated"
 
 # 4. 补丁仍可重放（改了这 13 个文件后必做）
 python upstream/verify_patch.py --regen

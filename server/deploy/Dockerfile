@@ -7,15 +7,15 @@
 #   2. 官方 hbbs/hbbr 每天会向 api.rustdesk.com 发一次版本检查请求，
 #      而我们已用 upstream/server.patch 把它关掉；
 #   3. 出问题没法对着源码定位。
-#   本 Dockerfile 在容器内从 rustdesk-server 源码编译出 musl 静态二进制，
+#   本 Dockerfile 在容器内从 src/ 下的服务端源码编译出 musl 静态二进制，
 #   再装进干净的 alpine。构建机不需要装 Rust —— 只要能跑 docker build。
 #
-# 构建方式（context 必须是 server/ 目录）：
-#     cd server && docker build -t wedesk-server:latest .
+# 构建方式（context 必须是 server/ 目录，Dockerfile 在 deploy/ 下）：
+#     cd server && docker build -t wedesk-server:latest -f deploy/Dockerfile .
 #   Docker Desktop 的默认平台跟本机走，给 Linux 服务器用时显式指定：
-#     docker build --platform linux/amd64 -t wedesk-server:latest .
+#     docker build --platform linux/amd64 -t wedesk-server:latest -f deploy/Dockerfile .
 #
-# 真正的编译命令不在这里，在 build-musl.sh —— 那份脚本同时被 CI 使用，
+# 真正的编译命令不在这里，在 deploy/build-musl.sh —— 那份脚本同时被 CI 使用，
 # 保证"本机 docker build"与"CI 编出来的二进制"是同一套配方。
 #
 # ⚠️ 改本文件时请注意：下面编译用的是 --mount=type=cache，cache mount 的内容
@@ -43,8 +43,8 @@ WORKDIR /src
 # sqlx 的查询宏在【编译期】就要连一个真实 SQLite 库来校验 SQL，上游为此在仓库里
 # 塞了 db_v2.sqlite3。所需的 DATABASE_URL 由 build-musl.sh 内部设置。
 # 依赖包安装同样在脚本里 —— 与 CI 共用一份，避免两边配方漂移。
-COPY build-musl.sh /build-musl.sh
-COPY rustdesk-server/ ./
+COPY deploy/build-musl.sh /build-musl.sh
+COPY src/ ./
 
 # 两条 cache mount：
 #   registry —— 依赖包缓存，重构建时不再重复下载几百 MB
@@ -74,7 +74,7 @@ COPY --from=builder /out/hbbs           /usr/bin/hbbs
 COPY --from=builder /out/hbbr           /usr/bin/hbbr
 COPY --from=builder /out/rustdesk-utils /usr/bin/rustdesk-utils
 
-COPY check-bins.sh /check-bins.sh
+COPY deploy/check-bins.sh /check-bins.sh
 
 # --- 构建期自检 ----------------------------------------------------------
 # 三个二进制必须真能执行。逻辑在 check-bins.sh，与 Dockerfile.prebuilt 共用。

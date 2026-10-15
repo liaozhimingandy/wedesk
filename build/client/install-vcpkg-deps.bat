@@ -2,7 +2,7 @@
 REM ============================================================================
 REM  Install vcpkg and build the C++ dependencies RustDesk needs.
 REM
-REM  MANIFEST MODE: this reads vcpkg.json at the repo root instead of listing
+REM  MANIFEST MODE: this reads vcpkg.json under client\ instead of listing
 REM  packages on the command line. That distinction is the whole point ---
 REM  vcpkg.json is what pulls in ffmpeg + mfx-dispatch and wires up the
 REM  overlay ports in ./res/vcpkg (the upstream ffmpeg port carries patches
@@ -50,19 +50,20 @@ if "%NO_HWCODEC%"=="1" echo hwcodec:        DISABLED - ffmpeg skipped, fast buil
 if not "%NO_HWCODEC%"=="1" echo hwcodec:        ENABLED - ffmpeg compiled from source
 echo.
 
-REM --- repo root: manifest mode must run where vcpkg.json lives ------------
-cd /d "%~dp0.."
+REM --- client dir: manifest mode must run where vcpkg.json lives ------------
+REM %~dp0 = <repo>\build\client\  ->  ..\..\client = <repo>\client
+cd /d "%~dp0..\..\client"
 if errorlevel 1 (
-    echo FAILED: cannot enter repo root %~dp0..
+    echo FAILED: cannot enter client dir %~dp0..\..\client
     exit /b 1
 )
 if not exist ".\vcpkg.json" (
     echo FAILED: vcpkg.json not found in %CD%
-    echo This script must live in ^<repo^>\build\ and be run from a repo
-    echo that has the vendored upstream source at its root.
+    echo This script must live in ^<repo^>\build\client\ and be run from a
+    echo repo whose vendored upstream client source is under client\.
     exit /b 1
 )
-echo repo root:      %CD%
+echo client 目录:    %CD%
 echo.
 
 echo === [1/4] Fetching vcpkg ===

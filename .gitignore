@@ -1,15 +1,23 @@
 # =============================================================================
-# wedesk —— 扁平化仓库的忽略规则
+# wedesk —— 忽略规则（单文件统管全仓，按区块注释分区）
 # =============================================================================
+# 结构：client/ = 客户端，server/ = 服务端（src/ 源码 + deploy/ 部署 + data/ 运行时），
+#       build/ = 构建与定制脚本，docs/ = 文档，.github/ = CI。
+#
+# 为什么只有一个根 .gitignore 而不按目录拆三份：
+#   规则分散在多处时，"某类产物为什么没被忽略"要翻三个文件才能回答；
+#   而单文件 + 区块注释可以一眼看完所有规则，审查和补漏都更容易。
+#
 # 合并了三套来源，顺序有意义：白名单必须写在粗粒度规则之后才生效。
 #   1. wedesk 自有规则（敏感数据、Python、编辑器）
-#   2. 上游 RustDesk 的构建产物规则
-#   3. 解禁白名单（写在最后，覆盖上面的 *png / *svg / *jpg）
+#   2. 客户端（client/）的构建产物规则
+#   3. 服务端（server/）的构建产物规则
+#   4. 解禁白名单（写在最后，覆盖上面的 *png / *svg / *jpg）
 #
 # ！！ 这里刻意没有 /build 规则 ！！
 # 上游 .gitignore 第 1 行是 /build，但本仓库的 build/ 放的是构建脚本
-# （customize.py、build-local.bat…），加了就会被整个忽略掉。
-# 上游真正的产物目录是 flutter/build/（由 flutter/.gitignore 管）和 build-pkg/。
+# （client/customize.py、common/check-workflow.py…），加了就会被整个忽略掉。
+# 上游真正的产物目录是 client/flutter/build/ 和 build-pkg/。
 # =============================================================================
 
 # =============================================================================
@@ -20,8 +28,9 @@
 server/data/
 server/backup/
 
-# 本地环境配置，含服务器地址等内网信息
+# 本地环境配置，含服务器地址等内网信息（.env.example 是模板，要入库）
 server/.env
+server/deploy/.env
 
 # =============================================================================
 # Python 运行时产物
@@ -47,27 +56,29 @@ Thumbs.db
 # =============================================================================
 # Rust / Cargo 构建产物
 # =============================================================================
-/target
+# 客户端是独立 workspace，target 在 client/ 下；服务端在 server/src/ 下。
+# 两个都不排除的话一次 cargo build 就有上 GB 依赖在 git status 里刷屏。
+client/target/
 examples/**/target/
 **/*.rs.bk
 
 # build.py / flutter_rust_bridge 生成的代码，每次构建自动产出
-src/version.rs
-src/ui/inline.rs
-src/bridge_generated.rs
-src/bridge_generated.io.rs
-flutter/lib/generated_bridge.dart
-flutter/lib/generated_bridge.freezed.dart
+client/src/version.rs
+client/src/ui/inline.rs
+client/src/bridge_generated.rs
+client/src/bridge_generated.io.rs
+client/flutter/lib/generated_bridge.dart
+client/flutter/lib/generated_bridge.freezed.dart
 
 # =============================================================================
-# 服务端 —— server/rustdesk-server 是独立 Cargo workspace
+# 服务端 —— server/src 是独立 Cargo workspace
 # =============================================================================
-# 它的 target 在自己目录下，上面的 /target 只匹配仓库根，够不到这里。
-# 不排除的话一次 cargo build 就有上 GB 依赖在 git status 里刷屏。
-server/rustdesk-server/target/
+# 它的 target 在自己目录下，上面的 client/target/ 匹配不到这里。
+server/src/target/
+server/src/**/target/
 # hbb_common::gen_version() 在 build.rs 里现场生成（版本号 + 编译时间戳）
-server/rustdesk-server/src/version.rs
-# 本地编译产出的 exe（build/build-server.bat 会拷到这里）
+server/src/src/version.rs
+# 本地编译产出的 exe（build/server/build-server.bat 会拷到这里）
 server/bin/
 
 # =============================================================================
@@ -77,21 +88,21 @@ vcpkg_installed/
 vcpkg/
 
 # =============================================================================
-# 打包与分发产物
+# 打包与分发产物（客户端）
 # =============================================================================
 build-pkg/
-appimage/AppDir
-appimage/*.AppImage
-appimage/appimage-build
-appimage/*.xz
-flatpak/.flatpak-builder/**
-flatpak/ccache/**
-flatpak/build/**
-flatpak/repo/**
-flatpak/*.flatpak
-flutter/linux/build/**
-flutter/linux/cmake-build-debug/**
-flutter/web/
+client/appimage/AppDir
+client/appimage/*.AppImage
+client/appimage/appimage-build
+client/appimage/*.xz
+client/flatpak/.flatpak-builder/**
+client/flatpak/ccache/**
+client/flatpak/build/**
+client/flatpak/repo/**
+client/flatpak/*.flatpak
+client/flutter/linux/build/**
+client/flutter/linux/cmake-build-debug/**
+client/flutter/web/
 *dmg
 *exe
 *tgz
@@ -105,12 +116,16 @@ libsciter.dylib
 extractor
 third_party/libdrmtap/
 
+# =============================================================================
 # 备份与工作树
+# =============================================================================
 *.bak
 *.rd.bak
 .worktrees/
 
+# =============================================================================
 # 容器/远程开发（避免误提交本机配置）
+# =============================================================================
 .gitconfig
 .vscode-server/
 .ssh
@@ -124,20 +139,23 @@ third_party/libdrmtap/
 # 仓库，所有文件都是 untracked，规则立刻生效 —— 122 个图标会被静默漏掉，
 # 其中包含 Windows 端构建必需的 res/ 与 flutter/assets/ 资源。
 # 下面按目录把品牌资源重新纳入版本控制。
-!res/**
-!flutter/assets/**
-!flutter/windows/runner/resources/**
-!flutter/macos/Runner/**
-!flutter/ios/Runner/**
-!flutter/android/app/src/main/res/**
-!fastlane/**
-!libs/**
+!client/res/**
+!client/flutter/assets/**
+!client/flutter/windows/runner/resources/**
+!client/flutter/macos/Runner/**
+!client/flutter/ios/Runner/**
+!client/flutter/android/app/src/main/res/**
+!client/fastlane/**
+!client/libs/**
 
 # customize.py 每次注入生成的 *.rd.bak 备份 —— 必须排在"解禁白名单"之后，
-# 否则上面的 !res/** / !libs/** 会把落在这些目录里的备份重新纳入 untracked。
+# 否则上面的 !client/res/** / !client/libs/** 会把落在这些目录里的备份
+# 重新纳入 untracked。
 *.rd.bak
 *.bak
 
 # 本地构建的临时工具目录（cargo install 的 codegen 二进制，可达数百 MB）
-build/.tools/
-build/__pycache__/
+# 按归属放在 build/client/ 下 —— 它只服务客户端的 bridge 生成。
+build/client/.tools/
+# 三段目录里任何一处跑 python 都会留下缓存
+build/**/__pycache__/

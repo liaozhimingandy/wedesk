@@ -3,11 +3,11 @@
 #
 # 与上游 rustdesk/rustdesk 的关键差异（也是这份文件存在的理由）：
 #
-#   1. libs/hbb_common 等子模块已实体化（vendored），checkout 不需要 submodules，
+#   1. client/libs/hbb_common 等子模块已实体化（vendored），checkout 不需要 submodules，
 #      clone 下来即可构建。省掉 --recursive 也避免了 submodule 拉不下来导致 CI 红。
 #   2. 源码根 == 仓库根（扁平化），所有路径都是相对仓库根的。
-#   3. 构建前会执行 build/customize.py 做品牌/服务器注入，
-#      唯一输入是仓库里的 build/custom.toml（可用 workflow_dispatch 输入覆盖）。
+#   3. 构建前会执行 build/client/customize.py 做品牌/服务器注入，
+#      唯一输入是仓库里的 build/client/custom.toml（可用 workflow_dispatch 输入覆盖）。
 #   4. 不签名。产物以 Artifact 供日常下载；推送 v* 标签时额外发布 GitHub Release。
 #   5. 服务端 hbbs/hbbr 由 build-server job 在同一条流水线里编译 —— 文件名沿用
 #      build-windows.yml 是为了保留既有的 Actions 连接与 badge，但这个文件现在
@@ -45,15 +45,15 @@ on:
         type: boolean
         default: true
       build_args:
-        description: "传给 build.py 的额外参数，例如 --vram（显存编码，进一步降低延迟与 CPU）"
+        description: "传给 client/build.py 的额外参数，例如 --vram（显存编码，进一步降低延迟与 CPU）"
         required: false
         default: "--vram"
       company_name:
-        description: "公司/组织名，留空则沿用 build/custom.toml 里的值"
+        description: "公司/组织名，留空则沿用 build/client/custom.toml 里的值"
         required: false
         default: ""
       website:
-        description: "官网地址，留空则沿用 build/custom.toml 里的值"
+        description: "官网地址，留空则沿用 build/client/custom.toml 里的值"
         required: false
         default: ""
       skip_customize:
@@ -78,25 +78,25 @@ env:
   FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
   CARGO_EXPAND_VERSION: "1.0.95"
   LLVM_VERSION: "15.0.6"
-  # vcpkg 版本：2026.07.29。改这个值记得同步更新 vcpkg.json 的 builtin-baseline
+  # vcpkg 版本：2026.07.29。改这个值记得同步更新 client/vcpkg.json 的 builtin-baseline
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   VCPKG_TRIPLET: "x64-windows-static"
   # x-gha 让 vcpkg 用 GitHub Actions Cache 当二进制缓存，
   # 少了这个每次都要重编译 aom/libvpx/ffmpeg，单次 40 分钟以上
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
 
-  # ---- 服务端（server/rustdesk-server 是独立 workspace，工具链单独定） ----
+  # ---- 服务端（server/src 是独立 workspace，工具链单独定） ----
   # 服务端 Cargo.lock 是 lockfile v4，cargo < 1.78 读不了；它的依赖
   # （sqlx 0.6 / tokio 1.44+ / git 上游包）也普遍要求较新的编译器。
   # 客户端之所以锁 1.75 是 sciter/bridge 的 i128 ABI 之故，两个 workspace 互不干扰。
   #
   # 编译器版本不再在这里写 —— 它由 SERVER_BUILD_IMAGE 决定：服务端在 musl 容器里
   # 本机编译（见 build-server job 的说明），容器内自带 Rust，不再依赖 runner 上
-  # 安装的工具链。要换版本就把这里和 server/Dockerfile 的 ARG RUST_IMAGE 一起改。
+  # 安装的工具链。要换版本就把这里和 server/deploy/Dockerfile 的 ARG RUST_IMAGE 一起改。
   SERVER_BUILD_IMAGE: "rust:1.90-alpine"
-  SERVER_DIR: "server/rustdesk-server"
-  # 目标三元组。必须与 server/build-musl.sh 的 TARGET 默认值、以及
-  # server/Dockerfile 的 ARG TARGET 默认值三者一致 ——
+  SERVER_DIR: "server/src"
+  # 目标三元组。必须与 server/deploy/build-musl.sh 的 TARGET 默认值、以及
+  # server/deploy/Dockerfile 的 ARG TARGET 默认值三者一致 ——
   # cargo 只有在传了 --target 时才把产物放进 target/<triple>/，
   # 编译与打包一旦对 triple 的理解不一致，就会拼出 target//release 这种空路径。
   SERVER_TARGET: "x86_64-unknown-linux-musl"
@@ -184,9 +184,9 @@ jobs:
           # 它要是空的，服务端编译会以"找不到 crate hbb_common"告终，
           # 而日志里看不出"其实是忘了初始化子模块"——所以在这里显式查。
           for f in \
-            libs/hbb_common/src/lib.rs \
-            libs/scrap/Cargo.toml \
-            libs/enigo/Cargo.toml \
+            client/libs/hbb_common/src/lib.rs \
+            client/libs/scrap/Cargo.toml \
+            client/libs/enigo/Cargo.toml \
             ${{ env.SERVER_DIR }}/Cargo.toml \
             ${{ env.SERVER_DIR }}/src/main.rs \
             ${{ env.SERVER_DIR }}/libs/hbb_common/src/lib.rs; do
@@ -200,12 +200,12 @@ jobs:
       - name: 品牌注入预演（不写盘）
         run: |
           set -e
-          python build/customize.py --source . --config build/custom.toml --dry-run
-          if grep -rq "Purslane Tech Pte. Ltd." Cargo.toml flutter/windows/runner/Runner.rc; then
-            echo "::error::仍残留上游公司名 —— 请执行 python build/customize.py"
+          python build/client/customize.py --source client --config build/client/custom.toml --dry-run
+          if grep -rq "Purslane Tech Pte. Ltd." client/Cargo.toml client/flutter/windows/runner/Runner.rc; then
+            echo "::error::仍残留上游公司名 —— 请执行 python build/client/customize.py"
             exit 1
           fi
-          if grep -q 'rust-ny.rustdesk.com' libs/hbb_common/src/config.rs; then
+          if grep -q 'rust-ny.rustdesk.com' client/libs/hbb_common/src/config.rs; then
             echo "::error::服务器地址仍是官方默认值"
             exit 1
           fi
@@ -257,16 +257,16 @@ jobs:
         id: cache-frb
         uses: actions/cache@v4
         with:
-          path: .tools/frb
+          path: build/client/.tools/frb
           key: frb-${{ runner.os }}-${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-ce${{ env.CARGO_EXPAND_VERSION }}-rust${{ env.RUST_VERSION }}
 
       - name: Install flutter rust bridge deps
         if: steps.cache-frb.outputs.cache-hit != 'true'
         run: |
           set -e
-          cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked --root "$PWD/.tools/frb"
+          cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked --root "$PWD/build/client/.tools/frb"
           cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} \
-            --features uuid --locked --root "$PWD/.tools/frb"
+            --features uuid --locked --root "$PWD/build/client/.tools/frb"
 
       - name: Install flutter (bridge generation only)
         uses: subosito/flutter-action@v2
@@ -279,31 +279,31 @@ jobs:
         # Flutter 3.22.3 的 Dart 解析不了 extended_text 14，降到 13 才能 pub get。
         # 只影响 bridge 生成，Windows 侧用的是仓库原始的 pubspec。
         run: |
-          cd flutter
+          cd client/flutter
           sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' pubspec.yaml
           flutter pub get
 
       - name: Run flutter rust bridge
         run: |
           set -e
-          "$PWD/.tools/frb/bin/flutter_rust_bridge_codegen" \
-            --rust-input ./src/flutter_ffi.rs \
-            --dart-output ./flutter/lib/generated_bridge.dart \
-            --c-output ./flutter/macos/Runner/bridge_generated.h
-          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
-          ls -l ./src/bridge_generated*.rs ./flutter/lib/generated_bridge*.dart
+          "$PWD/build/client/.tools/frb/bin/flutter_rust_bridge_codegen" \
+            --rust-input ./client/src/flutter_ffi.rs \
+            --dart-output ./client/flutter/lib/generated_bridge.dart \
+            --c-output ./client/flutter/macos/Runner/bridge_generated.h
+          cp ./client/flutter/macos/Runner/bridge_generated.h ./client/flutter/ios/Runner/bridge_generated.h
+          ls -l ./client/src/bridge_generated*.rs ./client/flutter/lib/generated_bridge*.dart
 
       - name: Upload bridge artifact
         uses: actions/upload-artifact@v4
         with:
           name: wedesk-bridge
           path: |
-            ./src/bridge_generated.rs
-            ./src/bridge_generated.io.rs
-            ./flutter/lib/generated_bridge.dart
-            ./flutter/lib/generated_bridge.freezed.dart
-            ./flutter/macos/Runner/bridge_generated.h
-            ./flutter/ios/Runner/bridge_generated.h
+            ./client/src/bridge_generated.rs
+            ./client/src/bridge_generated.io.rs
+            ./client/flutter/lib/generated_bridge.dart
+            ./client/flutter/lib/generated_bridge.freezed.dart
+            ./client/flutter/macos/Runner/bridge_generated.h
+            ./client/flutter/ios/Runner/bridge_generated.h
           retention-days: 7
 
   # ---------------------------------------------------------------------------
@@ -323,7 +323,7 @@ jobs:
     # 后果远不止"步骤被跳过"：
     #   1. Verify FFmpeg headers 不跑，缺失不会被发现
     #   2. vcpkg 的 host triplet 退回 x64-windows → FFmpeg 被静默跳过
-    #   3. build.py 拿不到 --hwcodec → 产物是软件编码版
+    #   3. client/build.py 拿不到 --hwcodec → 产物是软件编码版
     #   4. 流水线依然全绿 —— 这是静默降级，比构建失败更难发现
     #
     # 所以在 job 级显式兜底，让非手动触发时按设计意图走。
@@ -483,14 +483,14 @@ jobs:
             fi
           done
           if [ $missing -ne 0 ]; then
-            echo "::error::FFmpeg 头文件缺失于 $INC —— hwcodec 编译 mfx_encode.cpp 会失败。请确认 vcpkg.json 的 ffmpeg 条目的 platform 条件被满足（需要 host triplet 为 static）。"
+            echo "::error::FFmpeg 头文件缺失于 $INC —— hwcodec 编译 mfx_encode.cpp 会失败。请确认 client/vcpkg.json 的 ffmpeg 条目的 platform 条件被满足（需要 host triplet 为 static）。"
             ls -la "$VCPKG_ROOT/installed/" || true
             exit 1
           fi
           echo "✓ FFmpeg 头文件就位"
 
       # ------------------------------------------------------------------
-      # 品牌注入：唯一真源是 build/custom.toml。
+      # 品牌注入：唯一真源是 build/client/custom.toml。
       # 脚本幂等 —— 源码已是目标值时什么都不会做，所以重复构建不会有脏 diff。
       # 需要临时换品牌时，在 Actions 页面手填 inputs，或在仓库 Settings 里配
       # variables.WEDESK_COMPANY / WEDESK_WEBSITE，无需改源码。
@@ -505,7 +505,7 @@ jobs:
           SITE="${{ inputs.website }}"
           [ -n "$COMPANY" ] && EXTRA+=(--set "brand.company_name=$COMPANY")
           [ -n "$SITE" ]    && EXTRA+=(--set "brand.website=$SITE")
-          python build/customize.py --source . --config build/custom.toml "${EXTRA[@]}"
+          python build/client/customize.py --source client --config build/client/custom.toml "${EXTRA[@]}"
 
       # ------------------------------------------------------------------
       # 主构建。注意 --skip-portable-pack：便携包要等签名/加外壳，
@@ -518,10 +518,10 @@ jobs:
           HWCODEC="${{ env.ENABLE_HWCODEC == 'true' && '--hwcodec' || '' }}"
           echo "硬件编解码: ${HWCODEC:-关闭}"
           echo "硬件编解码: ${HWCODEC:-关闭}" >> "$GITHUB_STEP_SUMMARY"
-          echo "build.py 参数: --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}"
-          python ./build.py --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}
+          echo "client/build.py 参数: --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}"
+          python client/build.py --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}
           mkdir -p rustdesk
-          cp -rf ./flutter/build/windows/x64/runner/Release/. ./rustdesk/
+          cp -rf client/flutter/build/windows/x64/runner/Release/. ./rustdesk/
           ls -l ./rustdesk
 
       - name: Bundle usbmmidd (virtual monitor driver)
@@ -568,8 +568,8 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          Push-Location ./res/msi
-          python preprocess.py --arp -d ../../rustdesk
+          Push-Location client/res/msi
+          python preprocess.py --arp -d ../../../rustdesk
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
           $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1
@@ -629,7 +629,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # 3. 服务端 hbbs / hbbr —— Linux musl 静态二进制
   #
-  #    服务端是独立 Rust workspace（server/rustdesk-server），与客户端互不影响，
+  #    服务端是独立 Rust workspace（server/src），与客户端互不影响，
   #    所以能在同一条流水线里并行编译，互不污染 target 与工具链。
   #
   #    产物选择 musl 而非 glibc：静态链接的二进制可以扔到任意发行版上直接跑，
@@ -662,7 +662,7 @@ jobs:
       # host triple 本身就是 musl，alpine 的 openssl-dev/sqlite-dev 天生是给
       # musl 编的，pkg-config 一查即中，产物照样是 musl 静态二进制。
       #
-      # 编译命令不在这里 —— 它在 server/build-musl.sh，与 server/Dockerfile
+      # 编译命令不在这里 —— 它在 server/deploy/build-musl.sh，与 server/deploy/Dockerfile
       # 共用同一份。两份配方一旦各自漂移，就会出现「CI 绿但本机 docker build 红」
       # 这种最难复盘的故障。
       #
@@ -690,7 +690,7 @@ jobs:
           mkdir -p "$HOME/.cargo/registry" "${SERVER_DIR}/target"
           docker run --rm \
             --volume "$PWD/${SERVER_DIR}:/src" \
-            --volume "$PWD/server/build-musl.sh:/build-musl.sh:ro" \
+            --volume "$PWD/server/deploy/build-musl.sh:/build-musl.sh:ro" \
             --volume "$HOME/.cargo/registry:/usr/local/cargo/registry" \
             --env TARGET="$TRIPLE" \
             "${SERVER_BUILD_IMAGE}" \
@@ -747,7 +747,7 @@ jobs:
             echo "## Wedesk 服务端构建结果"
             echo ""
             echo "- hbbs / hbbr / rustdesk-utils：**musl 静态二进制**，任意 Linux 发行版可直接运行"
-            echo "- 版本：\`${{ steps.pack.outputs.version }}\`（取自 server/rustdesk-server/Cargo.toml）"
+            echo "- 版本：\`${{ steps.pack.outputs.version }}\`（取自 server/src/Cargo.toml）"
             echo "- 含 systemd 单元，不用 Docker 也能部署"
             echo "- 镜像版本由下一个 \`Push server image\` job 推送到 GHCR"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -755,7 +755,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # 4. 服务端容器镜像 —— 推到 Docker Hub（liaozhiming/wedesk-server）
   #
-  #    这里刻意用 Dockerfile.prebuilt 而不是 server/Dockerfile：
+  #    这里刻意用 Dockerfile.prebuilt 而不是 server/deploy/Dockerfile：
   #    后者在容器里从源码编译（方便本机零 Rust 环境构建），
   #    而 CI 里二进制刚在上一个 job 编完，直接 COPY 进去即可，
   #    否则同一个 workspace 要在容器里再编译一遍十几分钟。
@@ -940,7 +940,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./dist-server
-          file: ./server/Dockerfile.prebuilt
+          file: ./server/deploy/Dockerfile.prebuilt
           platforms: linux/amd64
           push: ${{ steps.plan.outputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -992,22 +992,22 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # 版本号必须与 Cargo.toml 一致。发错的 Recovery 成本远高于构建失败：
+      # 版本号必须与 client/Cargo.toml 一致。发错的 Recovery 成本远高于构建失败：
       # 发出去的版本号是错的，用户下载后无法判断自己装的是什么，
       # 而删除重发又会让已发出去的链接失效。
-      - name: 校验标签版本与 Cargo.toml 一致
+      - name: 校验标签版本与 client/Cargo.toml 一致
         id: ver
         shell: bash
         run: |
           set -e
-          CARGO_VER="$(grep -m1 -E '^version = ' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          CARGO_VER="$(grep -m1 -E '^version = ' client/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
           TAG="$GITHUB_REF_NAME"
           TAG_VER="${TAG#v}"
-          echo "Cargo.toml 版本: $CARGO_VER"
+          echo "client/Cargo.toml 版本: $CARGO_VER"
           echo "标签:            $TAG （解析为 $TAG_VER）"
           if [ "$CARGO_VER" != "$TAG_VER" ]; then
-            echo "::error::标签 $TAG 与 Cargo.toml 的 $CARGO_VER 不一致。"
-            echo "::error::请先对齐版本再打标签 —— 用 build/tag-release.bat 可自动取 Cargo.toml 的版本号。"
+            echo "::error::标签 $TAG 与 client/Cargo.toml 的 $CARGO_VER 不一致。"
+            echo "::error::请先对齐版本再打标签 —— 用 build/common/tag-release.bat 可自动取 client/Cargo.toml 的版本号。"
             exit 1
           fi
           echo "version=$CARGO_VER" >> "$GITHUB_OUTPUT"
@@ -1061,7 +1061,7 @@ jobs:
           set -e
           V="${{ steps.ver.outputs.version }}"
           mkdir -p out
-          # exe 名由 build.py 决定（当前硬编码 rustdesk.exe），不写死，
+          # exe 名由 client/build.py 决定（当前硬编码 rustdesk.exe），不写死，
           # 免得以后改了名字 Release 说明还在指向不存在的文件
           EXE="$(cd dist/portable && ls *.exe 2>/dev/null | head -1 || true)"
           echo "exe=${EXE:-rustdesk.exe}" >> "$GITHUB_OUTPUT"

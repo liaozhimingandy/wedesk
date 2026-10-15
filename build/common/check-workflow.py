@@ -35,8 +35,8 @@
 #   - 表达式的类型正确性与运行时求值结果
 #
 # 用法：
-#   python build/check-workflow.py                     # 检查 .github/workflows/*.yml
-#   python build/check-workflow.py <file.yml> [...]    # 检查指定文件
+#   python build/common/check-workflow.py               # 检查 .github/workflows/*.yml
+#   python build/common/check-workflow.py <file.yml> [...]    # 检查指定文件
 #
 # 退出码：0 = 没问题；1 = 发现语法错误或无法解析的引用
 # =============================================================================
@@ -52,7 +52,22 @@ try:
 except ImportError:
     sys.exit("需要 pyyaml：pip install pyyaml")
 
-ROOT = Path(__file__).resolve().parent.parent
+def _find_repo_root(start: Path) -> Path:
+    """从脚本所在位置向上查找仓库根（第一个含 .github/workflows 的目录）。
+
+    为什么不能写死 parent.parent：本脚本原先在 build/ 下，parent.parent
+    正好是仓库根；重构时移到 build/common/ 后层数假设立刻失效，ROOT 变成
+    build/，于是"没有找到工作流文件"——而它当时返回的是 exit 0。
+    一个静态检查工具在【什么都没检查】的情况下报告"没问题"，
+    比直接报错危险得多：会把没验证当成已验证。
+    """
+    for cand in [start.parent, *start.parents]:
+        if (cand / ".github" / "workflows").is_dir():
+            return cand
+    return start.parent.parent  # 兜底：保持旧行为
+
+
+ROOT = _find_repo_root(Path(__file__).resolve())
 DEFAULT_DIR = ROOT / ".github" / "workflows"
 
 # GitHub 自动注入的环境变量（节选），引用它们不算未定义
@@ -418,8 +433,12 @@ def check_file(path: Path) -> list[str]:
 def main(argv: list[str]) -> int:
     files = [Path(a) for a in argv[1:]] or sorted(DEFAULT_DIR.glob("*.yml"))
     if not files:
-        print("没有找到工作流文件")
-        return 0
+        # 找不到文件【不等于】没问题。默认路径为空只可能是两种原因：
+        # 仓库被挪了位置/改了布局，或脚本自己被移到了别的深度。
+        # 两种情况都该让人知道，而不是安静地返回 0。
+        print(f"没有找到工作流文件（查找目录：{DEFAULT_DIR}）")
+        print("如果这是意外的，说明脚本推断仓库根失败了 —— 请显式传入文件路径。")
+        return 2
 
     all_problems: list[str] = []
     secrets: set[str] = set()

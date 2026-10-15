@@ -7,8 +7,8 @@ REM    check-env.bat                verify nothing is missing
 REM    install-vcpkg-deps.bat       C++ dependencies (slow, once)
 REM    apply-rustdesk-engine.bat    Flutter + patched engine (once)
 REM
-REM  Source:  <repo>\              (vendored upstream sits at the repo root)
-REM  Output:  <repo>\flutter\build\windows\x64\runner\Release
+REM  Source:  <repo>\client\        (vendored upstream client sits under client\)
+REM  Output:  <repo>\client\flutter\build\windows\x64\runner\Release
 REM
 REM  Works from anywhere - every path is derived from %~dp0, so the repo can
 REM  live on any drive. No hardcoded D:\Git anywhere.
@@ -29,16 +29,16 @@ set VCPKG_DEFAULT_HOST_TRIPLET=x64-windows-static
 echo Flutter:  %FLUTTER_ROOT%
 echo vcpkg:    %VCPKG_ROOT%
 
-REM 上游源码已扁平化到仓库根：%~dp0 = <repo>\build\  ->  .. = <repo>\
-cd /d "%~dp0.."
+REM 客户端源码在 client\ 下：%~dp0 = <repo>\build\client\  ->  ..\.. = <repo>\
+cd /d "%~dp0..\.."
 if errorlevel 1 (
-    echo Cannot find repo root: %~dp0..
+    echo Cannot find repo root: %~dp0..\..
     exit /b 1
 )
-if not exist ".\build.py" (
-    echo ERROR: build.py not found in %CD%
-    echo The vendored upstream source should sit at the repo root,
-    echo alongside build\ and server\.
+if not exist ".\client\build.py" (
+    echo ERROR: build.py not found in %CD%\client
+    echo The vendored upstream client source should sit under client\,
+    echo alongside libs\ src\ flutter\ res\.
     exit /b 1
 )
 
@@ -113,7 +113,7 @@ echo.
 set BUILD_EXTRA=--hwcodec --vram
 if "%NO_HWCODEC%"=="1" set BUILD_EXTRA=--vram
 echo Codec args: %BUILD_EXTRA%
-python .\build.py --portable --flutter --skip-portable-pack %BUILD_EXTRA%
+python client\build.py --portable --flutter --skip-portable-pack %BUILD_EXTRA%
 
 if errorlevel 1 (
     echo.
@@ -135,11 +135,11 @@ if errorlevel 1 (
 
 echo.
 echo ============================================================
-if exist ".\flutter\build\windows\x64\runner\Release" (
+if exist ".\client\flutter\build\windows\x64\runner\Release" (
     echo  BUILD SUCCEEDED
     echo.
     echo  Output folder:
-    echo     %CD%\flutter\build\windows\x64\runner\Release
+    echo     %CD%\client\flutter\build\windows\x64\runner\Release
     echo.
     echo  Your server address and public key are baked into the binary,
     echo  so users do not have to configure anything.

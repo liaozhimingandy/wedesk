@@ -13,12 +13,12 @@ REM
 REM 耗时说明：首次构建约 15-25 分钟（release profile 开了 LTO + codegen-units=1）。
 REM 之后再构建走 Docker 层缓存与 cache mount，只重编改动的部分。
 REM
-REM 构建上下文必须是 server\ 目录，因为它下面才放着 rustdesk-server\ 源码
+REM 构建上下文必须是 server\ 目录，因为它下面才放着 src\ 源码
 REM 和排除私钥用的 .dockerignore。
 REM ============================================================================
 setlocal enabledelayedexpansion
 
-cd /d "%~dp0.."
+cd /d "%~dp0..\.."
 set "SERVER_DIR=%CD%\server"
 
 echo.
@@ -60,8 +60,8 @@ if errorlevel 1 (
 )
 
 REM ---- 2. 源码与 .dockerignore 校验 ----
-if not exist "%SERVER_DIR%\rustdesk-server\Cargo.toml" (
-    echo [x] 找不到服务端源码: %SERVER_DIR%\rustdesk-server\Cargo.toml
+if not exist "%SERVER_DIR%\src\Cargo.toml" (
+    echo [x] 找不到服务端源码: %SERVER_DIR%\src\Cargo.toml
     exit /b 1
 )
 if not exist "%SERVER_DIR%\.dockerignore" (
@@ -81,7 +81,7 @@ cd /d "%SERVER_DIR%"
 echo.
 echo ---- docker build（容器内编译 musl 静态二进制，首次较慢）----
 echo.
-docker build --platform %PLATFORM% -t wedesk-server:%TAG% -f Dockerfile .
+docker build --platform %PLATFORM% -t wedesk-server:%TAG% -f deploy\Dockerfile .
 if errorlevel 1 (
     echo.
     echo [x] 构建失败。常见原因：

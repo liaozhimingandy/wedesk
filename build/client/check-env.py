@@ -282,9 +282,9 @@ def main():
         results.append((name, bool(p), p or "未找到", "warn" if not p else "ok"))
 
     # ---------- 源码 ----------
-    # 上游源码已扁平化到仓库根（与 build/ 同级），路径从脚本位置推导，
-    # 不再硬编码盘符，仓库放哪都能体检。
-    src = Path(__file__).resolve().parent.parent
+    # 客户端源码在 client/ 下：从脚本位置向上三级到仓库根，再进 client/。
+    # 路径从脚本位置推导，不硬编码盘符，仓库放哪都能体检。
+    src = Path(__file__).resolve().parent.parent.parent / "client"
     if src.exists():
         has_common = (src / "libs" / "hbb_common" / "src" / "config.rs").exists()
         results.append(

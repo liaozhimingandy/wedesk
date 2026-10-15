@@ -22,7 +22,7 @@ bridge 生成、硬件编解码 ...），又能在编译前完成品牌与服务
 
 用法
 ----
-    python patch-ci.py --source <仓库根目录> [--config build/custom.toml]
+    python patch-ci.py --source <仓库根目录> [--config build/client/custom.toml]
 
   上游源码已扁平化到仓库根，--source 直接指向仓库根即可
   （在本仓库里就是 build\\patch-ci.py --source ..）。

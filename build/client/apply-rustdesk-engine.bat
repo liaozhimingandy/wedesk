@@ -77,8 +77,8 @@ echo Engine replaced.
 
 echo.
 echo === [4/4] Applying the Flutter 3.24 dropdown patch ===
-REM %~dp0 = <repo>\build\  ->  ..\.github = <repo>\.github
-set FLUTTER_PATCH_SRC=%~dp0..\.github\patches\flutter_3.24.4_dropdown_menu_enableFilter.diff
+REM %~dp0 = <repo>\build\client\  ->  ..\..\.github = <repo>\.github
+set FLUTTER_PATCH_SRC=%~dp0..\..\.github\patches\flutter_3.24.4_dropdown_menu_enableFilter.diff
 if exist "%FLUTTER_PATCH_SRC%" (
     copy /Y "%FLUTTER_PATCH_SRC%" "%FLUTTER_ROOT%\" >nul
     cd /d "%FLUTTER_ROOT%"

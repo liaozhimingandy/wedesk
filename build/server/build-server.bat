@@ -2,7 +2,7 @@
 REM ============================================================================
 REM 本机编译服务端 hbbs / hbbr（Windows 原生 exe）
 REM
-REM 服务端源码就在本仓库 server/rustdesk-server/，是独立 Cargo workspace，
+REM 服务端源码就在本仓库 server/src/，是独立 Cargo workspace，
 REM 不依赖任何子模块、不需要联网拉 submodule —— 但首次编译要下载依赖。
 REM
 REM 产物：server\bin\hbbs.exe / hbbr.exe / rustdesk-utils.exe
@@ -20,8 +20,8 @@ REM   所以本脚本强制切到 stable toolchain。两个 workspace 各用各�
 REM ============================================================================
 setlocal enabledelayedexpansion
 
-cd /d "%~dp0.."
-set "SRV=%CD%\server\rustdesk-server"
+cd /d "%~dp0..\.."
+set "SRV=%CD%\server\src"
 set "OUT=%CD%\server\bin"
 
 echo.
@@ -43,13 +43,13 @@ REM ---- 1. 源码是否就位 ----
 if not exist "%SRV%\Cargo.toml" (
     echo [x] 找不到服务端源码: %SRV%\Cargo.toml
     echo     本目录应是 rustdesk-server 的 vendored 副本。
-    echo     恢复方式: python build\vendor-server.py
+    echo     恢复方式: python build\server\vendor-server.py
     exit /b 1
 )
 if not exist "%SRV%\libs\hbb_common\src\lib.rs" (
     echo [x] 服务端依赖的 hbb_common 是空目录。
     echo     上游把它作为 submodule，本仓库已 vendor 化，不该是空的。
-    echo     恢复方式: python build\vendor-server.py
+    echo     恢复方式: python build\server\vendor-server.py
     exit /b 1
 )
 
@@ -95,7 +95,7 @@ if errorlevel 1 (
     echo     若在普通 cmd 下跑本脚本，请先执行 一次 vsdevcmd 或
     echo     "x64 Native Tools Command Prompt for VS"。
     echo     也可以用 Docker 构建，完全不需要本机工具链：
-    echo         cd server ^&^& docker build -t wedesk-server:latest .
+    echo         cd server ^&^& docker build -t wedesk-server:latest -f deploy\Dockerfile .
     exit /b 1
 )
 

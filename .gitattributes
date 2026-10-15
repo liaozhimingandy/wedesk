@@ -19,14 +19,26 @@
 *.sh            text eol=lf
 
 # 服务端：Dockerfile / shell / Rust 源码统一 LF。
-# server/rustdesk-server/systemd/*.service 若被转成 CRLF，
+# server/src/systemd/*.service 若被转成 CRLF，
 # systemd 会静默忽略整份单元文件，表现为服务起不来且没有报错。
+# server/** 同时覆盖 src/（源码）与 deploy/（部署资产）两段。
 server/**/*.sh        text eol=lf
 server/**/Dockerfile* text eol=lf
 server/**/*.service   text eol=lf
 server/**/*.rs        text eol=lf
 server/**/*.proto     text eol=lf
 server/**/*.cargo     text eol=lf
+
+# 客户端：Cargo.toml / build.rs / pubspec 等被 cargo 与 flutter 读取的文件
+# 一律 LF。CRLF 混进 Cargo.toml 会让 cargo 报无法解析的版本错误，
+# 而 pubspec.yaml 里的 CRLF 会让 flutter pub get 静默跳过依赖。
+client/**/*.toml      text eol=lf
+client/**/*.rs        text eol=lf
+client/**/*.dart      text eol=lf
+client/**/*.yaml      text eol=lf
+client/**/*.cmake     text eol=lf
+client/**/CMakeLists.txt text eol=lf
+client/**/*.gradle    text eol=lf
 
 # Windows 批处理对换行敏感，CMD 在部分语法下无法正确处理纯 LF
 *.bat           text eol=crlf
@@ -42,3 +54,7 @@ server/**/*.cargo     text eol=lf
 # sqlx 编译期校验用的 SQLite 库。被当成文本做换行转换会把文件写坏，
 # 表现为编译时报 "file is not a database"
 *.sqlite3       binary
+
+# .dockerignore 与 .env 类文件：Docker 与 compose 读取时不吃掉行尾 \r，
+# 混入 CRLF 会让路径/变量值带上不可见字符，表现为"看起来填对了却不生效"。
+*.dockerignore  text eol=lf

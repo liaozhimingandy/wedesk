@@ -27,8 +27,8 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DATA_DIR = HERE / "data"
-BACKUP_DIR = HERE / "backup"
+DATA_DIR = HERE.parent / "data"
+BACKUP_DIR = HERE.parent / "backup"
 KEY_PUB = DATA_DIR / "id_ed25519.pub"
 KEY_PRIV = DATA_DIR / "id_ed25519"
 DB_PATHS = ["db_v2.sqlite3", "db.sqlite3"]
@@ -424,7 +424,7 @@ def image_has_binaries(tag):
 
     why, how = _PROBE_HELP.get(
         kind,
-        ("镜像自检返回了未预期的结果：" + verdict, "检查 server/check-bins.sh 的实现"),
+        ("镜像自检返回了未预期的结果：" + verdict, "检查 check-bins.sh 的实现"),
     )
     return False, f"{name}：{why}\n    处理：{how}"
 
@@ -457,7 +457,7 @@ def build_image(image, nocache=False):
 def cmd_build(args):
     """用本仓库源码构建服务端镜像。
 
-    docker-compose.yml 里写了 build 段（源码在 rustdesk-server/），
+    docker-compose.yml 里写了 build 段（源码在 ../src/），
     所以镜像是本地编译出来的，与 rustdesk/rustdesk-server 官方镜像无关。
     首次构建会在容器内编译 musl 静态二进制，约 15-25 分钟。
     """
@@ -542,8 +542,8 @@ def cmd_start(args):
         print()
         print(f"    {YELLOW}{key}{RESET}")
         print()
-        print("    下一步：把这串公钥与你的服务器地址填入 ../build/custom.toml")
-        print("            然后运行 ../build/customize.py 生成定制客户端源码")
+        print("    下一步：把这串公钥与你的服务器地址填入 ../../build/client/custom.toml")
+        print("            然后运行 ../../build/client/customize.py --source ../../client 生成定制客户端源码")
     else:
         warn("尚未检测到密钥文件，可稍后用 'python rdctl.py key' 查看")
         print(f"    排查: {COMPOSE[0]} logs rd-hbbs")

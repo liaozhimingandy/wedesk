@@ -6,7 +6,7 @@ cmd 的 `for /f` 无法解析命令行里带括号的表达式（`.read()` 会�
 拆成脚本后 bat 侧只是一条普通命令，可移植性更好。
 
 用法:
-    python build/get-version.py [Cargo.toml 路径]
+    python build/common/get-version.py [Cargo.toml 路径]
 """
 import pathlib
 import re

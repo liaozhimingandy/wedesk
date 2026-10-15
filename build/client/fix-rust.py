@@ -6,8 +6,8 @@
 转发壳被截断为 0 字节，且 toolchain 目录里只剩一个残缺的 cargo.exe。
 
 用法：
-    python build/fix-rust.py            # 自动清理 + 重装
-    python build/fix-rust.py --check    # 只体检，不改动
+    python build/client/fix-rust.py            # 自动清理 + 重装
+    python build/client/fix-rust.py --check    # 只体检，不改动
 
 ！！严禁中途 kill 本进程！！rustup 下载期间被杀会再次损坏转发壳。
 """

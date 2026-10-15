@@ -8,7 +8,7 @@
     源码连同它锁定的 hbb_common 一起快照进来，永远自包含、永远可复现。
 
 用法（只需在追上游新版本时跑一次）：
-    python build/vendor-server.py [--server-rev REV] [--common-rev REV]
+    python build/server/vendor-server.py [--server-rev REV] [--common-rev REV]
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ import tempfile
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEST = os.path.join(ROOT, "server", "rustdesk-server")
+DEST = os.path.join(ROOT, "server", "src")
 
 SERVER_REPO = "https://github.com/rustdesk/rustdesk-server.git"
 COMMON_REPO = "https://github.com/rustdesk/hbb_common.git"

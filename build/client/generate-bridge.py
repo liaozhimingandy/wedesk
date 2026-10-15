@@ -10,9 +10,9 @@
     所以本地必须自己生成一遍，和 CI 里的 generate-bridge job 完全一致。
 
 用法：
-    python build/generate-bridge.py              # 缺了才生成
-    python build/generate-bridge.py --force      # 改了 src/flutter_ffi.rs 后强制重生成
-    python build/generate-bridge.py --check      # 只看是否已就绪
+    python build/client/generate-bridge.py              # 缺了才生成
+    python build/client/generate-bridge.py --force   # 改了 src/flutter_ffi.rs 后强制重生成
+    python build/client/generate-bridge.py --check      # 只看是否已就绪
 
 注意：flutter_rust_bridge_codegen 是从源码 cargo install 的，首次约 5-15 分钟，
 中途别 kill —— 半途中断会留下损坏的二进制，得删掉 build/.tools/frb 重来。
@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
+ROOT = HERE.parent.parent
 
 FRB_VERSION = "1.80.1"
 CARGO_EXPAND_VERSION = "1.0.95"
@@ -107,7 +107,7 @@ def install_codegen(force_reinstall: bool):
 
 def main():
     ap = argparse.ArgumentParser(description="生成本地构建所需的 flutter-rust-bridge 代码")
-    ap.add_argument("--root", default=None, help="仓库根目录（默认与本脚本同级的上一级）")
+    ap.add_argument("--root", default=None, help="仓库根目录（默认由本脚本位置向上两级推断）")
     ap.add_argument("--force", action="store_true", help="忽略已有产物，强制重新生成")
     ap.add_argument("--reinstall", action="store_true", help="强制重装 codegen 二进制")
     ap.add_argument("--check", action="store_true", help="只检查是否已就绪")
@@ -122,7 +122,7 @@ def main():
             print("[x] bridge 产物缺失：")
             for m in miss:
                 print(f"      - {m}")
-            print("\n  执行 python build/generate-bridge.py 生成")
+            print("\n  执行 python build/client/generate-bridge.py 生成")
             return 1
         print("[OK] bridge 产物齐全")
         return 0

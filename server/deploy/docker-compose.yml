@@ -34,13 +34,13 @@ services:
   # hbbs : ID 注册 / 心跳 / NAT 打洞协调
   # ---------------------------------------------------------------------------
   hbbs:
-    # 镜像来自本目录的 Dockerfile —— 源码在 rustdesk-server/，编译时就在容器里跑，
+    # 镜像来自 deploy/ 的 Dockerfile —— 源码在 ../src/，编译时就在容器里跑，
     # 不依赖 rustdesk/rustdesk-server 官方镜像。
     # 首次启动前先执行一次 `docker compose build`（或 `docker compose up --build`）。
     image: ${RD_IMAGE:-wedesk-server:latest}
     build: &wedesk-build
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: deploy/Dockerfile
     container_name: rd-hbbs
     # -p  : 主端口，派生出 NAT(P-1) 与 WS(P+2)。写成变量是为了让下面 ports 段
     #       能跟着一起变，避免"一边改一边没改"这种最难查的错。

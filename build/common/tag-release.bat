@@ -12,7 +12,7 @@ REM   tag-release.bat --dry    只显示将要做什么，不实际操作
 REM ============================================================================
 setlocal enabledelayedexpansion
 
-cd /d "%~dp0.."
+cd /d "%~dp0..\.."
 
 set "DRY=0"
 if /i "%~1"=="--dry"     set "DRY=1"
@@ -34,14 +34,14 @@ REM ---- 1. 读取版本号 ----
 REM 版本提取放在 get-version.py 里：cmd 的 for /f 解析不了命令行中的括号，
 REM 内联 python -c 会在 .read() 处报 "was unexpected at this time"。
 set "VERSION="
-for /f "usebackq delims=" %%v in (`%PY% "%~dp0get-version.py" Cargo.toml 2^>nul`) do set "VERSION=%%v"
+for /f "usebackq delims=" %%v in (`%PY% "%~dp0get-version.py" client\Cargo.toml 2^>nul`) do set "VERSION=%%v"
 if not defined VERSION (
-    echo [x] 无法从 Cargo.toml 读取版本号。
+    echo [x] 无法从 client\Cargo.toml 读取版本号。
     echo     请确认已安装 python 且可在命令行直接调用。
     exit /b 1
 )
 set "TAG=v%VERSION%"
-echo Cargo.toml 版本: %VERSION%
+echo client\Cargo.toml 版本: %VERSION%
 echo 将要打的标签:    %TAG%
 echo.
 
@@ -77,7 +77,7 @@ REM ---- 4. 标签不能重复 ----
 git rev-parse -q --verify "refs/tags/%TAG%" >nul 2>&1
 if not errorlevel 1 (
     echo [x] 标签 %TAG% 已存在。
-    echo     版本号没变但代码有更新时：先改 Cargo.toml 的 version 再发，
+    echo     版本号没变但代码有更新时：先改 client\Cargo.toml 的 version 再发，
     echo     或删掉旧标签重发（已下载旧版的人不会自动更新，慎删）。
     exit /b 1
 )

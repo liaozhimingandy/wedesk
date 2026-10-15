@@ -23,7 +23,24 @@
 # 约定：
 #   输入  /src                          rustdesk-server 源码目录（vendored）
 #   输出  /src/target/$TARGET/release/  hbbs / hbbr / rustdesk-utils
+#         $OUT（默认 /out）              上面三个二进制的副本
 #   环境变量 TARGET 可覆盖目标三元组（默认 x86_64-unknown-linux-musl）
+#         OUT   可覆盖副本目录（默认 /out）
+#
+# 【为什么还要往 /out 复制一份 —— 本机 docker build 直接踩过的坑】
+#   server/Dockerfile 里 cargo 的 target 目录是挂成 BuildKit cache mount 的：
+#       RUN --mount=type=cache,target=/src/target  sh /build-musl.sh
+#   cache mount 的设计就是"内容不进镜像层"：RUN 一结束挂载即卸载，
+#   写进去的东西只留在构建缓存里供下次构建复用，绝不会落进镜像层。
+#   而 cargo 用 --target 时产物正好写在 /src/target/$TARGET/release/ —— 挂载点上。
+#   于是下一阶段 COPY --from=builder /src/target/$TARGET/release/hbbr 拿不到文件：
+#   轻则构建直接失败，重则本地残着更早打出来的同名镜像、
+#   docker compose up（不带 --build）静默复用旧镜像，
+#   启动时才报 exec: "hbbr": executable file not found in $PATH，
+#   而报错行列回指的是容器 init，完全看不出是镜像里少了东西。
+#
+#   所以产物必须落在【普通目录】里，且复制要和编译处在【同一个 RUN 内】
+#   （CI 里没有 cache mount，target/ 本就在卷里，多复制一份也无妨）。
 # =============================================================================
 
 set -eu
@@ -79,6 +96,16 @@ cargo build --locked --release --target "$TARGET" \
 
 BIN="$SRC/target/$TARGET/release"
 ls -lh "$BIN/hbbs" "$BIN/hbbr" "$BIN/rustdesk-utils"
+
+# ---------------------------------------------------------------------------
+# 把三个二进制复制到 $OUT（默认 /out）—— 与编译同处一个 RUN，见文件头说明
+# ---------------------------------------------------------------------------
+OUT="${OUT:-/out}"
+mkdir -p "$OUT"
+cp -f "$BIN/hbbs" "$BIN/hbbr" "$BIN/rustdesk-utils" "$OUT/"
+chmod 755 "$OUT/hbbs" "$OUT/hbbr" "$OUT/rustdesk-utils"
+echo "==> 产物副本目录 $OUT："
+ls -lh "$OUT"
 
 # ---------------------------------------------------------------------------
 # 静态性自检 —— 只报告，不失败

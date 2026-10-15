@@ -268,6 +268,30 @@ def image_exists(tag):
     return rc == 0
 
 
+def image_has_binaries(tag):
+    """检查镜像里是否真有可执行的 hbbs / hbbr。
+
+    为什么要在启动前专门查一次：
+      容器起不来的报错是 runc 层的
+          exec: "hbbr": executable file not found in $PATH
+      它的位置回指的是容器 init 进程，行列上根本指不到"镜像里少了个文件"这回事，
+      排查成本极高。这里提前把结论说清楚。
+
+    注意这里刻意【实际执行】而不是 test -x：
+      动态链接器缺失时可执行位照样在，但 execve 会返回 ENOENT，
+      只有真跑一次才暴露得出来（退出码 127）。
+    """
+    rc, _, _ = run([
+        "docker", "run", "--rm", "--entrypoint", "sh", tag, "-c",
+        'for b in hbbs hbbr rustdesk-utils; do '
+        '  command -v "$b" >/dev/null 2>&1 || { echo "MISSING:$b"; exit 1; }; '
+        '  "$b" --help >/dev/null 2>&1; rc=$?; '
+        '  [ "$rc" -eq 127 ] && { echo "BROKEN:$b"; exit 1; }; '
+        'done'
+    ])
+    return rc == 0
+
+
 def cmd_build(args):
     """用本仓库源码构建服务端镜像。
 
@@ -311,6 +335,26 @@ def cmd_start(args):
             print("    也可以先手动构建看完整日志: build\\build-server-image.bat")
             sys.exit(1)
         info("镜像构建完成")
+    elif not image_has_binaries(image):
+        # 镜像在，但里面没有可执行的 hbbs / hbbr。
+        # 最常见的原因：Dockerfile 的编译阶段把 cargo 的 target 目录挂成了
+        # BuildKit cache mount（--mount=type=cache），而 cache mount 的内容
+        # 不会进入镜像层，于是下一阶段 COPY --from 拿不到文件。
+        err(f"镜像 {image} 里没有可执行的 hbbs / hbbr。")
+        print("    这个镜像是坏的，跑起来必定报：")
+        print("        exec: \"hbbr\": executable file not found in $PATH")
+        print()
+        print("    常见成因：Dockerfile 编译阶段把产物目录挂成了 BuildKit")
+        print("    cache mount（--mount=type=cache,target=.../target）——")
+        print("    cache mount 的内容只跨构建复用、不进镜像层。")
+        print()
+        print("    处理：")
+        print("        docker compose build --no-cache")
+        print("        python rdctl.py start")
+        print()
+        print("    若 .env 的 RD_IMAGE 指向远端镜像，则本地构建不会被执行，")
+        print("    需要让 CI 重新推送该镜像后 docker compose pull。")
+        sys.exit(1)
 
     step("启动容器 ...")
     rc, out, errout = run(COMPOSE + ["up", "-d"])

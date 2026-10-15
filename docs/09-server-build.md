@@ -160,6 +160,19 @@ python rdctl.py key           # 再打印一次公钥（填进客户端 custom.t
 本地有镜像就用本地的，没有就先构建。**`RD_IMAGE` 改回 `rustdesk/rustdesk-server:latest` 可以瞬间回到官方镜像**
 （会同时失去上面那条本地化补丁）。
 
+⚠️ 这里有个容易踩的坑：**`docker compose up`（不带 `--build`）不会因为源码变了就重新构建**，
+只要本地存在同 tag 的镜像就直接复用。改过 `server/rustdesk-server/` 源码或本 Dockerfile 之后，
+必须显式构建一次，否则跑的还是旧镜像：
+
+```bash
+docker compose build            # 有层缓存，通常几分钟
+docker compose build --no-cache # 彻底重编，首次约 15-25 分钟
+docker compose up -d
+```
+
+同理，`.env` 里 `RD_IMAGE` 一旦指向远端镜像，本地 Dockerfile 就完全不参与 ——
+排查这类问题时先跑 `docker compose config | grep -i image` 确认到底用的是哪个镜像。
+
 ### 4.2 Linux 裸机（不用 Docker）
 
 CI 产出的二进制是 **musl 静态链接**，任意发行版直接跑，不挑 glibc 版本：
@@ -233,6 +246,7 @@ build\build-server.bat
 | 客户端连不上，日志无报错 | 两端公钥不一致 | 核对 `rdctl.py key` 与 `build/custom.toml` 的 key 是否相同 |
 | `docker build` 卡在 crates.io 下载 | 容器内网络慢 | 重试一次即可；CI 里有 cargo registry 缓存，本机建议 `--platform` 保持一致以复用层缓存 |
 | CI 里 `cp: cannot stat 'target//release/hbbs'`（注意路径里的**双斜杠**） | 打包步骤拼路径用的三元组变量为空 | 见下方第 6.2 节 |
+| `docker compose up` 报 `exec: "hbbr": executable file not found in $PATH` | 跑起来的镜像里根本没有可执行的 `hbbr`。<br>两种成因：① Dockerfile 编译阶段把 cargo 的 target 目录挂成了 BuildKit cache mount，产物不进镜像层；② `.env` 的 `RD_IMAGE` 指向了别的镜像，本地 Dockerfile 压根没参与构建 | 见下方第 6.3 节 |
 
 ### 6.1 OpenSSL 报错：为什么不在 runner 上交叉编译
 
@@ -324,6 +338,83 @@ Error: Process completed with exit code 1
 | `.github/workflows/build-windows.yml` 的 `env.SERVER_TARGET` | CI 打包与缓存路径 |
 | `server/build-musl.sh` 的 `TARGET="${TARGET:-...}"` | 未收到环境变量时的兜底 |
 | `server/Dockerfile` 的 `ARG TARGET=...` | 最终 `COPY --from=builder` 的源路径 |
+
+### 6.3 `exec: "hbbr": executable file not found in $PATH`
+
+完整报错：
+
+```
+[+] Running 2/2
+✔ Container rd-hbbr  Recreated
+✔ Container rd-hbbs  Recreated
+Attaching to rd-hbbr, rd-hbbs
+Error response from daemon: failed to create task for container: failed to create
+shim task: OCI runtime create failed: runc create failed: unable to start container
+process: error during container init: exec: "hbbr": executable file not found in $PATH: unknown
+```
+
+**先看懂这句话**：它说的是容器 init 进程（也就是 `command:` 的第一段 `hbbr`）
+在 `PATH` 里找不到。它**不会**告诉你"镜像里少了个文件"，位置回指的是容器
+启动环节，行列上对不上任何一行 Dockerfile —— 所以这条报错几乎没法按图索骥。
+
+先确认一件事（一条命令即可）：
+
+```bash
+docker run --rm --entrypoint sh <镜像名> -c "command -v hbbs; command -v hbbr"
+```
+
+两条都空 → 镜像里确实没有这两个二进制，往下看成因；都有路径 → 是别的问题
+（多半是动态链接器缺失，见第 6.1 节的"静态性自检"）。
+
+**成因 A：Dockerfile 把 cargo 的产物目录挂成了 BuildKit cache mount**
+
+```dockerfile
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \        # ← 产物目录被挂成 cache
+    sh /build-musl.sh
+...
+COPY --from=builder /src/target/${TARGET}/release/hbbr /usr/bin/hbbr   # ← 落空
+```
+
+`type=cache` 的语义就是**跨构建复用、但不进镜像层**：RUN 一结束挂载即卸载，
+写进去的东西只留在构建缓存里，绝不会落进镜像层。而 cargo 用 `--target` 时产物
+正好写在 `/src/target/$TARGET/release/`，正是挂载点——所以 COPY 拿不到文件。
+
+正确做法是**产物必须落在普通目录，且复制要和编译处在同一个 RUN 内**：
+`build-musl.sh` 编译结束后把三个二进制复制到 `/out`，阶段 2 从 `/out` COPY。
+cache mount 只留给真正的缓存目录（这里是 `/usr/local/cargo/registry`）。
+
+**成因 B：`.env` 的 `RD_IMAGE` 指到了别的镜像**
+
+`docker-compose.yml` 里是 `image: ${RD_IMAGE:-wedesk-server:latest}` + `build:`
+的组合。一旦 `RD_IMAGE` 有值，compose 就直接用（或拉取）那个镜像，
+**本地 Dockerfile 不会被执行** —— 你以为在跑自己编的二进制，其实不是。
+
+本仓库的 `.env` 曾残留迁移前的 `RD_IMAGE=rustdesk/rustdesk-server:latest`
+（官方镜像），并且端口变量还是已废弃的 `HBBS_TCP` / `HBBS_UDP` / `HBBR_TCP` /
+`RELAY_PORT`。这些旧键名 compose **既不报错也不生效**，属于最容易白调半天的
+那类问题 —— 现在只认 `HBBS_PORT` / `HBBS_NAT_PORT` / `HBBR_PORT`。
+
+确认当前实际用的是哪个镜像：
+
+```bash
+docker compose config | grep -i image
+```
+
+**怎么处理**
+
+```bash
+# 走本地自编译（"完全本地化"路径）：确保 .env 里 RD_IMAGE 已注释掉
+docker compose build --no-cache
+docker compose up -d
+
+# 或走 CI 推送的镜像：让 CI 重新推送后
+docker compose pull
+docker compose up -d
+```
+
+构建阶段现在会**实际执行**一次 `hbbs` / `hbbr` / `rustdesk-utils`，
+镜像里少了或跑不起来会直接构建失败，不会再拖到 `docker compose up` 才炸。
 
 ---
 

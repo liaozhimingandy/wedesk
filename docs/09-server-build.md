@@ -42,7 +42,7 @@ flowchart LR
     A --> B2["② 本机 Docker 构建"]
     A --> B3["③ 本机 cargo 编译"]
     B1 --> C1["GitHub Release<br/>hbbs / hbbr zip + 裸二进制"]
-    B1 --> C2["GHCR 镜像<br/>ghcr.io/&lt;owner&gt;/wedesk-server"]
+    B1 --> C2["Docker Hub 镜像<br/>liaozhiming/wedesk-server"]
     B2 --> C3["本地镜像<br/>wedesk-server:latest"]
     B3 --> C4["Windows exe<br/>server/bin/*.exe"]
     C2 --> D["docker compose up -d"]
@@ -59,7 +59,10 @@ flowchart LR
 build\tag-release.bat        # 打标签并推送（版本自动取自根 Cargo.toml）
 ```
 
-流水线里的 `build-server` job 会编译 musl 静态二进制，`server-image` job 把镜像推到 GHCR。
+流水线里的 `build-server` job 会编译 musl 静态二进制，`server-image` job 把镜像推到
+Docker Hub（`liaozhiming/wedesk-server`）。
+推送用的 `DOCKER_USERNAME` / `DOCKER_PASSWORD` 是仓库 secrets，在
+Settings → Secrets and variables → Actions 里配置。
 
 那个 job **不是在 runner 上直接 `cargo build --target musl`**，而是起一个 `rust:alpine` 容器、
 在里面本机编译（`server/build-musl.sh`）。原因见第 6 节那条 OpenSSL 报错的说明。
@@ -69,7 +72,7 @@ build\tag-release.bat        # 打标签并推送（版本自动取自根 Cargo.
 |---|---|---|
 | `wedesk-server-<ver>-linux-x64-musl.zip` | zip | 拷到 Linux 服务器上解压即用 |
 | `hbbs` / `hbbr` / `rustdesk-utils` | 裸二进制 | 直接扔进 `/usr/bin` |
-| `ghcr.io/<owner>/wedesk-server:latest` | 容器镜像 | `docker pull` 后用于 compose |
+| `liaozhiming/wedesk-server:latest` | 容器镜像 | `docker pull` 后用于 compose |
 
 > **为什么服务端编译要和客户端放在同一条流水线**：两条流水线都往同一个 Release 传文件，
 > 必然出现竞态——谁先跑完谁创建 Release，后到的要么覆盖要么失败。合并是根治办法。
@@ -330,7 +333,7 @@ Error: Process completed with exit code 1
 |---|---|---|
 | 客户端 | 仓库根 `Cargo.toml`（当前 1.5.1） | `build\tag-release.bat` 取的就是它 |
 | 服务端 | `server/rustdesk-server/Cargo.toml`（当前 1.1.17） | 与客户端版本各自演进，互不绑定 |
-| 容器镜像标签 | 沿用 Release 标签 | `ghcr.io/<owner>/wedesk-server:<tag>` |
+| 容器镜像标签 | 沿用 Release 标签 | `liaozhiming/wedesk-server:<tag>` |
 
 两者没有版本号必须对齐的要求 —— 只要**交互协议兼容**即可。
 升级时建议先升客户端看是否正常，再升服务端，出问题好二分定位。

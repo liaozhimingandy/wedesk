@@ -82,7 +82,7 @@ python rdctl.py key         # 打印公钥 —— 记下来，客户端要用
 |---|---|---|
 | `RELAY_HOST` | `127.0.0.1` | **必须改成实际 IP/域名**，客户端靠它找中继 |
 | `ALWAYS_USE_RELAY` | `N` | `N`=优先 P2P（内网推荐）；`Y`=强制走中继（跨公网、提高连通率，耗带宽） |
-| `RD_IMAGE` | `wedesk-server:latest` | 本地源码构建的镜像。想用 CI 推的远端镜像改这里（如 `ghcr.io/<owner>/wedesk-server:latest`）；<br>改回 `rustdesk/rustdesk-server:latest` 则用官方镜像（**会失去本地化补丁**） |
+| `RD_IMAGE` | `wedesk-server:latest` | 本地源码构建的镜像。想用 CI 推的远端镜像改这里：<br>`RD_IMAGE=liaozhiming/wedesk-server:latest`；<br>改回 `rustdesk/rustdesk-server:latest` 则用官方镜像（**会失去本地化补丁**） |
 | `RUST_LOG` | `info` | 排障时调 `debug` |
 | `HBBS_PORT` / `HBBS_NAT_PORT` / `HBBR_PORT` | 5187/5186/5188 | 整体平移时才改。<br>必须满足 `HBBS_NAT_PORT = HBBS_PORT - 1`，`rdctl.py start` 会校验 |
 

@@ -24,7 +24,7 @@ preflight (10s)  ─┐
 | `generate-bridge` | ubuntu-22.04 | 生成 flutter-rust-bridge 胶水代码 | ~10 min |
 | `build-windows` | windows-2022 | vcpkg 依赖 → 品牌注入 → 编译 → 打包 | 40–60 min |
 | `build-server` | ubuntu-latest | **容器内 musl 本机编译** hbbs/hbbr/rustdesk-utils | 15–25 min |
-| `server-image` | ubuntu-latest | 把上一步的二进制装成镜像推到 GHCR | ~3 min |
+| `server-image` | ubuntu-latest | 把上一步的二进制装成镜像推到 Docker Hub | ~3 min |
 | `release` | ubuntu-latest | **仅 `v*` 标签**：打包 zip、算校验和、发布 Release | ~2 min |
 
 产物：
@@ -32,7 +32,7 @@ preflight (10s)  ─┐
 - `wedesk-windows-x64` —— 便携版目录，解压即用（Artifact，保存 14 天）
 - `wedesk-windows-x64-msi` —— MSI 安装包（手动触发时勾选，或打标签时自动构建）
 - `wedesk-server-linux-x64` —— hbbs / hbbr / rustdesk-utils + systemd 单元 + zip
-- `ghcr.io/<owner>/wedesk-server` —— 服务端镜像（仅 tag / 手动触发时推送）
+- `liaozhiming/wedesk-server` —— 服务端镜像（仅 tag / 手动触发时推送）
 - GitHub Release —— 打 `v*` 标签时发布，长期保存，适合分发给员工
 
 ### 为什么拆成多个 job
@@ -56,6 +56,24 @@ if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_bu
 ---
 
 ## 二、怎么跑
+
+### 一次性配置：仓库 secrets
+
+服务端镜像要推到 Docker Hub，需要两个 secrets
+（Settings → Secrets and variables → Actions → New repository secret）：
+
+| Secret | 内容 |
+|---|---|
+| `DOCKER_USERNAME` | Docker Hub 用户名（即 `liaozhiming`） |
+| `DOCKER_PASSWORD` | Docker Hub 的 **Personal Access Token** |
+
+> **用 Access Token，不要用账号密码**：账号密码无法做细粒度权限控制，
+> 且账号一旦开启 2FA，`docker login` 会直接失败。
+> 令牌在 Docker Hub → Account Settings → Personal access tokens 生成，
+> 权限给 `Read, Write, Delete` 即可。
+
+没配这两个 secret 时：日常 push 只构建镜像做验证（作业不会红）；
+**但打标签发布时会硬失败**——该发版却发不出去，必须让人看见，不能静默降级成"没镜像的 Release"。
 
 ### 自动触发
 

@@ -101,6 +101,12 @@ env:
   # 编译与打包一旦对 triple 的理解不一致，就会拼出 target//release 这种空路径。
   SERVER_TARGET: "x86_64-unknown-linux-musl"
 
+  # ---- Docker Hub（服务端镜像发布目标） ----
+  # 镜像完整名 = DH_NAMESPACE/DH_REPO = liaozhiming/wedesk-server
+  # 登录用的 DOCKER_USERNAME / DOCKER_PASSWORD 走仓库 secrets，不写在这里。
+  DH_NAMESPACE: "liaozhiming"
+  DH_REPO: "wedesk-server"
+
 jobs:
   # ---------------------------------------------------------------------------
   # 0. 前置校验：花 10 秒发现"配置写了但没注入"这类低级错误，
@@ -747,26 +753,87 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # 4. 服务端容器镜像 —— 推到自己账号的 GHCR，与官方镜像再无关系
+  # 4. 服务端容器镜像 —— 推到 Docker Hub（liaozhiming/wedesk-server）
   #
   #    这里刻意用 Dockerfile.prebuilt 而不是 server/Dockerfile：
   #    后者在容器里从源码编译（方便本机零 Rust 环境构建），
   #    而 CI 里二进制刚在上一个 job 编完，直接 COPY 进去即可，
   #    否则同一个 workspace 要在容器里再编译一遍十几分钟。
+  #
+  #    需要的仓库 secrets（Settings → Secrets and variables → Actions）：
+  #      DOCKER_USERNAME   Docker Hub 用户名
+  #      DOCKER_PASSWORD   Docker Hub 的 Personal Access Token
+  #                        （用令牌而不是账号密码：账号密码无法做细粒度权限，
+  #                         且开启 2FA 后 docker login 会直接失败）
   # ---------------------------------------------------------------------------
   server-image:
-    name: Push server image (GHCR)
+    name: Push server image (Docker Hub)
     if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' }}
     needs: [build-server]
     runs-on: ubuntu-latest
     permissions:
+      # 推 Docker Hub 用的是仓库 secrets，跟 GITHUB_TOKEN 无关 ——
+      # 所以这里不需要 packages: write，最小权限只留读代码
       contents: read
-      packages: write
 
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      # -------------------------------------------------------------------
+      # 凭据与推送意图，只在这一个 step 里算清楚
+      # -------------------------------------------------------------------
+      # 为什么要单独一步：docker/login-action 在凭据缺失时的报错是
+      # 「Username and password required」，完全看不出是没配 secrets 还是配错了。
+      # 而且 fork 出来的仓库默认拿不到 secrets —— 不加这一步，每个 PR 都会
+      # 报一个莫名其妙的登录失败。
+      #
+      # 结果分三态：
+      #   want=true  + 凭据齐 → push=true   正常发布
+      #   want=true  + 凭据缺 → 硬失败       该发版却发不出去，必须让人看见
+      #   want=false + 凭据缺 → 只构建不推送 日常提交仍验证 Dockerfile 没改坏
+      # -------------------------------------------------------------------
+      - name: 计算是否推送镜像
+        id: plan
+        env:
+          DH_USER: ${{ secrets.DOCKER_USERNAME }}
+          DH_PASS: ${{ secrets.DOCKER_PASSWORD }}
+          WANT: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -e
+          missing=""
+          if [ -z "${DH_USER}" ]; then missing="DOCKER_USERNAME"; fi
+          if [ -z "${DH_PASS}" ]; then
+            if [ -n "${missing}" ]; then
+              missing="${missing} 与 DOCKER_PASSWORD"
+            else
+              missing="DOCKER_PASSWORD"
+            fi
+          fi
+
+          if [ "${WANT}" = "true" ] && [ -n "${missing}" ]; then
+            echo "::error::本次要发布镜像（打标签或手动触发），但仓库缺少 secrets：${missing}"
+            echo "::error::到 Settings → Secrets and variables → Actions 添加后重跑本 workflow。"
+            exit 1
+          fi
+
+          push=false
+          if [ "${WANT}" = "true" ]; then push=true; fi
+
+          if [ "${push}" != "true" ]; then
+            echo "::warning::未配置 ${missing:-凭据} —— 本次只构建镜像做验证，不推送。"
+          fi
+
+          # 命名空间必须是登录账号本人（或其所属组织），否则 push 会被 Docker Hub
+          # 拒绝并报「denied: requested access to the resource is denied」。
+          # 这里只告警：用组织令牌等场景登录名可以不同于命名空间，不能一刀切判死。
+          if [ -n "${DH_USER}" ] && [ "${DH_USER}" != "${DH_NAMESPACE}" ]; then
+            echo "::warning::DOCKER_USERNAME=${DH_USER} 与镜像前缀 ${DH_NAMESPACE}/ 不同 ——"
+            echo "::warning::若 ${DH_USER} 不属于 ${DH_NAMESPACE} 这个组织，push 会被拒绝。"
+          fi
+
+          echo "push=$push" >> "$GITHUB_OUTPUT"
 
       - name: Download server binaries
         uses: actions/download-artifact@v4
@@ -776,21 +843,25 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Log in to Docker Hub
+        if: ${{ steps.plan.outputs.push == 'true' }}
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # registry 留空即为 Docker Hub（docker.io）
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Extract image metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/wedesk-server
+          images: ${{ env.DH_NAMESPACE }}/${{ env.DH_REPO }}
           tags: |
+            # 正式标签才抢 latest；预发布（v1.2.3-rc1）不动它
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
             type=ref,event=tag
+            # 非发版场景给个 commit sha 标签，便于回溯某次构建
+            type=sha,format=long,prefix=sha-,enable=${{ github.ref_type != 'tag' }}
 
       # 只有发版和手动触发才真正推送。
       # push=false 时 build-push-action 依然会完整构建 —— 日常提交也能验证
@@ -801,7 +872,7 @@ jobs:
           context: ./dist-server
           file: ./server/Dockerfile.prebuilt
           platforms: linux/amd64
-          push: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
+          push: ${{ steps.plan.outputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
@@ -815,11 +886,11 @@ jobs:
             echo ""
             echo "| 项目 | 值 |"
             echo "|---|---|"
-            echo "| 镜像 | \`ghcr.io/${{ github.repository_owner }}/wedesk-server\` |"
-            echo "| 是否推送 | ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }} |"
-            echo "| 标签 | \`${{ github.ref_type == 'tag' && github.ref_name || 'sha' }}\` |"
+            echo "| 镜像 | \`${{ env.DH_NAMESPACE }}/${{ env.DH_REPO }}\` |"
+            echo "| 是否推送 | ${{ steps.plan.outputs.push }} |"
+            echo "| 标签 | \`${{ github.ref_type == 'tag' && github.ref_name || 'sha-<commit>' }}\` |"
             echo ""
-            echo "拉取：\`docker pull ghcr.io/${{ github.repository_owner }}/wedesk-server:latest\`"
+            echo "拉取：\`docker pull ${{ env.DH_NAMESPACE }}/${{ env.DH_REPO }}:latest\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
@@ -978,7 +1049,7 @@ jobs:
               echo "|---|---|"
               echo "| \`${SERVER_PKG}\` | 含 hbbs / hbbr / rustdesk-utils 与 systemd 单元 |"
               echo "| \`hbbs\` / \`hbbr\` / \`rustdesk-utils\` | 裸二进制，musl 静态链接，任意发行版可直接运行 |"
-              echo "| 容器镜像 \`ghcr.io/${{ github.repository_owner }}/wedesk-server:latest\` | 本版镜像，\`docker pull\` 即可 |"
+              echo "| 容器镜像 \`${{ env.DH_NAMESPACE }}/${{ env.DH_REPO }}:latest\` | 本版镜像，\`docker pull\` 即可 |"
             else
               echo "::warning::本次未产出服务端二进制 —— 请查看 build-server job 日志"
               echo "本次未随附服务端二进制（构建未成功）。使用上一版本或本地构建："
@@ -1047,6 +1118,6 @@ jobs:
             echo "| 预发布 | ${{ steps.ver.outputs.prerelease }} |"
             echo "| 含 MSI | ${{ steps.pack.outputs.has_msi }} |"
             echo "| 含服务端 hbbs/hbbr | ${{ steps.pack.outputs.has_server }} |"
-            echo "| 服务端镜像 | \`ghcr.io/${{ github.repository_owner }}/wedesk-server:latest\` |"
+            echo "| 服务端镜像 | \`${{ env.DH_NAMESPACE }}/${{ env.DH_REPO }}:latest\` |"
             echo "| 地址 | ${{ steps.publish.outputs.url }} |"
           } >> "$GITHUB_STEP_SUMMARY"

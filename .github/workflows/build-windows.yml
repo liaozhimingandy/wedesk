@@ -1339,6 +1339,10 @@ jobs:
     needs: [preflight, generate-bridge]
     # macos-latest 现在是 arm64，正好对应 aarch64-apple-ios 目标
     runs-on: macos-latest
+    # 临时：供下面的"失败日志回传"步骤用。定位完 iOS 根因请删除本块与诊断步骤。
+    permissions:
+      contents: write
+      actions: read
 
     steps:
       - name: Export GitHub Actions cache environment variables
@@ -1496,6 +1500,35 @@ jobs:
           cp -R "$APP" "$IPA_DIR/Payload/Runner.app"
           ( cd "$IPA_DIR" && zip -r -q "wedesk-ios-unsigned.ipa" Payload )
           ls -lh "$IPA_DIR"/*.ipa
+
+      # 临时诊断：用仓库自带 GITHUB_TOKEN 拉取本次运行【全部 job】的完整日志
+      # （含 subosito/flutter-action 这类 uses: 步骤的内部输出，API 走 token 额度
+      # 不受匿名 60/小时限制），推到 ci-logs 分支，raw.githubusercontent.com 匿名可读。
+      # 定位 iOS 失败根因后请删除本步骤与上面的 permissions 块。
+      - name: 回传全部 job 日志到 ci-logs（临时诊断，定位后删除）
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          API="https://api.github.com/repos/$GITHUB_REPOSITORY/actions"
+          mkdir -p ci-logs
+          curl -sL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$API/runs/$GITHUB_RUN_ID/logs" -o ci-logs/run-logs.zip
+          cd ci-logs && unzip -o -q run-logs.zip && rm -f run-logs.zip
+          {
+            echo "run=$GITHUB_RUN_NUMBER"
+            echo "sha=$GITHUB_SHA"
+            echo "ios_xcode=$(xcodebuild -version 2>/dev/null | tr '\n' ' ')"
+            echo "flutter=$(flutter --version 2>/dev/null | head -1)"
+          } > META.txt
+          git config user.name ci-bot
+          git config user.email ci-bot@users.noreply.github.com
+          git checkout -B ci-logs
+          git add -f ci-logs
+          git commit -m "CI 诊断日志 run=$GITHUB_RUN_NUMBER" || echo "(无变化跳过)"
+          git push -f "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" HEAD:ci-logs
 
       - name: Upload iOS artifacts
         uses: actions/upload-artifact@v4

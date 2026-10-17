@@ -54,12 +54,29 @@ services:
       - ALWAYS_USE_RELAY=${ALWAYS_USE_RELAY:-N}
       # 允许中继到非本机地址（relay host 与 hbbs 不同机器时需要）
       - ENFORCED_RELAY=${ENFORCED_RELAY:-N}
-      # 数据库文件路径（不是"保留天数"，见下）。
+      # ---- 数据库后端 ---------------------------------------------------
+      # sqlite（默认，与官方行为一致）| postgres
+      #
+      # ⚠️ 官方 rustdesk/rustdesk-server 镜像【不认识 DB_TYPE】，配了也不会报错，
+      #    只是静默继续写 SQLite —— 等你发现 ID 没进 PostgreSQL 已经攒了一堆数据。
+      #    只有本仓库 server/src 编出来的镜像（默认 RD_IMAGE 就是它）才支持。
+      #    拿不准就跑 `rdctl.py doctor`，它会直接告诉你数据实际落在哪。
+      - DB_TYPE=${DB_TYPE:-sqlite}
+      #
+      # DB_URL 的含义随 DB_TYPE 变化：
+      #   sqlite   → 容器内文件路径，默认 /root/db_v2.sqlite3（即挂载的 ./data）
+      #   postgres → 连接串 postgres://<user>:<password>@<host>:5432/<db>
+      #
       # 里面只有一张 peer 表 —— ID → uuid / 公钥 / 备注 / 注册信息。
       # hbbs【不记录任何连接与审计日志】：谁连了谁、连了多久、走了中继还是 P2P，
       # 服务端一概不落库，只能从容器日志看零星几行。要做合规审计，
       # 得自己在前面加反向代理或流量镜像，别指望这个数据库。
       - DB_URL=${DB_URL:-/root/db_v2.sqlite3}
+      # 连接池大小。**刻意留空**：留空则两个后端各用自己的合理默认值
+      #   sqlite → 1（写操作串行，连接多了只会更容易撞 database is locked）
+      #   postgres → 8
+      # 这里一旦写死某个数字，默认的 SQLite 路径也会被迫用它，偏离上游行为。
+      - MAX_DATABASE_CONNECTIONS=${MAX_DATABASE_CONNECTIONS:-}
       # 默认 warn 而非 info：hbbs 在 info 级别下每注册/心跳都落一行日志，
       # 长期运行的磁盘写入与格式化开销是可观测的，而排障时临时调高即可。
       - RUST_LOG=${RUST_LOG:-warn}
@@ -82,8 +99,16 @@ services:
       # 限流/封禁并污染审计日志。只有在前面挂了反向代理、由代理统一覆写该头
       # 时才可 publish，且必须用防火墙限制仅反代 IP 可访问。
       # 详见 docs/10-ports.md。
+    # 这里用完整映射写法而不是列表，因为要给 postgres 加条件（列表形式不支持）。
     depends_on:
-      - hbbr
+      hbbr:
+        condition: service_started
+      # postgres 默认不启用（见文件末尾的 pg profile），所以用 required: false：
+      # profile 没开时这一项被忽略，不会报"服务不存在"。
+      # 开了之后 hbbs 会等它 healthy 再启动，避免首次连库失败。
+      postgres:
+        condition: service_healthy
+        required: false
     restart: unless-stopped
     networks:
       - rd-net
@@ -136,6 +161,47 @@ services:
       options:
         max-size: "${LOG_MAX_SIZE:-10m}"
         max-file: "${LOG_MAX_FILE:-3}"
+
+  # ---------------------------------------------------------------------------
+  # postgres : 可选的 ID/设备存储后端（默认【不启用】）
+  # ---------------------------------------------------------------------------
+  # 启用方法：
+  #   1) 在 .env 里设 DB_TYPE=postgres 与对应的 DB_URL，并设一个够强的 PG_PASSWORD
+  #   2) docker compose --profile pg up -d
+  #
+  # 不带 --profile pg 时这个服务根本不会被创建，默认部署不会多背一个容器。
+  #
+  # hbbs 首次连接会自动建 peer 表与索引；若需要预先受管的 schema，
+  # 把 ./postgres-init.sql 挂到 /docker-entrypoint-initdb.d/ 即可。
+  #
+  # 数据落在 ./pgdata，务必纳入备份；rdctl.py backup 会同时处理两种后端。
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: ${PG_IMAGE:-postgres:16-alpine}
+    profiles:
+      - pg
+    container_name: rd-postgres
+    environment:
+      - POSTGRES_DB=${PG_DB:-rustdesk}
+      - POSTGRES_USER=${PG_USER:-rustdesk}
+      # 生产务必改强口令；留空或保持 changeme 等于把设备台账敞开
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-changeme}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+      # 可选：需要受管 schema 时打开下面的挂载（仅首次初始化生效）
+      # - ./postgres-init.sql:/docker-entrypoint-initdb.d/10-peer.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-rustdesk} -d ${PG_DB:-rustdesk}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - rd-net
+    mem_limit: ${PG_MEM:-512m}
+    cpus: ${PG_CPUS:-1.00}
 
 networks:
   rd-net:

@@ -15,7 +15,16 @@ rdctl.py —— RustDesk 自建服务器跨平台管理工具
     python rdctl.py key       打印服务器公钥（客户端定制要用）
     python rdctl.py logs      查看实时日志（Ctrl+C 退出）
     python rdctl.py backup    备份密钥与数据库到 ./backup/<时间戳>/
+    python rdctl.py upgrade   拉远端镜像并重启（仅 RD_IMAGE 指向远端时可用）
+    python rdctl.py doctor    体检：查出"配置看着对、实际没生效"的问题
     python rdctl.py uninstall 停止并删除容器（保留 ./data）
+
+upgrade 参数:
+    --tag=<tag>      升级到指定版本
+    --check          只报告有无更新，不重启
+    --no-backup      跳过升级前自动备份（不推荐）
+
+doctor 退出码 0 = 无错误（可能仍有提醒）；1 = 有需要处理的错误。
 """
 import os
 import sys
@@ -303,6 +312,60 @@ def cmd_ports(args):
     ports = resolve_ports()
     print_ports(ports)
     check_ports(ports, fatal=False)
+
+
+# --- 数据库后端 ------------------------------------------------------------
+# ID/设备数据默认落在 SQLite；改成 PostgreSQL 后可以统一管理与出报表。
+# 后端由 DB_TYPE 决定，但**配置写了不等于生效** —— 官方镜像不认这个变量，
+# 会静默继续写 SQLite，不报错、日志也看不出来。所以下面既有"看配置"的
+# db_type()，也有"看数据实际落在哪"的 probe_*()，doctor 会把两者交叉比对。
+PG_TYPES = ("postgres", "postgresql", "pg")
+
+
+def db_type():
+    """配置的后端：sqlite（默认）或 postgres"""
+    return read_env().get("DB_TYPE", os.environ.get("DB_TYPE", "sqlite")).strip().lower()
+
+
+def is_pg():
+    return db_type() in PG_TYPES
+
+
+def pg_conf(key, default):
+    return read_env().get(key, os.environ.get(key, default))
+
+
+def probe_sqlite_rows():
+    """本地 SQLite 里 peer 表的行数；不可用返回 None"""
+    dbfile = next((DATA_DIR / n for n in DB_PATHS if (DATA_DIR / n).exists()), None)
+    if not dbfile:
+        return None
+    import sqlite3
+
+    try:
+        con = sqlite3.connect(f"file:{dbfile}?mode=ro", uri=True)
+        n = con.execute("SELECT COUNT(*) FROM peer").fetchone()[0]
+        con.close()
+        return n
+    except Exception:
+        return None
+
+
+def probe_pg_rows():
+    """PostgreSQL 里 peer 表的行数；不可用返回 None。
+    借容器内的 psql 查询，宿主机无需安装 PostgreSQL 客户端。"""
+    user = pg_conf("PG_USER", "rustdesk")
+    db = pg_conf("PG_DB", "rustdesk")
+    rc, out, _ = run(
+        COMPOSE + ["exec", "-T", "postgres", "psql", "-U", user, "-d", db, "-tAc",
+                   "select count(*) from peer;"]
+    )
+    if rc != 0:
+        return None
+    try:
+        return int(out.strip().splitlines()[-1].strip())
+    except (ValueError, IndexError):
+        return None
 
 
 def image_exists(tag):
@@ -636,11 +699,266 @@ def cmd_backup(args):
         if src.exists():
             shutil.copy2(src, dest / name)
             n += 1
+    # PostgreSQL 后端：借容器内的 pg_dump 导出，宿主机无需装 PostgreSQL 客户端
+    if is_pg():
+        user = pg_conf("PG_USER", "rustdesk")
+        db = pg_conf("PG_DB", "rustdesk")
+        rc, out, errout = run(
+            COMPOSE + ["exec", "-T", "postgres", "pg_dump", "-U", user, db]
+        )
+        if rc != 0:
+            err(f"pg_dump 失败: {errout}")
+            print(f"    确认已执行: {' '.join(COMPOSE)} --profile pg up -d")
+        else:
+            (dest / "postgres_dump.sql").write_text(out + "\n", encoding="utf-8")
+            n += 1
     if n == 0:
         warn("没有可备份的文件（服务可能尚未运行过）")
         return
     info(f"已备份 {n} 个文件 -> {dest}")
     print("    密钥泄露风险提示：私钥 id_ed25519 一旦泄露，攻击者可伪造你的服务器")
+
+
+# --- 升级 ------------------------------------------------------------------
+def _opt(args, name):
+    """取 --name=value 或 --name value"""
+    prefix = "--" + name + "="
+    for i, a in enumerate(args):
+        if a.startswith(prefix):
+            return a[len(prefix):]
+        if a == "--" + name and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def _flag(args, name):
+    return ("--" + name) in args
+
+
+def retag(image, tag):
+    """替换镜像 tag。注意 'localhost:5000/ws' 这种 registry 带端口的情形：
+    只有最后一个 ':' 之后不含 '/' 时，那一段才是 tag。"""
+    head, _, last = image.rpartition(":")
+    if not head or "/" in last:
+        return f"{image}:{tag}"
+    return f"{head}:{tag}"
+
+
+def local_image_id(image):
+    rc, out, _ = run(["docker", "images", "--no-trunc", "--format", "{{.ID}}", image])
+    if rc != 0 or not out:
+        return None
+    return out.splitlines()[0].strip() or None
+
+
+def cmd_upgrade(args):
+    """拉取远端镜像并重启。
+
+    只在镜像真的变了才重启 —— 否则"例行升级"会白白中断正在进行的远程连接。
+    本地构建的镜像（默认 wedesk-server:latest）远端没有，pull 不了，
+    那种情况应当用 build 重新编译。
+    """
+    check_docker_running()
+    image = compose_image_name()
+
+    if not is_remote_image():
+        warn(f"RD_IMAGE 未设置或指向本地镜像（{image}）—— 远端没有它，无法 pull")
+        print("    本仓库的镜像是用源码编出来的，改过源码请执行：")
+        print("      python rdctl.py build            # 或 build --no-cache")
+        print("    若确实要拉远端镜像，先在 .env 里设置 RD_IMAGE=owner/repo:tag")
+        return 1
+
+    tag = _opt(args, "tag")
+    check_only = _flag(args, "check")
+    no_backup = _flag(args, "no-backup")
+
+    if tag:
+        new_image = retag(image, tag)
+        if new_image != image:
+            step(f"指定版本: {image} -> {new_image}")
+            image = new_image
+
+    print(f"    镜像: {image}")
+    before = local_image_id(image)
+    print(f"    当前: {before[:19] + '…' if before else '(本地还没有)'}")
+
+    step("拉取镜像 ...")
+    rc, _, errout = run(["docker", "pull", image])
+    if rc != 0:
+        err(f"拉取失败:\n{errout}")
+        if "ghcr.io" in image:
+            print("    GHCR 镜像默认私有，需先登录：")
+            print("      echo <TOKEN> | docker login ghcr.io -u <用户名> --password-stdin")
+            print("    Token 需具备 read:packages 权限。")
+        elif "denied" in errout or "unauthorized" in errout:
+            print("    鉴权失败，请确认已登录该镜像仓库。")
+        return 1
+
+    after = local_image_id(image)
+    if before and before == after:
+        info("镜像已是最新，无需重启")
+        return 0
+
+    if before:
+        info(f"发现新版本: {before[:19]}… -> {after[:19]}…")
+    else:
+        info(f"镜像已就绪: {after[:19]}…" if after else "镜像已拉取")
+
+    if check_only:
+        info("--check 模式：已拉取但不重启。去掉 --check 执行即可应用。")
+        return 0
+
+    if not no_backup:
+        step("升级前自动备份 ...")
+        cmd_backup([])
+    else:
+        warn("已跳过备份（--no-backup），升级失败时将无法回滚数据")
+
+    step("用新镜像重建容器 ...")
+    rc, _, errout = run(COMPOSE + ["up", "-d"])
+    if rc != 0:
+        err(f"重启失败:\n{errout}")
+        return 1
+    info("已重启")
+    print("    回滚：把 .env 的 RD_IMAGE 改回上一个 tag，再执行一次 upgrade")
+    show_status()
+    return 0
+
+
+# --- 体检 ------------------------------------------------------------------
+def _check(ok, msg, fix=None):
+    """打印一条检查结果。失败返回 1（计入错误），通过返回 0"""
+    if ok:
+        info(msg)
+        return 0
+    err(msg)
+    if fix:
+        print(f"    {fix}")
+    return 1
+
+
+def cmd_doctor(args):
+    """部署体检。
+
+    主要抓"配置看着对、实际没生效"的静默失败。错误与提醒分开统计：
+    否则"还没部署"这种正常状态也会被判成失败，全是噪音。
+    """
+    errors = 0
+    warns = 0
+
+    def w(msg, fix=None):
+        nonlocal warns
+        warns += 1
+        warn(msg)
+        if fix:
+            print(f"    {fix}")
+
+    print("=== 环境 ===")
+    rc, _, _ = run(["docker", "info"])
+    errors += _check(rc == 0,
+                     "Docker 守护进程运行中" if rc == 0 else "Docker 守护进程未运行",
+                     "启动 Docker Desktop，或 sudo systemctl start docker")
+    if rc != 0:
+        return 1
+
+    rc, _, errout = run(COMPOSE + ["config", "-q"])
+    errors += _check(rc == 0,
+                     "compose 配置合法" if rc == 0 else f"compose 配置有误: {errout}",
+                     "检查 .env 里的变量是否都填了")
+
+    print()
+    print("=== 配置 ===")
+    env = read_env()
+    if not (HERE / ".env").exists():
+        w("没有 .env（将使用 compose 里的默认值）", "copy .env.example .env")
+    else:
+        info(".env 存在")
+    relay = env.get("RELAY_HOST", "127.0.0.1")
+    if relay in ("127.0.0.1", "localhost", ""):
+        w(f"RELAY_HOST={relay or '(空)'} —— 只有本机能连中继，外部客户端连不上",
+          ".env 里改成服务器的外网 IP 或域名")
+    else:
+        info(f"RELAY_HOST={relay}")
+    # 复用已有的检查：废弃变量、data/.env 陷阱、RD_IMAGE 指向官方镜像
+    check_env_legacy()
+
+    print()
+    print("=== 端口 ===")
+    ports = resolve_ports()
+    if check_ports(ports, fatal=False):
+        info(f"端口规划自洽（hbbs {ports['HBBS_PORT']}/tcp+udp、"
+             f"{ports['HBBS_NAT_PORT']}/tcp；hbbr {ports['HBBR_PORT']}/tcp）")
+        print("    防火墙放行清单见: python rdctl.py ports")
+    else:
+        warns += 1
+
+    print()
+    print("=== 镜像 ===")
+    image = compose_image_name()
+    print(f"    镜像: {image}   ({'远端' if is_remote_image() else '本地构建'})")
+    if not is_remote_image():
+        print("    本地镜像由本仓库源码编译，改源码后要 build 才会生效")
+    if image_exists(image):
+        info("镜像已存在")
+    else:
+        w(f"镜像 {image} 还没构建",
+          "python rdctl.py build   （远端镜像则先 docker pull / 检查 RD_IMAGE）")
+
+    print()
+    print("=== 数据库后端 ===")
+    if is_pg():
+        # 最关键的一条：官方镜像不认 DB_TYPE，会静默退回 SQLite。
+        if image.startswith("rustdesk/rustdesk-server"):
+            w("镜像是官方 rustdesk/rustdesk-server，它不认识 DB_TYPE，"
+              "ID 数据仍会写进 SQLite 文件",
+              "把 RD_IMAGE 指向本仓库编译的镜像")
+        # 实证：数据到底落在哪，而不是只看写了什么配置
+        pg_rows = probe_pg_rows()
+        sq_rows = probe_sqlite_rows()
+        if pg_rows is None and sq_rows is not None:
+            w(f"PostgreSQL 查不到 peer 表，但本地 SQLite 有 {sq_rows} 行 —— 实际仍在用 SQLite",
+              "确认已执行 " + " ".join(COMPOSE) + " --profile pg up -d，"
+              "且 DB_URL 是 postgres:// 连接串而非文件路径")
+        elif pg_rows is None:
+            w("PostgreSQL 暂时查不到（容器可能没起，或还没建表）")
+        else:
+            info(f"PostgreSQL peer 表: {pg_rows} 行")
+            if sq_rows:
+                print(f"    注：本地 SQLite 还有 {sq_rows} 行历史数据，"
+                      f"需合并请运行 migrate-sqlite-to-pg.py")
+    else:
+        info("DB_TYPE=sqlite（默认，与官方行为一致）")
+        sq_rows = probe_sqlite_rows()
+        if sq_rows is None:
+            w("还没查到 SQLite 数据（服务可能尚未启动过）")
+        else:
+            info(f"SQLite peer 表: {sq_rows} 行")
+
+    print()
+    print("=== 运行时 ===")
+    rc, out, _ = run(COMPOSE + ["ps", "--format", "{{.Service}}\t{{.Status}}"])
+    if rc == 0 and out.strip():
+        for line in out.strip().splitlines():
+            svc, _, status = line.partition("\t")
+            up = "Up" in status or "running" in status
+            errors += _check(up, f"{svc}: {status}", f"启动: {' '.join(COMPOSE)} up -d")
+    else:
+        w("没有运行中的容器", f"启动: {' '.join(COMPOSE)} up -d")
+
+    if KEY_PUB.exists():
+        info("服务器密钥已生成")
+    else:
+        w("还没生成密钥（首次 start 后会自动生成）")
+
+    print()
+    if errors:
+        err(f"发现 {errors} 个错误" + (f"，另有 {warns} 项提醒" if warns else ""))
+        return 1
+    if warns:
+        warn(f"发现 {warns} 项提醒（不影响运行，按需处理）")
+        return 0
+    info("体检通过，未发现问题")
+    return 0
 
 
 def cmd_uninstall(args):
@@ -655,7 +973,8 @@ def cmd_uninstall(args):
 
 def usage():
     print(__doc__)
-    print("可用命令: build / start / stop / restart / status / ports / key / logs / backup / uninstall")
+    print("可用命令: build / start / stop / restart / status / ports / key / logs / "
+          "backup / upgrade / doctor / uninstall")
     print("  build [--no-cache]  从本仓库源码构建服务端镜像（跳过缓存用 --no-cache）")
     print()
     print("提示：改过源码或 Dockerfile 后必须重新 build ——")
@@ -680,13 +999,18 @@ def main():
         "key": cmd_key,
         "logs": cmd_logs,
         "backup": cmd_backup,
+        "upgrade": cmd_upgrade,
+        "doctor": cmd_doctor,
+        "check": cmd_doctor,
         "uninstall": cmd_uninstall,
     }
     fn = table.get(c)
     if not fn:
         usage()
         sys.exit(1)
-    fn(extra)
+    # doctor 用返回码表达"有没有问题"，便于脚本/CI 判断
+    rc = fn(extra)
+    sys.exit(rc if isinstance(rc, int) else 0)
 
 
 if __name__ == "__main__":

@@ -560,8 +560,17 @@ jobs:
           fi
           cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
           cd "$FLUTTER_ROOT"
-          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
-          echo "✓ flutter 补丁已应用"
+          # 幂等：flutter-action 开了 cache:true 后，热缓存里的 SDK 已含本补丁，
+          # 再次 git apply 会报 "already applied" 而失败，故先 --check 探测再决定。
+          if git apply --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+            echo "✓ flutter 补丁已应用"
+          elif git apply -R --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            echo "✓ flutter 补丁已存在（缓存热命中，跳过）"
+          else
+            echo "::error::flutter 补丁既无法应用也无法确认已存在"
+            exit 1
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -976,8 +985,17 @@ jobs:
           fi
           cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
           cd "$FLUTTER_ROOT"
-          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
-          echo "✓ flutter 补丁已应用"
+          # 幂等：flutter-action 开了 cache:true 后，热缓存里的 SDK 已含本补丁，
+          # 再次 git apply 会报 "already applied" 而失败，故先 --check 探测再决定。
+          if git apply --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+            echo "✓ flutter 补丁已应用"
+          elif git apply -R --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            echo "✓ flutter 补丁已存在（缓存热命中，跳过）"
+          else
+            echo "::error::flutter 补丁既无法应用也无法确认已存在"
+            exit 1
+          fi
 
       - name: 接受 Android SDK 许可
         # 不接受许可时 gradle 会以 "Failed to install the following SDK components"
@@ -1390,8 +1408,17 @@ jobs:
           fi
           cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
           cd "$FLUTTER_ROOT"
-          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
-          echo "✓ flutter 补丁已应用"
+          # 幂等：flutter-action 开了 cache:true 后，热缓存里的 SDK 已含本补丁，
+          # 再次 git apply 会报 "already applied" 而失败，故先 --check 探测再决定。
+          if git apply --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+            echo "✓ flutter 补丁已应用"
+          elif git apply -R --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            echo "✓ flutter 补丁已存在（缓存热命中，跳过）"
+          else
+            echo "::error::flutter 补丁既无法应用也无法确认已存在"
+            exit 1
+          fi
 
       - name: Setup vcpkg with Github Actions binary cache
         uses: lukka/run-vcpkg@v11
@@ -1572,8 +1599,17 @@ jobs:
           fi
           cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
           cd "$FLUTTER_ROOT"
-          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
-          echo "✓ flutter 补丁已应用"
+          # 幂等：flutter-action 开了 cache:true 后，热缓存里的 SDK 已含本补丁，
+          # 再次 git apply 会报 "already applied" 而失败，故先 --check 探测再决定。
+          if git apply --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+            echo "✓ flutter 补丁已应用"
+          elif git apply -R --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            echo "✓ flutter 补丁已存在（缓存热命中，跳过）"
+          else
+            echo "::error::flutter 补丁既无法应用也无法确认已存在"
+            exit 1
+          fi
 
       - name: Restore bridge files
         uses: actions/download-artifact@v4
@@ -1721,8 +1757,17 @@ jobs:
           fi
           cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
           cd "$FLUTTER_ROOT"
-          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
-          echo "✓ flutter 补丁已应用"
+          # 幂等：flutter-action 开了 cache:true 后，热缓存里的 SDK 已含本补丁，
+          # 再次 git apply 会报 "already applied" 而失败，故先 --check 探测再决定。
+          if git apply --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+            echo "✓ flutter 补丁已应用"
+          elif git apply -R --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            echo "✓ flutter 补丁已存在（缓存热命中，跳过）"
+          else
+            echo "::error::flutter 补丁既无法应用也无法确认已存在"
+            exit 1
+          fi
 
       - name: Restore bridge files
         uses: actions/download-artifact@v4
@@ -1813,6 +1858,46 @@ jobs:
             echo ""
             echo "> 解压后运行 bundle/ 内的可执行文件即可；v1 为纯软编（未启用 hwcodec）。"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 临时诊断：任一 job 失败时，用 GITHUB_TOKEN（不受匿名 60/h 限额约束）拉取
+  # 本运行【全部 job】的完整日志（含 subosito/flutter-action 这类 uses: 步骤的
+  # 内部输出），推到 ci-logs 分支。raw.githubusercontent.com 对公开仓库匿名可读，
+  # 便于本地排查。定位完根因请删除本 job 与文件末尾的 permissions 块。
+  # ---------------------------------------------------------------------------
+  ci-diag:
+    name: CI 诊断（拉取失败日志）
+    if: ${{ failure() && github.event_name != 'pull_request' }}
+    needs: [preflight, generate-bridge, build-server, build-windows, build-android, build-android-apk, build-ios, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: 拉取本运行全部 job 日志
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          API="https://api.github.com/repos/$GITHUB_REPOSITORY/actions"
+          mkdir -p ci-logs
+          echo "run=$GITHUB_RUN_NUMBER sha=$GITHUB_SHA" > ci-logs/META.txt
+          jobs_json=$(curl -sL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$API/runs/$GITHUB_RUN_ID/jobs?per_page=100")
+          echo "$jobs_json" > ci-logs/jobs.json
+          echo "$jobs_json" | python3 -c "import sys,json; [print(j['id'], '|', j['name'], '|', j.get('conclusion')) for j in json.load(sys.stdin).get('jobs',[])]" > ci-logs/jobs.txt
+          for jid in $(echo "$jobs_json" | python3 -c "import sys,json; print(' '.join(str(j['id']) for j in json.load(sys.stdin).get('jobs',[])))"); do
+            name=$(echo "$jobs_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print([j['name'] for j in d['jobs'] if str(j['id'])=='$jid'][0])")
+            safe=$(echo "$name" | tr ' /()' '____')
+            curl -sL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$API/jobs/$jid/logs" -o "ci-logs/job_${safe}.log"
+          done
+          git config user.name ci-bot
+          git config user.email ci-bot@users.noreply.github.com
+          git checkout -B ci-logs
+          git add -f ci-logs
+          git commit -m "CI 诊断日志 run=$GITHUB_RUN_NUMBER" || echo "(无变化跳过)"
+          git push -f "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" HEAD:ci-logs
 
   # ---------------------------------------------------------------------------
   # 5. 服务端 hbbs / hbbr —— Linux musl 静态二进制

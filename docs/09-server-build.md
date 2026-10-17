@@ -296,7 +296,7 @@ GitHub 换一次 runner image、本机换一台机器就重新失效；而且 Op
 
 ```bash
 docker run --rm \
-  -v "$PWD/server/rustdesk-server:/src" \
+  -v "$PWD/server/src:/src" \
   -v "$PWD/server/deploy/build-musl.sh:/build-musl.sh:ro" \
   -e TARGET=x86_64-unknown-linux-musl \
   rust:1.90-alpine sh /build-musl.sh

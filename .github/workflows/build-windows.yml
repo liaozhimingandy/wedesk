@@ -1339,10 +1339,6 @@ jobs:
     needs: [preflight, generate-bridge]
     # macos-latest 现在是 arm64，正好对应 aarch64-apple-ios 目标
     runs-on: macos-latest
-    # 只在这个 job 上开写权限，供下面的"失败日志回传"步骤用。
-    # 其余 job 仍是顶层声明的 contents: read —— 权限按需放开，不做全局提升。
-    permissions:
-      contents: write
 
     steps:
       - name: Export GitHub Actions cache environment variables
@@ -1500,37 +1496,6 @@ jobs:
           cp -R "$APP" "$IPA_DIR/Payload/Runner.app"
           ( cd "$IPA_DIR" && zip -r -q "wedesk-ios-unsigned.ipa" Payload )
           ls -lh "$IPA_DIR"/*.ipa
-
-      # ------------------------------------------------------------------
-      # 临时诊断通道（定位完 iOS 问题后请删掉本步骤与上面的 contents: write）
-      #
-      # 为什么需要它：远端日志下载要管理员权限、日志页面要登录，而公开仓库里
-      # 匿名唯一可读的 Annotations 在这次运行里一条都没落地（同一次运行的
-      # runner 自带告警却在，像是注解服务那会儿有故障）。于是失败原因完全
-      # 不可见 —— 只能靠猜。
-      #
-      # 把日志提交到 ci-logs 分支：raw.githubusercontent.com 对公开仓库匿名
-      # 可读，于是日志变成"拉一下就能看到"的东西。
-      # ------------------------------------------------------------------
-      - name: 回传失败日志到 ci-logs 分支（临时诊断）
-        if: ${{ failure() }}
-        shell: bash
-        run: |
-          set -e
-          mkdir -p ci-logs
-          for f in flutter-build-ipa flutter-pub-get-ios; do
-            [ -f "$RUNNER_TEMP/$f.log" ] && cp "$RUNNER_TEMP/$f.log" "ci-logs/$f.log" || true
-          done
-          echo "run=$GITHUB_RUN_NUMBER" >> ci-logs/META.txt
-          echo "sha=$GITHUB_SHA" >> ci-logs/META.txt
-          echo "xcode=$(xcodebuild -version 2>/dev/null | tr '\n' ' ')" >> ci-logs/META.txt
-          echo "flutter=$(flutter --version 2>/dev/null | head -1)" >> ci-logs/META.txt
-          git config user.name "ci-bot"
-          git config user.email "ci-bot@users.noreply.github.com"
-          git checkout -B ci-logs
-          git add -f ci-logs
-          git commit -m "CI 诊断日志 run=$GITHUB_RUN_NUMBER" || echo "（无变化，跳过提交）"
-          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" HEAD:ci-logs
 
       - name: Upload iOS artifacts
         uses: actions/upload-artifact@v4

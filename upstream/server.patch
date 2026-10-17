@@ -1,7 +1,7 @@
-diff --git a/server/rustdesk-server/src/common.rs b/server/rustdesk-server/src/common.rs
+diff --git a/server/src/src/common.rs b/server/src/src/common.rs
 index 82e32ac..09d762f 100644
---- a/server/rustdesk-server/src/common.rs
-+++ b/server/rustdesk-server/src/common.rs
+--- a/server/src/src/common.rs
++++ b/server/src/src/common.rs
 @@ -426,6 +426,15 @@ pub async fn listen_signal() -> Result<()> {
  
  

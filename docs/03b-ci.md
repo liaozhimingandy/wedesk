@@ -493,6 +493,49 @@ python -c "import sys; sys.exit(-1)"; echo $?   # → 127
 安卓三个 ABI 在**同一步**一起挂，说明是 ABI 无关的东西（依赖、磁盘、NDK、vcpkg 配置），
 不是某个架构的汇编问题。
 
+还有一条：**"挑错误行"一条都没挑出来本身就是线索**。
+它说明日志里既没有 `error` 也没有 `failed` —— 真正的失败是 `Permission denied`、
+`No such file or directory` 这类不含关键字的退出。所以失败分支里
+`emit_log_tail`（整段搬尾部）必须**无条件**执行，不能只在挑行为空时才搬。
+
+---
+
+### 15. shell 脚本的可执行位会被 Windows 静默吃掉
+
+一次"把客户端整棵树收进 `client/`"的重构，把 16 个 `.sh` 全部提交成了
+`100644`。CI 里 `./client/flutter/build_android_deps.sh` 直接
+**Permission denied（退出 126）**，vcpkg 一步就挂，而：
+
+- bash 的报错里**既没有 `error` 也没有 `failed`** → 挑错误行一条都挑不出来；
+- vcpkg 压根没运行 → `buildtrees` 目录不存在，看起来像"manifest 没找到"。
+
+排查成本：整整两轮 CI（每轮 40 分钟）。
+
+根因是本机 `core.filemode=false`（Windows 默认），git 不追踪工作区权限位，
+于是 **`chmod +x` 完全不被 git 看到**，必须：
+
+```bash
+git update-index --chmod=+x <file>
+```
+
+两道防线都已经加上：
+
+1. `preflight` 里有一步**校验所有 `.sh` 的可执行位**，缺了就红给你看；
+2. CI 里调用脚本一律写成 `bash ./xxx.sh` —— 与权限位无关，即使再丢也不影响构建。
+
+---
+
+### 16. gradlew 不在仓库里，CI 得自己生成
+
+`flutter/android/gradlew`、`gradlew.bat`、`gradle-wrapper.jar` 全被
+`android/.gitignore` 排除（**上游 rustdesk 同样如此**），但 `flutter build apk`
+要调 `./gradlew`。本机它们由 Android Studio 生成，CI 里没有。
+
+处理：用 runner 镜像自带的 gradle 在**空目录**里生成一份再拷过去
+（直接在 `android/` 下跑 `gradle wrapper` 会 configure 整个 Android 工程，
+而它的 `settings.gradle` 依赖 flutter SDK 注入的本地属性，configure 大概率失败）。
+版本取自仓库里的 `gradle-wrapper.properties`（8.11.1），不覆盖那份文件。
+
 ---
 
 ## 四、上游工作流都去哪了
@@ -527,7 +570,9 @@ GitHub 只加载 `workflows/*.yml`，所以移过去 = 停用，纯做存档参�
 | GitHub 提示"无效的工作流文件：…（第 N 行，第 M 列）：预期出现表达式" | 工作流里有空的或语法错的 `${{ }}` | 见[设计点 11](#11-run-脚本里的--也要过语法校验)；用 `python build/common/check-workflow.py` 定位 |
 | 构建步骤报 `Process completed with exit code 127` | **不是**命令找不到，是 `build.py` 内部 `sys.exit(-1)` 在 Git Bash 里的映射 | 见[设计点 13](#13-构建步骤失败时退出码-127-不等于命令找不到)；流水线已拆成 Rust / Flutter 两步，看失败的是哪一步 |
 | cargo 报 `error[E0583]: file not found for module bridge_generated` | bridge 产物没落到 `client/src/`，落到了 `./src/` | 见[设计点 12](#12-bridge-产物打成-tar-包不直接列多个路径上传) |
+| 安卓 vcpkg 步骤三个 ABI 一起挂，且**挑不出任何错误行** | `.sh` 脚本没有可执行位（`100644`），`Permission denied` 退出 126 | 见[设计点 15](#15-shell-脚本的可执行位会被-windows-静默吃掉)；`git update-index --chmod=+x`（`chmod` 在 Windows 上不生效） |
 | 安卓 vcpkg 步骤三个 ABI 一起挂 | 多为 vcpkg port 编译失败，真因在 `buildtrees/*.log` 里 | 见[设计点 14](#14-拿不到远端日志时把真因抛进-annotations)；该步骤失败时会把真因打到 Annotations |
+| `flutter build apk` 报找不到 `gradlew` | `gradlew` 被 `android/.gitignore` 排除，仓库里没有 | 见[设计点 16](#16-gradlew-不在仓库里ci-得自己生成)；流水线已加自动生成步骤 |
 | `flutter build ipa` 挂，但 vcpkg 与 cargo 都过了 | Flutter 版本与 macOS runner 的 Xcode 不匹配，或 pod 解析失败 | IPA 步骤已拆出 `Flutter pub get (ios)` 单独一步；失败时会打出 Xcode 版本 |
 
 ---

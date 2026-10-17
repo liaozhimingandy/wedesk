@@ -217,6 +217,33 @@ jobs:
           echo "✓ 客户端与服务端依赖均已实体化"
 
       # -------------------------------------------------------------------
+      # shell 脚本的可执行位 —— 在 Windows 上会被静默丢掉
+      #
+      #   本机 core.filemode=false（Windows 默认），git 不追踪工作区权限位，
+      #   于是一次"把客户端整棵树收进 client/"的重构就把 16 个 .sh 全部
+      #   提交成了 100644。CI 里 ./xxx.sh 直接 Permission denied（退出 126），
+      #   而 bash 的报错 "Permission denied" 里既没有 error 也没有 failed，
+      #   挑错误行的诊断什么都挑不出来 —— 表现为"vcpkg 一步就挂、日志却是空的"。
+      #   排查成本：整整两轮 CI。
+      #
+      #   这里几秒钟就能查出来。改脚本时注意用 git update-index --chmod=+x，
+      #   单纯 chmod 在 core.filemode=false 下不会被 git 看到。
+      # -------------------------------------------------------------------
+      - name: 确认 shell 脚本有可执行位
+        shell: bash
+        run: |
+          set -e
+          bad=0
+          while IFS= read -r f; do
+            if [ ! -x "$f" ]; then
+              echo "::error::$f 缺少可执行位（索引里是 100644）—— CI 里 ./$f 会 Permission denied。修复：git update-index --chmod=+x \"$f\"（Windows 上 chmod 不生效，必须用 update-index）"
+              bad=1
+            fi
+          done < <(git ls-files '*.sh')
+          [ "$bad" = "0" ] || exit 1
+          echo "✓ 全部 shell 脚本可执行位正常"
+
+      # -------------------------------------------------------------------
       # 编译期必需的非源码文件 —— 漏一个就要等十几分钟 musl 编译后才暴露
       # -------------------------------------------------------------------
       # 2026-10-16 实测：重构提交把 db_v2.sqlite3 漏移了，CI 连挂三次，
@@ -980,11 +1007,22 @@ jobs:
           [ -n "$VCPKG_ROOT" ] && [ -d "$VCPKG_ROOT" ] \
             || echo "::error::[vcpkg:android/$ABI] VCPKG_ROOT='$VCPKG_ROOT' 无效（run-vcpkg 没导出）"
           ls "$ANDROID_NDK_HOME" 2>&1 | head -5
-          # 失败分支里能读到的只有 Annotations（远端日志要管理员权限），
-          # 所以必须把真因主动抛到 ::error:: —— 否则只能看到一句 exit code 1。
-          if ! ./client/flutter/build_android_deps.sh "$ABI" 2>&1 | tee "$LOG"; then
+          # vcpkg 可执行文件本身就位：run-vcpkg 会 bootstrap，但换过
+          # vcpkgDirectory 或缓存命中异常时它可能不在。缺了它脚本只会以 126
+          # 退出，日志里一句 "Permission denied"/"No such file"，没有 error
+          # 字样 —— 挑错误行的诊断会一条都挑不出来（踩过）。
+          [ -x "$VCPKG_ROOT/vcpkg" ] \
+            || echo "::error::[vcpkg:android/$ABI] $VCPKG_ROOT/vcpkg 不存在或不可执行"
+          ls -la "$VCPKG_ROOT" 2>&1 | head -10
+          # bash 调用而不是 ./xxx.sh：脚本的可执行位在 Windows 上会被
+          # core.filemode=false 静默丢掉，用 bash 调用与权限位无关。
+          if ! bash ./client/flutter/build_android_deps.sh "$ABI" 2>&1 | tee "$LOG"; then
             echo "::error::[vcpkg:android/$ABI] install 失败。剩余磁盘：$(df -h "$RUNNER_TEMP" 2>/dev/null | tail -1 | tr -s ' ')"
             emit_error_lines "$LOG" "vcpkg:android/$ABI" 20
+            # 整段搬尾部必须无条件做：挑行只在日志里有 error/failed 字样时
+            # 有用，而 "Permission denied" 这类失败一个字都挑不出来 ——
+            # 那一轮就是靠"什么都没挑出来"反推出脚本根本没跑起来的。
+            emit_log_tail "$LOG" "vcpkg:android/$ABI-tail" 30
             # 主 stdout 里通常只剩一句 "Building package xxx failed"，
             # 真因在 buildtrees 下的 port 日志里 —— 按修改时间取最近 3 个。
             if [ -d "$VCPKG_ROOT/buildtrees" ]; then
@@ -1034,14 +1072,26 @@ jobs:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         shell: bash
         run: |
-          set -e
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          ABI="${{ matrix.job.abi }}"
+          LOG="$RUNNER_TEMP/ndk-$ABI.log"
           cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
           # 必须在 client/ 里跑：ndk_*.sh 里的 cargo 需要本目录的 Cargo.toml。
           # 产物因此落在 client/target/<triple>/release/ —— 不是仓库根的 target/。
-          (cd client && ./flutter/${{ matrix.job.ndk-script }})
-          mkdir -p "client/flutter/android/app/src/main/jniLibs/${{ matrix.job.abi }}"
-          cp "client/target/${{ matrix.job.target }}/release/liblibrustdesk.so" \
-             "client/flutter/android/app/src/main/jniLibs/${{ matrix.job.abi }}/librustdesk.so"
+          # bash 调用而非 ./xxx.sh：见 preflight 里"shell 脚本可执行位"那条说明。
+          if ! (cd client && bash ./flutter/${{ matrix.job.ndk-script }}) 2>&1 | tee "$LOG"; then
+            emit_error_lines "$LOG" "cargo-ndk:$ABI" 20
+            emit_log_tail "$LOG" "cargo-ndk:$ABI-tail" 30
+            exit 1
+          fi
+          # 显式校验 .so 真的生成了：cargo 退出 0 但产物不在，后面的 Gradle
+          # 只会报 "file not found"，离真因又远一层。
+          SO="client/target/${{ matrix.job.target }}/release/liblibrustdesk.so"
+          [ -f "$SO" ] || { echo "::error::[cargo-ndk:$ABI] 编译退出 0 但 $SO 不存在"; emit_log_tail "$LOG" "cargo-ndk:$ABI-tail" 30; exit 1; }
+          mkdir -p "client/flutter/android/app/src/main/jniLibs/${ABI}"
+          cp "$SO" "client/flutter/android/app/src/main/jniLibs/${ABI}/librustdesk.so"
+          ls -lh "client/flutter/android/app/src/main/jniLibs/${ABI}/librustdesk.so"
 
       - name: Upload librustdesk.so
         uses: actions/upload-artifact@v4
@@ -1155,12 +1205,47 @@ jobs:
         if: ${{ inputs.skip_customize != true }}
         run: python build/client/customize.py --source client --config build/client/custom.toml
 
+      # gradlew / gradlew.bat / gradle-wrapper.jar 全被 android/.gitignore 排除
+      # （上游 rustdesk 同样如此），但 flutter build apk 要调 ./gradlew。
+      # 本机它们由 Android Studio 生成，CI 里没有 —— 用镜像自带的 gradle
+      # 生成一份，版本取自仓库里的 gradle-wrapper.properties（8.11.1），
+      # 避免与工程预期不一致。
+      #
+      # 为什么在空目录里生成再拷过去：直接 (cd android && gradle wrapper)
+      # 会先 configure 整个 Android 工程，而它的 settings.gradle 依赖 flutter
+      # SDK 注入的本地属性，configure 大概率失败 —— 在空目录里跑就没有项目可配置。
+      - name: 确保 Gradle Wrapper 就位
+        shell: bash
+        run: |
+          set -e
+          AND=client/flutter/android
+          if [ -x "$AND/gradlew" ]; then echo "✓ gradlew 已存在"; exit 0; fi
+          GV="$(sed -n 's/^distributionUrl=.*gradle-\([0-9.]*\)-.*/\1/p' \
+                "$AND/gradle/wrapper/gradle-wrapper.properties" | head -1)"
+          if [ -z "$GV" ] || ! command -v gradle >/dev/null 2>&1; then
+            echo "::warning::无法生成 gradlew（版本解析为空或 gradle 不在 PATH），继续尝试 —— 让 flutter 自己找 gradle"
+            exit 0
+          fi
+          echo "生成 gradle wrapper $GV"
+          TMP="$(mktemp -d)"
+          (cd "$TMP" && gradle wrapper --gradle-version "$GV" --distribution-type all) \
+            || { echo "::warning::gradle wrapper 生成失败，继续尝试"; exit 0; }
+          cp "$TMP/gradlew" "$AND/gradlew"
+          [ -f "$TMP/gradlew.bat" ] && cp "$TMP/gradlew.bat" "$AND/gradlew.bat"
+          mkdir -p "$AND/gradle/wrapper"
+          cp "$TMP/gradle/wrapper/gradle-wrapper.jar" "$AND/gradle/wrapper/"
+          # 仓库里那份 properties 版本就是 GV，不要覆盖
+          chmod +x "$AND/gradlew"
+          ls -l "$AND/gradlew" "$AND/gradle/wrapper/gradle-wrapper.jar"
+
       - name: Build APK (split per ABI) and AAB
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         shell: bash
         run: |
-          set -e
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          LOG="$RUNNER_TEMP/flutter-android.log"
           JNI=client/flutter/android/app/src/main/jniLibs
           # 实际拿到了哪些 .so，就只编哪些 ABI —— 避免产出"装得上但一运行就
           # 报找不到 librustdesk.so"的包，这种问题只能等用户在手机上发现。
@@ -1193,10 +1278,18 @@ jobs:
           echo "VERSION=$V" >> "$GITHUB_ENV"
           mkdir -p android-out
 
-          pushd client/flutter
-          flutter build apk --release --split-per-abi --target-platform "$PLATFORMS"
-          flutter build appbundle --release --target-platform "$PLATFORMS"
-          popd
+          # 用子 shell 而不是 pushd/popd：这条命令失败时 set -e 会直接结束
+          # 步骤，后面的诊断代码一行都跑不到 —— 只剩一句 exit code 1。
+          if ! (cd client/flutter && flutter build apk --release --split-per-abi --target-platform "$PLATFORMS") 2>&1 | tee "$LOG"; then
+            emit_error_lines "$LOG" "flutter:apk" 20
+            emit_log_tail "$LOG" "flutter:apk-tail" 30
+            exit 1
+          fi
+          if ! (cd client/flutter && flutter build appbundle --release --target-platform "$PLATFORMS") 2>&1 | tee "$LOG"; then
+            emit_error_lines "$LOG" "flutter:aab" 20
+            emit_log_tail "$LOG" "flutter:aab-tail" 30
+            exit 1
+          fi
 
           APKDIR=client/flutter/build/app/outputs/flutter-apk
           [ -f "$APKDIR/app-arm64-v8a-release.apk" ]   && cp "$APKDIR/app-arm64-v8a-release.apk"   "android-out/wedesk-$V-android-arm64-v8a.apk"
@@ -1351,7 +1444,13 @@ jobs:
         shell: bash
         run: |
           set -eo pipefail
-          (cd client/flutter && flutter pub get)
+          source build/common/emit-error-lines.sh
+          LOG="$RUNNER_TEMP/flutter-pub-get-ios.log"
+          if ! (cd client/flutter && flutter pub get) 2>&1 | tee "$LOG"; then
+            emit_error_lines "$LOG" "flutter:pub-get-ios" 20
+            emit_log_tail "$LOG" "flutter:pub-get-ios-tail" 30
+            exit 1
+          fi
 
       - name: Build IPA
         shell: bash

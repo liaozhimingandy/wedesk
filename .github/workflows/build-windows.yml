@@ -1636,6 +1636,41 @@ jobs:
         if: ${{ inputs.skip_customize != true }}
         run: python build/client/customize.py --source client --config build/client/custom.toml
 
+      # scrap 的 build.rs 走 find_package()：非 Windows 上必须经 VCPKG_ROOT 找
+      # libvpx/aom/libyuv。没有 VCPKG_ROOT 时 Linux 直接 panic（"only for macos
+      # aarch64"），macOS 找 /opt/homebrew/Cellar 也没有 → panic —— 这就是上轮
+      # 桌面 job 挂在 cargo build 的根因（整轮漏了 vcpkg 安装）。
+      # scrap/build.rs 里 ffmpeg() 已被注释掉、opus 由 magnum-opus 自带 C 源码编译，
+      # 故 classic 模式只装这三个真正被链接的包，跳过 manifest 里 40 分钟的 ffmpeg。
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      # aom 的汇编器（与 iOS job 同因）
+      - name: Install assemblers (nasm/yasm)
+        run: brew install nasm yasm
+
+      - name: Install vcpkg dependencies (macos)
+        shell: bash
+        run: |
+          set -e
+          if ! "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx libvpx aom libyuv; then
+            find "${VCPKG_ROOT}/" -name "*.log" 2>/dev/null | while read -r f; do
+              echo "--- $f ---"; cat "$f"
+            done
+            exit 1
+          fi
+          ls -l "$VCPKG_ROOT/installed/arm64-osx/lib/"
+
       - name: Build rustdesk lib + service (macos)
         shell: bash
         run: |
@@ -1734,9 +1769,15 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           set -e
+          # 与上游 docs/upstream/README.md 的 Ubuntu 依赖表对齐：
+          # libxdo-dev(enigo 输入模拟)、libxcb-*/libxfixes(scrap 的 X11 截屏)、
+          # libasound2-dev(cpal)、libclang-dev(scrap 用 bindgen 生成 FFI)。
           sudo apt-get update -y
-          sudo apt-get install -y clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev libstdc++-12-dev libayatana-appindicator3-dev
+          sudo apt-get install -y zip g++ gcc git curl wget nasm yasm \
+            libgtk-3-dev clang libxcb-randr0-dev libxdo-dev libxfixes-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev libpulse-dev \
+            cmake make libclang-dev ninja-build liblzma-dev libstdc++-12-dev \
+            libayatana-appindicator3-dev pkg-config
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -1793,6 +1834,35 @@ jobs:
       - name: Apply brand customization
         if: ${{ inputs.skip_customize != true }}
         run: python build/client/customize.py --source client --config build/client/custom.toml
+
+      # 同 macOS：scrap 的 build.rs 在非 Windows 上必须经 VCPKG_ROOT 找
+      # libvpx/aom/libyuv，否则 find_package() 直接 panic（Linux 无 homebrew 回退）。
+      # ffmpeg() 在 scrap/build.rs 里被注释、opus 由 magnum-opus 自带源码编译，
+      # 故 classic 模式只装这三个被链接的包，跳过 manifest 的 40 分钟 ffmpeg。
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies (linux)
+        shell: bash
+        run: |
+          set -e
+          if ! "$VCPKG_ROOT/vcpkg" install --triplet x64-linux libvpx aom libyuv; then
+            find "${VCPKG_ROOT}/" -name "*.log" 2>/dev/null | while read -r f; do
+              echo "--- $f ---"; cat "$f"
+            done
+            exit 1
+          fi
+          ls -l "$VCPKG_ROOT/installed/x64-linux/lib/"
 
       - name: Build rustdesk lib (linux)
         shell: bash

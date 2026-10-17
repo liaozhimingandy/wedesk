@@ -365,17 +365,54 @@ jobs:
           cp ./client/flutter/macos/Runner/bridge_generated.h ./client/flutter/ios/Runner/bridge_generated.h
           ls -l ./client/src/bridge_generated*.rs ./client/flutter/lib/generated_bridge*.dart
 
+      # 打成 tar 包再上传，而不是把这六个路径直接交给 upload-artifact ——
+      # 这是 2026-10-17 起 Windows 构建连挂的元凶，且报错完全指不到真因：
+      #
+      #   upload-artifact@v4 在 path 收到【多个路径】时，会用它们的最近公共
+      #   父目录当 artifact 的根目录。这六个文件的公共父目录是 client/，
+      #   于是 client/ 这一层被剥掉；下载到仓库根之后，文件落进 ./src/
+      #   而不是 ./client/src/。cargo 要的是 client/src/bridge_generated.rs，
+      #   拿不到就报
+      #     error[E0583]: file not found for module `bridge_generated`
+      #   而这个错误要等几百个依赖全部编译完才出现 —— 白等十分钟，
+      #   且报错信息只会指向"模块文件不存在"，指不到"artifact 解包位置错了"。
+      #
+      #   客户端整棵树收进 client/ 之前，公共父目录正好是仓库根，
+      #   剥掉后路径依然正确 —— 所以这个坑只在重构之后才显形。
+      #
+      # tar 包内的路径由 tar 自己定义，与 action 的路径推断无关，
+      # 也就不会再随仓库结构变化而漂移。
+      - name: Package bridge files
+        shell: bash
+        run: |
+          set -e
+          FILES=""
+          for f in \
+            client/src/bridge_generated.rs \
+            client/src/bridge_generated.io.rs \
+            client/flutter/lib/generated_bridge.dart \
+            client/flutter/lib/generated_bridge.freezed.dart \
+            client/flutter/macos/Runner/bridge_generated.h \
+            client/flutter/ios/Runner/bridge_generated.h; do
+            if [ -f "$f" ]; then
+              FILES="$FILES $f"
+            else
+              echo "::warning::bridge 文件未生成，不打包：$f"
+            fi
+          done
+          if [ -z "$FILES" ]; then
+            echo "::error::一个 bridge 文件都没生成 —— flutter_rust_bridge 这一步就没跑通"
+            exit 1
+          fi
+          tar -czf bridge.tar.gz $FILES
+          echo "包内内容："
+          tar -tzf bridge.tar.gz
+
       - name: Upload bridge artifact
         uses: actions/upload-artifact@v4
         with:
           name: wedesk-bridge
-          path: |
-            ./client/src/bridge_generated.rs
-            ./client/src/bridge_generated.io.rs
-            ./client/flutter/lib/generated_bridge.dart
-            ./client/flutter/lib/generated_bridge.freezed.dart
-            ./client/flutter/macos/Runner/bridge_generated.h
-            ./client/flutter/ios/Runner/bridge_generated.h
+          path: bridge.tar.gz
           retention-days: 7
 
   # ---------------------------------------------------------------------------
@@ -428,7 +465,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: wedesk-bridge
-          path: ./
+          path: .
+
+      # 解包并立刻校验落点。不校验的话，文件落错位置要到几百个依赖全部
+      # 编译完才以 E0583 的形式暴露 —— 白等十分钟，且报错指不到真因。
+      # build/common/unpack-bridge.sh 里写清了 upload-artifact@v4 的路径
+      # 推断为什么会把 client/ 这一层剥掉，改之前请先读那段注释。
+      - name: Unpack bridge files
+        shell: bash
+        run: bash build/common/unpack-bridge.sh
 
       - uses: actions/setup-python@v5
         with:
@@ -596,24 +641,76 @@ jobs:
           python build/client/customize.py --source client --config build/client/custom.toml "${EXTRA[@]}"
 
       # ------------------------------------------------------------------
-      # 主构建。注意 --skip-portable-pack：便携包要等签名/加外壳，
-      # 这里只要 flutter build windows 的原始 Release 目录。
+      # 主构建。
+      #
+      # 为什么不直接 `python build.py` —— 2026-10-17 连挂两次的直接原因：
+      #   build.py 内部每条子命令都用 os.system() 包着，任何一步失败都只是
+      #   sys.exit(-1)；而 sys.exit(-1) 在 Git Bash 里映射到退出码 **127**，
+      #   与"命令不存在"完全无法区分。于是这个步骤在日志里只剩 runner 那句
+      #   "Process completed with exit code 127"：既看不出是 cargo 挂的还是
+      #   flutter 挂的，也看不出挂在哪一行，更别说失败原因。
+      #   拆成两步后，失败步骤名本身就是定位信息；再加上
+      #   emit_error_lines 把关键错误行抛进 Annotations，一次运行就能看清。
+      #
+      #   features 用 build.py --print-features 取，不硬写 flutter,hwcodec：
+      #   这是上游专门留给"自己跑 cargo 的调用方"的开关（见 build.py 注释）。
+      #   硬写等于和上游脚本绑死 —— 上游改一次参数与 feature 的对应关系，
+      #   这边就会编出和 build.py 不一致的东西，而且不会有任何提示。
       # ------------------------------------------------------------------
-      - name: Build rustdesk
+      - name: Build Rust core (librustdesk.dll)
         shell: bash
         run: |
-          set -e
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
           HWCODEC="${{ env.ENABLE_HWCODEC == 'true' && '--hwcodec' || '' }}"
           echo "硬件编解码: ${HWCODEC:-关闭}"
           echo "硬件编解码: ${HWCODEC:-关闭}" >> "$GITHUB_STEP_SUMMARY"
-          echo "client/build.py 参数: --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }}"
-          # 必须在 client/ 里跑：build.py 全程用相对路径（os.chdir('flutter')、
-          # os.chdir('libs/virtual_display/dylib')、target/release/...、res/），
-          # 它靠 REPO_ROOT 只解析少数绝对路径，主流程的 cwd 必须就是 crate 根。
-          # 从仓库根调 `python client/build.py` 会在第一处 os.chdir 就
-          # FileNotFoundError —— 而那时日志里只有一行 traceback，看不出是 cwd 错。
-          # 用括号包成子 shell，cd 只在这一行内生效，不影响后面的 mkdir/cp。
-          (cd client && python build.py --portable --flutter --skip-portable-pack $HWCODEC ${{ inputs.build_args }})
+          FEATURES="$(cd client && python build.py --flutter --portable $HWCODEC ${{ inputs.build_args }} --print-features)"
+          echo "cargo features: ${FEATURES}"
+          echo "cargo features: \`${FEATURES}\`" >> "$GITHUB_STEP_SUMMARY"
+          LOG="$RUNNER_TEMP/rust-build.log"
+
+          # 虚拟显示驱动的 dll：flutter 产物目录里必须带着它，
+          # build.py 是在 flutter build 之后才拷的，这里先把库编出来。
+          if ! (cd client/libs/virtual_display/dylib && cargo build --locked --release) 2>&1 | tee "$LOG"; then
+            echo "::error::cargo build 失败（libs/virtual_display/dylib）—— 关键行见 Annotations"
+            emit_error_lines "$LOG" dylib
+            exit 1
+          fi
+
+          if ! (cd client && cargo build --locked --features "$FEATURES" --lib --release) 2>&1 | tee "$LOG"; then
+            echo "::error::cargo build 失败（librustdesk，features=${FEATURES}）—— 关键行见 Annotations"
+            emit_error_lines "$LOG" cargo
+            exit 1
+          fi
+
+          # build.py 自己也是这么判的：cargo 退出 0 但 dll 不在，后面 flutter
+          # 的 CMake install 一样会失败，而那时报的是
+          # "file INSTALL cannot find ... librustdesk.dll"，离真因又远一层。
+          if [ ! -f client/target/release/librustdesk.dll ]; then
+            echo "::error::cargo 退出码为 0，但 client/target/release/librustdesk.dll 不存在"
+            ls -l client/target/release/ | head -n 20
+            exit 1
+          fi
+          echo "✓ librustdesk.dll 就位"
+          ls -l client/target/release/librustdesk.dll
+
+      - name: Build Flutter (windows x64)
+        shell: bash
+        run: |
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          LOG="$RUNNER_TEMP/flutter-build.log"
+          # 必须在 client/flutter 里跑：flutter 靠向上查找 pubspec.yaml 定位工程根。
+          # 从别处调用会拿到错误的工程根，报的错跟真正的问题毫无关系。
+          if ! (cd client/flutter && flutter build windows --release) 2>&1 | tee "$LOG"; then
+            echo "::error::flutter build windows 失败 —— 关键行见 Annotations"
+            emit_error_lines "$LOG" flutter
+            exit 1
+          fi
+          # build.py 在 flutter build 之后做的这一步：驱动 dll 要和 exe 放一起
+          cp -f client/target/release/deps/dylib_virtual_display.dll \
+                client/flutter/build/windows/x64/runner/Release/
           mkdir -p rustdesk
           cp -rf client/flutter/build/windows/x64/runner/Release/. ./rustdesk/
           ls -l ./rustdesk
@@ -849,7 +946,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: wedesk-bridge
-          path: ./
+          path: .
+
+      # 解包并立刻校验落点。不校验的话，文件落错位置要到几百个依赖全部
+      # 编译完才以 E0583 的形式暴露 —— 白等十分钟，且报错指不到真因。
+      # build/common/unpack-bridge.sh 里写清了 upload-artifact@v4 的路径
+      # 推断为什么会把 client/ 这一层剥掉，改之前请先读那段注释。
+      - name: Unpack bridge files
+        shell: bash
+        run: bash build/common/unpack-bridge.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -957,7 +1062,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: wedesk-bridge
-          path: ./
+          path: .
+
+      # 解包并立刻校验落点。不校验的话，文件落错位置要到几百个依赖全部
+      # 编译完才以 E0583 的形式暴露 —— 白等十分钟，且报错指不到真因。
+      # build/common/unpack-bridge.sh 里写清了 upload-artifact@v4 的路径
+      # 推断为什么会把 client/ 这一层剥掉，改之前请先读那段注释。
+      - name: Unpack bridge files
+        shell: bash
+        run: bash build/common/unpack-bridge.sh
 
       # 三个 .so 各自下载、各自允许失败：缺哪个 ABI 后面就只打剩下的，
       # 而不是整个 job 红掉连 arm64 都拿不到。
@@ -1141,7 +1254,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: wedesk-bridge
-          path: ./
+          path: .
+
+      # 解包并立刻校验落点。不校验的话，文件落错位置要到几百个依赖全部
+      # 编译完才以 E0583 的形式暴露 —— 白等十分钟，且报错指不到真因。
+      # build/common/unpack-bridge.sh 里写清了 upload-artifact@v4 的路径
+      # 推断为什么会把 client/ 这一层剥掉，改之前请先读那段注释。
+      - name: Unpack bridge files
+        shell: bash
+        run: bash build/common/unpack-bridge.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

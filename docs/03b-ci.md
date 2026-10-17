@@ -414,6 +414,54 @@ GitHub 报的是：
 `build/common/check-workflow.py` 已把这条固化：它会解析全部 `${{ }}` 的语法，
 空表达式、括号/引号不闭合、多余内容、未知函数、未知上下文根都会报出来，并给出所在 job / step。
 
+### 12. bridge 产物打成 tar 包，不直接列多个路径上传
+
+`generate-bridge` 生成的六个文件要传给 Windows / Android / iOS 三个 job，
+落点必须精确：cargo 要 `client/src/bridge_generated.rs`，
+flutter 要 `client/flutter/lib/generated_bridge.dart`。
+
+直接把这六个路径交给 `upload-artifact@v4` 是错的 —— 它在 `path` 收到**多个路径**
+时，会用它们的**最近公共父目录**当 artifact 的根目录。这六个文件的公共父目录是
+`client/`，于是 `client/` 这一层被剥掉：下载到仓库根之后，文件落进 `./src/`
+而不是 `./client/src/`。
+
+症状是 cargo 报：
+
+```
+error[E0583]: file not found for module `bridge_generated`
+```
+
+而且**要等几百个依赖全部编译完才报** —— 白等十分钟，报错信息还只指向"模块文件
+不存在"，指不到"artifact 解包位置错了"这个真因。
+
+客户端整棵树收进 `client/` 之前，公共父目录正好是仓库根，剥掉后路径依然正确，
+所以这个坑只在重构之后才显形（2026-10-17 起 Windows 构建连挂，就是它）。
+
+对策：生成侧打成 `bridge.tar.gz`（包内路径由 tar 自己定义，与 action 的路径推断
+无关），消费侧用 `build/common/unpack-bridge.sh` 解包并**立刻校验落点** ——
+位置错就在几秒内报错，不用等编译。
+
+### 13. 构建步骤失败时，退出码 127 不等于"命令找不到"
+
+`build.py` 内部每条子命令都用 `os.system()` 包着，任何一步失败都只是
+`sys.exit(-1)`。而 **`sys.exit(-1)` 在 Git Bash 里映射到退出码 127**，
+与"命令不存在"完全无法区分：
+
+```bash
+python -c "import sys; sys.exit(-1)"; echo $?   # → 127
+```
+
+于是整个步骤在日志里只剩 runner 那句 `Process completed with exit code 127`：
+既看不出是 cargo 挂的还是 flutter 挂的，也看不出挂在哪一行。
+
+流水线因此**不用 `python build.py` 一把梭**，而是拆成 `Build Rust core` 与
+`Build Flutter` 两步：失败步骤名本身就是定位信息。feature 列表仍向 build.py
+取（`build.py --print-features` 是上游专门留给"自己跑 cargo 的调用方"的开关），
+所以不会和上游脚本漂移。
+
+两个步骤还都会在失败时把日志里的关键错误行以 `::error::` 抛进 Annotations
+（`build/common/emit-error-lines.sh`），扫一眼就知道原因，不必翻几千行日志。
+
 ---
 
 ## 四、上游工作流都去哪了
@@ -446,6 +494,8 @@ GitHub 只加载 `workflows/*.yml`，所以移过去 = 停用，纯做存档参�
 | Release 里没有 MSI | MSI 构建失败 | 该步骤有 `continue-on-error` 保护，看构建日志；便携版不受影响 |
 | 想重发某个版本 | 标签已存在 | 先改版本号再发；或删标签重发（已下载旧版的人不会自动更新，慎做） |
 | GitHub 提示"无效的工作流文件：…（第 N 行，第 M 列）：预期出现表达式" | 工作流里有空的或语法错的 `${{ }}` | 见[设计点 11](#11-run-脚本里的--也要过语法校验)；用 `python build/common/check-workflow.py` 定位 |
+| 构建步骤报 `Process completed with exit code 127` | **不是**命令找不到，是 `build.py` 内部 `sys.exit(-1)` 在 Git Bash 里的映射 | 见[设计点 13](#13-构建步骤失败时退出码-127-不等于命令找不到)；流水线已拆成 Rust / Flutter 两步，看失败的是哪一步 |
+| cargo 报 `error[E0583]: file not found for module bridge_generated` | bridge 产物没落到 `client/src/`，落到了 `./src/` | 见[设计点 12](#12-bridge-产物打成-tar-包不直接列多个路径上传) |
 
 ---
 

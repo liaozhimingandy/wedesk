@@ -63,6 +63,18 @@ build\server\build-server-image.bat
 | `check-workflow.py` | 静态审计 `.github/workflows/*.yml`：GH 表达式语法、`env`/`steps.outputs` 引用是否可解析、用到哪些 secrets | **改了工作流之后、推送之前** |
 | `get-version.py` | 从 `client/Cargo.toml` 提取版本号输出到 stdout | 被 `tag-release.bat` 调用 |
 | `tag-release.bat` | 校验版本一致性 → 打 `v*` 标签 → 推送，触发 CI 发布客户端 + 服务端 + 镜像 | 发版时。`--dry` 可预演 |
+| `unpack-bridge.sh` | 解包 `wedesk-bridge` artifact 并校验 `client/src/bridge_generated.rs` 落点；位置错就在几秒内报错，不等到编译期才以 E0583 暴露 | CI 各平台 job，在 `download-artifact` 之后 |
+| `emit-error-lines.sh` | 把日志里的关键错误行以 `::error::` 抛进 Annotations。build.py 的失败是 `sys.exit(-1)`，在 Git Bash 里映射成退出码 127，看不出是 cargo 还是 flutter 挂的 | CI 构建步骤失败时 |
+
+`emit-error-lines.sh` 必须 **source** 而不是执行 —— 函数要留在调用者的 shell 里：
+
+```bash
+source build/common/emit-error-lines.sh
+if ! (cd client && cargo build --locked --features "$FEATURES" --lib --release) 2>&1 | tee "$LOG"; then
+  emit_error_lines "$LOG" cargo
+  exit 1
+fi
+```
 
 ```bash
 # 推送前必跑

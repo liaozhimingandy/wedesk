@@ -55,6 +55,38 @@ emit_error_lines() {
 # 必须整段把尾部搬出来看上下文。
 #
 # 用法：emit_log_tail <日志文件> <标签> [行数]
+# 把日志尾部写进 $GITHUB_STEP_SUMMARY（job 页面最上面的 Job Summary）。
+#
+# 为什么还需要它 —— Annotations 有两个不确定的地方：
+#   1. 它是"挑"出来的，日志里没有 error/failed 字样时一条都出不来；
+#   2. 它会被 GitHub 侧吞掉（遇到过整个 job 的自定义注解一条都没落地，
+#      同一次运行里 runner 自己的告警却在 —— 像是注解服务那会儿有故障）。
+# 而 Job Summary 是 job 页面的首屏，打开就能看到，不必翻几千行日志，
+# 也不依赖注解服务。两者互补：注解适合机器读，摘要适合人看。
+#
+# 用法：emit_summary_tail <日志文件> <标题> [行数]
+emit_summary_tail() {
+  local log="${1:?用法: emit_summary_tail <日志文件> <标题> [行数]}"
+  local title="${2:-日志尾部}"
+  local lines="${3:-60}"
+
+  if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
+    return 0
+  fi
+  {
+    echo ""
+    echo "### $title"
+    echo ""
+    echo '```'
+    if [ -f "$log" ]; then
+      tail -n "$lines" "$log"
+    else
+      echo "（日志文件不存在：$log）"
+    fi
+    echo '```'
+  } >> "$GITHUB_STEP_SUMMARY"
+}
+
 emit_log_tail() {
   local log="${1:?用法: emit_log_tail <日志文件> <标签> [行数]}"
   local tag="${2:-log}"

@@ -498,6 +498,15 @@ python -c "import sys; sys.exit(-1)"; echo $?   # → 127
 `No such file or directory` 这类不含关键字的退出。所以失败分支里
 `emit_log_tail`（整段搬尾部）必须**无条件**执行，不能只在挑行为空时才搬。
 
+**注解不是可靠通道**：run 39002856252 的 iOS job 里，我们自己写的 `::error::`
+一条都没落地，同一次运行 runner 自带的告警却在 —— 像是注解服务那会儿有故障。
+所以失败时同时写两处：
+
+- `emit_summary_tail` → Job Summary（job 页面首屏，人打开就能看到）
+- `回传失败日志到 ci-logs 分支` → `raw.githubusercontent.com` 对公开仓库
+  **匿名可读**，于是日志变成"拉一下就能看到"。这一步是**临时**的，
+  iOS 问题定位完就该删掉它和 job 上的 `permissions: contents: write`。
+
 ---
 
 ### 15. shell 脚本的可执行位会被 Windows 静默吃掉

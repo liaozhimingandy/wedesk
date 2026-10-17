@@ -37,7 +37,14 @@ post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
     target.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '11.0'
+      # 上游这里是 '11.0'，那是旧 Xcode 才接受的值：
+      #   - 工程 platform 声明的是 13.0、Runner target 也是 13.0，pod 压到 11.0
+      #     本身就与宿主不一致；
+      #   - Xcode 15 起 iOS 最低部署目标就是 12.0，11.0 会被直接判为非法
+      #     （"the range of supported deployment target versions is 12.0 to ..."），
+      #     xcodebuild 在 archive 早期就失败，日志里还常被 pod 的输出埋掉。
+      # 改成与 platform / Runner 一致的 13.0。
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
     end
   end
 end

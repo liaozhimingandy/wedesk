@@ -1789,13 +1789,16 @@ jobs:
           set -e
           # 与上游 docs/upstream/README.md 的 Ubuntu 依赖表对齐：
           # libxdo-dev(enigo 输入模拟)、libxcb-*/libxfixes(scrap 的 X11 截屏)、
-          # libasound2-dev(cpal)、libclang-dev(scrap 用 bindgen 生成 FFI)。
+          # libasound2-dev(cpal)、libclang-dev(scrap 用 bindgen 生成 FFI)、
+          # gstreamer(client/Cargo.toml 恒开 scrap/wayland → gstreamer-app-sys，
+          # 缺 dev 包时 gstreamer-sys 的 build script 直接失败)。
           sudo apt-get update -y
           sudo apt-get install -y zip g++ gcc git curl wget nasm yasm \
             libgtk-3-dev clang libxcb-randr0-dev libxdo-dev libxfixes-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev libpulse-dev \
             cmake make libclang-dev ninja-build liblzma-dev libstdc++-12-dev \
-            libayatana-appindicator3-dev pkg-config
+            libayatana-appindicator3-dev pkg-config \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 
       - name: Install flutter
         uses: subosito/flutter-action@v2

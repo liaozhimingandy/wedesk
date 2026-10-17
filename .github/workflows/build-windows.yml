@@ -1674,7 +1674,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          if ! "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx libvpx aom libyuv; then
+          if ! "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx libvpx aom libyuv opus; then
             find "${VCPKG_ROOT}/" -name "*.log" 2>/dev/null | while read -r f; do
               echo "--- $f ---"; cat "$f"
             done
@@ -1877,7 +1877,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          if ! "$VCPKG_ROOT/vcpkg" install --triplet x64-linux libvpx aom libyuv; then
+          if ! "$VCPKG_ROOT/vcpkg" install --triplet x64-linux libvpx aom libyuv opus; then
             find "${VCPKG_ROOT}/" -name "*.log" 2>/dev/null | while read -r f; do
               echo "--- $f ---"; cat "$f"
             done
@@ -1959,9 +1959,16 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 临时诊断：任一 job 失败时，用 GITHUB_TOKEN（不受匿名 60/h 限额约束）拉取
-  # 本运行【全部 job】的完整日志（含 subosito/flutter-action 这类 uses: 步骤的
-  # 内部输出），推到 ci-logs 分支。raw.githubusercontent.com 对公开仓库匿名可读，
-  # 便于本地排查。定位完根因请删除本 job 与文件末尾的 permissions 块。
+  # 本运行【失败 job】的完整日志（含 subosito/flutter-action 这类 uses: 步骤的
+  # 内部输出），连同 annotations 一起推到 ci-logs 分支。raw.githubusercontent.com
+  # 对公开仓库匿名可读，便于本地排查。定位完根因请删除本 job 与文件末尾的
+  # permissions 块。
+  #
+  # 为什么不能下载整个 run 的日志 zip（runs/{id}/logs）：
+  #   那个 zip 要等整个 run 结束后才生成，run 进行中调用必得 404 —— 本 job
+  #   自身就是 run 的一部分，永远等不到。逐个 job 的日志端点
+  #   （jobs/{job_id}/logs）在 job 完成后即可下载，本 job needs 全部 job，
+  #   此时它们都已结束，正好可用。
   # ---------------------------------------------------------------------------
   ci-diag:
     name: CI 诊断（拉取失败日志）
@@ -1973,28 +1980,56 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
-      - name: 拉取本运行全部 job 日志
+      - name: 拉取失败 job 日志 + annotations
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -u
           API="https://api.github.com/repos/$GITHUB_REPOSITORY/actions"
+          AUTH=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json")
           mkdir -p ci-logs
           echo "run=$GITHUB_RUN_NUMBER sha=$GITHUB_SHA" > ci-logs/META.txt
-          # 一次调用拿整个 run 的日志 zip（含每个 job 的完整输出），无需逐个 job 解析
-          http_code=$(curl -sSL -w "%{http_code}" \
-            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$API/runs/$GITHUB_RUN_ID/logs" -o "$RUNNER_TEMP/run-logs.zip" || echo "curl-fail")
-          echo "logs zip: http=$http_code size=$(stat -c%s "$RUNNER_TEMP/run-logs.zip" 2>/dev/null || echo 0)"
+
+          # 1) 列出本 run 全部 job，筛出失败的
+          http_code=$(curl -sSL -w "%{http_code}" "${AUTH[@]}" \
+            "$API/runs/$GITHUB_RUN_ID/jobs?per_page=100" -o "$RUNNER_TEMP/jobs.json" || echo "curl-fail")
+          echo "jobs list: http=$http_code size=$(stat -c%s "$RUNNER_TEMP/jobs.json" 2>/dev/null || echo 0)"
           if [ "${http_code:0:1}" != "2" ]; then
-            echo "::error::日志 zip 下载失败（HTTP $http_code），响应前 500 字节："
-            head -c 500 "$RUNNER_TEMP/run-logs.zip" || true
-            exit 1
+            echo "::error::job 列表下载失败（HTTP $http_code）"; head -c 500 "$RUNNER_TEMP/jobs.json" || true; exit 1
           fi
-          ( cd ci-logs && unzip -o -q "$RUNNER_TEMP/run-logs.zip" ) || { echo "::error::unzip 失败"; exit 1; }
+
+          # 2) 逐个失败 job：下载原始日志（302 跟随到签名 URL）+ 保存 annotations
+          dl_fail=0
+          python3 - "$RUNNER_TEMP/jobs.json" <<'PY' > "$RUNNER_TEMP/failed.tsv"
+          import json, sys
+          d = json.load(open(sys.argv[1], encoding="utf-8"))
+          for j in d.get("jobs", []):
+              if j.get("conclusion") == "failure":
+                  print(f"{j['id']}\t{j.get('check_run_url','')}\t{j['name']}")
+          PY
+          n_fail=$(grep -c . "$RUNNER_TEMP/failed.tsv" || true)
+          echo "失败 job 数：$n_fail"
+          if [ "$n_fail" = "0" ]; then
+            echo "::warning::没有失败 job？run 结论=$(curl -sSL "${AUTH[@]}" "$API/runs/$GITHUB_RUN_ID" | python3 -c "import json,sys;print(json.load(sys.stdin).get('conclusion'))")"
+          fi
+          while IFS=$'\t' read -r jid curl jname; do
+            [ -z "${jid:-}" ] && continue
+            safe=$(printf '%s' "$jname" | tr ' /:' '___' | cut -c1-60)
+            code=$(curl -sSL -w "%{http_code}" "${AUTH[@]}" \
+              "$API/jobs/$jid/logs" -o "ci-logs/${safe}.log" || echo "curl-fail")
+            sz=$(stat -c%s "ci-logs/${safe}.log" 2>/dev/null || echo 0)
+            echo "job=$jname http=$code size=$sz"
+            if [ "${code:0:1}" != "2" ]; then dl_fail=1; fi
+            # annotations：error 行的精确定位（带 --> 源文件路径时尤其值钱）
+            if [ -n "${curl:-}" ]; then
+              curl -sSL "${AUTH[@]}" "$curl/annotations" -o "ci-logs/${safe}.annotations.json" || true
+            fi
+          done < "$RUNNER_TEMP/failed.tsv"
+          [ "$dl_fail" = "0" ] || { echo "::error::有 job 日志下载失败"; exit 1; }
+
           echo "=== ci-logs 内容 ==="
-          find ci-logs -type f | head -40
+          ls -la ci-logs/
           git config user.name ci-bot
           git config user.email ci-bot@users.noreply.github.com
           git checkout -B ci-logs

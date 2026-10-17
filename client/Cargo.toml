@@ -77,7 +77,10 @@ default-net = "0.14"
 wol-rs = "1.0"
 flutter_rust_bridge = { version = "=1.80", features = ["uuid"], optional = true}
 errno = "0.3"
-rdev = { git = "https://github.com/rustdesk-org/rdev" }
+# 钉到 a361d86a8b02：0904f23c（PR #26）在 src/macos/simulate.rs 用了
+# Result::inspect_err（Rust>=1.87 才稳定），而 CI 工具链钉 1.75，仅 macOS 编译该文件 → E0658。
+# 后续若桌面 job 升 Rust>=1.87，可解除本钉住并恢复诊断日志。
+rdev = { git = "https://github.com/rustdesk-org/rdev", rev = "a361d86a8b02" }
 url = { version = "2.3", features = ["serde"] }
 crossbeam-queue = "0.3"
 hex = "0.4"

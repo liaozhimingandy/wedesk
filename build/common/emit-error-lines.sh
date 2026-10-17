@@ -34,6 +34,10 @@ emit_error_lines() {
 
   # -i：cargo 是 "error[E0583]"，CMake 是 "CMake Error"，MSVC 是 "error LNK1181"
   # 大小写混用，统一忽略大小写更稳。
+  # '--> ' 是 rustc 报错里指向源文件位置的那一行，路径中带 crate 名+版本
+  # （/cargo/registry/src/.../CRATE-VERSION/src/lib.rs）—— 只有 error 行时
+  # 看不出是哪个依赖炸的（E0658 不稳定特性这类就吃过亏）。
+  # '  = note:' 行常带 "see issue #N" / 最小 Rust 版本提示，一并抓出。
   while IFS= read -r line; do
     n=$((n + 1))
     [ "$n" -gt "$max" ] && break
@@ -43,7 +47,7 @@ emit_error_lines() {
     line="${line//$'\r'/%0D}"
     line="${line//$'\n'/%0A}"
     echo "::error::[$tag] $line"
-  done < <(grep -inE 'error(\[|:| )|failed|fatal|LNK[0-9]+|CMake Error|panicked' "$log" | head -n "$max")
+  done < <(grep -inE 'error(\[|:| )|failed|fatal|LNK[0-9]+|CMake Error|panicked|^\s*--> |= note:' "$log" | head -n "$((max * 3))" | head -n "$max")
 }
 
 # 把日志的最后 N 行整段抛进 Annotations。

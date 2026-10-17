@@ -30,7 +30,7 @@ preflight (10s)  ─┐
 | `build-windows` | windows-2022 | vcpkg 依赖 → 品牌注入 → 编译 → 打包 | 40–60 min |
 | `build-android` | ubuntu-22.04 ×3 | 按 ABI 编 `librustdesk.so`（arm64-v8a / armeabi-v7a / x86_64） | ~30 min（并行） |
 | `build-android-apk` | ubuntu-22.04 | 汇总 3 份 `.so`，跑一次 Gradle 出分包 APK + AAB | ~15 min |
-| `build-ios` | macos-latest | 编 `liblibrustdesk.a` → 未签名 IPA | 40–60 min |
+| `build-ios` | macos-latest | 编 `liblibrustdesk.a` → 从 xcarchive 手动打包未签名 IPA | 40–60 min |
 | `build-server` | ubuntu-latest | **容器内 musl 本机编译** hbbs/hbbr/rustdesk-utils | 15–25 min |
 | `server-image` | ubuntu-latest | 把上一步的二进制装成镜像推到 Docker Hub | ~3 min |
 | `release` | ubuntu-latest | **仅 `v*` 标签**：打包、算校验和、发布 Release | ~2 min |
@@ -545,6 +545,28 @@ git update-index --chmod=+x <file>
 而它的 `settings.gradle` 依赖 flutter SDK 注入的本地属性，configure 大概率失败）。
 版本取自仓库里的 `gradle-wrapper.properties`（8.11.1），不覆盖那份文件。
 
+### 17. iOS 未签名 IPA 的手动打包
+
+CI 没有 Apple 证书，所以 iOS 只能出**未签名**产物：`flutter build ipa --release --no-codesign`。
+但 `--no-codesign` 会让 Flutter **跳过 IPA 生成**——日志末尾会打印一句
+`Codesigning disabled with --no-codesign, skipping IPA.`，只产出 `.xcarchive`。
+早期流水线紧接着一句 `ls build/ios/ipa/`，目录根本不存在，于是 Xcode archive
+明明成功了，步骤却在最后一步以 `No such file or directory` 挂掉，极具误导性。
+
+处理：archive 成功后，从 xcarchive 里取出 app 手动打成未签名 IPA ——
+**IPA 本质就是 `Payload/<app>.app` 的 zip**。
+
+```bash
+APP="client/flutter/build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+mkdir -p client/flutter/build/ios/ipa/Payload
+cp -R "$APP" client/flutter/build/ios/ipa/Payload/Runner.app   # -R 保留 .app 内符号链接
+(cd client/flutter/build/ios/ipa && zip -r -q wedesk-ios-unsigned.ipa Payload)
+```
+
+这个 IPA 不带签名，不能直接装真机，需由持有证书的一方用
+`xcodebuild -exportArchive` 或第三方工具重签。这是无证书 CI 的标准产物形态，
+与上游 rustdesk 一致（上游的 iOS IPA 上传步骤也是注释掉的）。
+
 ---
 
 ## 四、上游工作流都去哪了
@@ -582,7 +604,8 @@ GitHub 只加载 `workflows/*.yml`，所以移过去 = 停用，纯做存档参�
 | 安卓 vcpkg 步骤三个 ABI 一起挂，且**挑不出任何错误行** | `.sh` 脚本没有可执行位（`100644`），`Permission denied` 退出 126 | 见[设计点 15](#15-shell-脚本的可执行位会被-windows-静默吃掉)；`git update-index --chmod=+x`（`chmod` 在 Windows 上不生效） |
 | 安卓 vcpkg 步骤三个 ABI 一起挂 | 多为 vcpkg port 编译失败，真因在 `buildtrees/*.log` 里 | 见[设计点 14](#14-拿不到远端日志时把真因抛进-annotations)；该步骤失败时会把真因打到 Annotations |
 | `flutter build apk` 报找不到 `gradlew` | `gradlew` 被 `android/.gitignore` 排除，仓库里没有 | 见[设计点 16](#16-gradlew-不在仓库里ci-得自己生成)；流水线已加自动生成步骤 |
-| `flutter build ipa` 挂，但 vcpkg 与 cargo 都过了 | Flutter 版本与 macOS runner 的 Xcode 不匹配，或 pod 解析失败 | IPA 步骤已拆出 `Flutter pub get (ios)` 单独一步；失败时会打出 Xcode 版本 |
+| `flutter build ipa --no-codesign` 末尾才挂，前面的 Xcode archive 已成功 | 用了 `--no-codesign`，Flutter **不会生成 IPA**（日志末尾打印 `Codesigning disabled with --no-codesign, skipping IPA.`），只产出 `.xcarchive`；旧流水线紧接着 `ls build/ios/ipa/` 因目录不存在而失败 | IPA 步骤改为：archive 成功后手动把 `Runner.xcarchive/Products/Applications/Runner.app` 打成未签名 IPA（IPA 即 `Payload/*.app` 的 zip）。见[设计点 17](#17-ios-未签名-ipa-的手动打包) |
+| iOS IPA 步骤失败但注解里看不到原因 | Annotations 服务偶发吞掉自定义 `::error::` | 见[设计点 14](#14-拿不到远端日志时把真因抛进-annotations)；iOS 还有一条兜底：失败时把日志推到 `ci-logs` 分支（`raw.githubusercontent.com` 对公开仓库匿名可读） |
 
 ---
 

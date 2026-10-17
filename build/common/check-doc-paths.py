@@ -45,6 +45,9 @@ ALLOW_MISSING = {
     "server/backup",
     # docs/11-server-ops.md 特意说明"不要在这里放 .env"，不存在才是正确状态
     "server/data/.env",
+    # iOS 构建输出目录：CI 里 --no-codesign 只产出 .xcarchive，IPA 是手动 zip
+    # 出来的（见 docs/03b-ci.md 设计点 17），仓库里本来就没有。
+    "build/ios/ipa",
 }
 
 # vendored 上游（client/libs、client/flutter）内部的路径另行核对，

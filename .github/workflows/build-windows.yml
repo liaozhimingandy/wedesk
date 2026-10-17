@@ -1480,7 +1480,26 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          ls -lh client/flutter/build/ios/ipa/
+
+          # flutter build ipa --no-codesign 不会生成 IPA（日志末尾明确打印
+          # "Codesigning disabled with --no-codesign, skipping IPA."），只产出
+          # .xcarchive。需要手动把里面的 .app 打成【未签名 IPA】——
+          # IPA 本质就是 Payload/<app>.app 的 zip；未签名版本可由后续持有证书
+          # 的一方用 xcodebuild -exportArchive 或第三方工具重签后再真机安装/上架。
+          ARCHIVE="client/flutter/build/ios/archive/Runner.xcarchive"
+          APP="$ARCHIVE/Products/Applications/Runner.app"
+          IPA_DIR="client/flutter/build/ios/ipa"
+          if [ ! -d "$APP" ]; then
+            echo "::error::[flutter:ipa] xcarchive 内找不到 $APP，archive 结构异常"
+            emit_log_tail "$LOG" "flutter:ipa-tail" 30
+            exit 1
+          fi
+          rm -rf "$IPA_DIR/Payload"
+          mkdir -p "$IPA_DIR/Payload"
+          # -R 在 macOS 上会保留 .app 内的符号链接（Frameworks 等），不能用 cp -r
+          cp -R "$APP" "$IPA_DIR/Payload/Runner.app"
+          ( cd "$IPA_DIR" && zip -r -q "wedesk-ios-unsigned.ipa" Payload )
+          ls -lh "$IPA_DIR"/*.ipa
 
       # ------------------------------------------------------------------
       # 临时诊断通道（定位完 iOS 问题后请删掉本步骤与上面的 contents: write）

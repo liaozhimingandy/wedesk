@@ -22,7 +22,11 @@ appveyor = { repository = "pythoneer/enigo-85xiy" }
 serde = { version = "1.0", optional = true }
 serde_derive = { version = "1.0", optional = true }
 log = "0.4"
-rdev = { git = "https://github.com/rustdesk-org/rdev" }
+# rev 必须与 client/Cargo.toml 的 rdev 钉住保持一致：两处声明指向不同 source ID
+# （默认分支 vs ?rev=...）时，Cargo.lock 只有一条 rdev 条目无法同时满足，
+# --locked 直接报 "the lock file needs to be updated"（run #35/#36 实证）。
+# 该 rev 规避上游 PR #26 引入的 Result::inspect_err（需 Rust>=1.87，CI 钉 1.75）。
+rdev = { git = "https://github.com/rustdesk-org/rdev", rev = "a361d86a8b0245f3618a9efb375c149530a6b599" }
 tfc = { git = "https://github.com/rustdesk-org/The-Fat-Controller", branch = "history/rebase_upstream_20240722" }
 hbb_common = { path = "../hbb_common" }
 base = { path = "../base" }

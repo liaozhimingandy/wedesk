@@ -158,6 +158,29 @@ python build\client\customize.py --restore
 
 ---
 
+## 4b. Android / iOS：交给 CI，别在本地折腾
+
+本地这篇讲的是 **Windows** 客户端。Android 与 iOS 也能本地编，但各要一套独立
+工具链（NDK + vcpkg 的 android/ios triplet + Gradle；iOS 还要 Xcode 与证书），
+装齐的成本远高于收益 —— **直接走 [03b 云构建](03b-ci.md)** 更划算。
+
+真要本地编，入口是上游留下来的脚本（都在 `client/flutter/` 下）：
+
+```bash
+./build_android_deps.sh arm64-v8a        # vcpkg 编安卓依赖（需 VCPKG_ROOT / ANDROID_NDK_HOME）
+./ndk_arm64.sh                           # 编 librustdesk.so（要在 client/ 里跑）
+flutter build apk --release --split-per-abi
+```
+
+iOS 对应 `build_ios.sh`（注意它里面写死了上游路径 `~/rustdesk/.github/patches/...`，
+本地跑之前要先改成本仓库的 `.github/patches/`）。
+
+> **一个绕不开的前提**：品牌与服务器地址写在 `libs/hbb_common/src/config.rs` 里，
+> 会被**编译进 `.so` / `.a`**。所以 `customize.py` 必须在编原生库**之前**跑，
+> 后补无效 —— 这也是 CI 里每个平台 job 都各跑一次品牌注入的原因。
+
+---
+
 ## 5. 已知坑
 
 ### 5.1 Rust 转发壳被截断成 0 字节

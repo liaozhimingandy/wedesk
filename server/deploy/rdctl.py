@@ -907,6 +907,17 @@ def cmd_doctor(args):
     print()
     print("=== 数据库后端 ===")
     if is_pg():
+        # 只设 DB_TYPE 不设 DB_URL 是最常见的错法：hbbs 会拿着默认的
+        # /root/db_v2.sqlite3 去连 Postgres，日志里只有一句跟 Postgres
+        # 毫不相干的 URL 解析错误。与其等容器 CrashLoop，不如在这里挡掉。
+        db_url = pg_conf("DB_URL", "").strip()
+        if not db_url.lower().startswith(("postgres://", "postgresql://")):
+            errors += _check(
+                False,
+                f"DB_TYPE=postgres，但 DB_URL 不是 Postgres 连接串"
+                f"（当前：{db_url or '未设置'}）",
+                "在 .env 里补一行: DB_URL=postgres://<user>:<password>@<host>:5432/<db>"
+                "；或把 DB_TYPE 改回 sqlite")
         # 最关键的一条：官方镜像不认 DB_TYPE，会静默退回 SQLite。
         if image.startswith("rustdesk/rustdesk-server"):
             w("镜像是官方 rustdesk/rustdesk-server，它不认识 DB_TYPE，"

@@ -2,17 +2,22 @@
 
 > 文档索引：[`docs/README.md`](README.md) ｜ 上一篇：[02 运行原理](02-runtime.md) ｜ 下一篇：[04 部署指南](04-deploy.md)
 
-在完全不用配置本地工具链的情况下产出 Windows 客户端。**推荐路线**。
+在完全不用配置本地工具链的情况下产出 **Windows / Android / iOS 三端客户端**与服务端。**推荐路线**。
 
 ---
 
 ## 一、流水线概览
 
-`.github/workflows/build-windows.yml` 一条龙，四个 job：
+`.github/workflows/build-windows.yml` 一条龙（文件名沿用 Windows 是为了保住既有的
+Actions 连接与 badge，它现在产出的是**三端客户端 + 服务端**）：
 
 ```
 preflight (10s)  ─┐
-                  ├─→  generate-bridge (~10min)  ──→  build-windows (~40-60min)  ──→  artifact
+                  ├─→  generate-bridge (~10min)  ─┬─→  build-windows      (~40-60min)  ─┐
+                  │                               ├─→  build-android (×3 ABI) (~30min)  ─┤
+                  │                               │            └─→ build-android-apk (~15min)
+                  │                               └─→  build-ios (macOS)  (~40-60min)  ─┤
+                  └─→  build-server (musl) (~15-25min) ─→ server-image (~3min)         ─┤
                                                                                         │
                                                                        （仅 v* 标签）  ↓
                                                                                     release (2min)
@@ -21,25 +26,45 @@ preflight (10s)  ─┐
 | Job | Runner | 做什么 | 耗时 |
 |---|---|---|---|
 | `preflight` | ubuntu-latest | 判断是否需要构建、校验子模块已实体化、品牌已注入 | ~10 s |
-| `generate-bridge` | ubuntu-22.04 | 生成 flutter-rust-bridge 胶水代码 | ~10 min |
+| `generate-bridge` | ubuntu-22.04 | 生成 flutter-rust-bridge 胶水代码（三端共用） | ~10 min |
 | `build-windows` | windows-2022 | vcpkg 依赖 → 品牌注入 → 编译 → 打包 | 40–60 min |
+| `build-android` | ubuntu-22.04 ×3 | 按 ABI 编 `librustdesk.so`（arm64-v8a / armeabi-v7a / x86_64） | ~30 min（并行） |
+| `build-android-apk` | ubuntu-22.04 | 汇总 3 份 `.so`，跑一次 Gradle 出分包 APK + AAB | ~15 min |
+| `build-ios` | macos-latest | 编 `liblibrustdesk.a` → 未签名 IPA | 40–60 min |
 | `build-server` | ubuntu-latest | **容器内 musl 本机编译** hbbs/hbbr/rustdesk-utils | 15–25 min |
 | `server-image` | ubuntu-latest | 把上一步的二进制装成镜像推到 Docker Hub | ~3 min |
-| `release` | ubuntu-latest | **仅 `v*` 标签**：打包 zip、算校验和、发布 Release | ~2 min |
+| `release` | ubuntu-latest | **仅 `v*` 标签**：打包、算校验和、发布 Release | ~2 min |
 
 产物：
 
 - `wedesk-windows-x64` —— 便携版目录，解压即用（Artifact，保存 14 天）
 - `wedesk-windows-x64-msi` —— MSI 安装包（手动触发时勾选，或打标签时自动构建）
+- `wedesk-android` —— 按 ABI 分包的 APK（arm64-v8a / armeabi-v7a / x86_64）+ 一个 AAB
+- `wedesk-ios` —— 未签名 IPA（**需要自备 Apple 证书重签**才能真机安装）
 - `wedesk-server-linux-x64` —— hbbs / hbbr / rustdesk-utils + systemd 单元 + zip
 - `liaozhiming/wedesk-server` —— 服务端镜像（tag / 手动触发 / 推送到 main 时推送）
 - GitHub Release —— 打 `v*` 标签时发布，长期保存，适合分发给员工
 
+### 三端为什么要放在同一条流水线
+
+三端共用同一份 bridge 产物、同一套品牌注入、同一个版本号、同一套服务器密钥。
+分开跑就等于这四份输入各自漂移 —— 版本号对不齐、服务器地址只改了一端，
+都是反复会犯且很难查的错。合并后只有一份真源。
+
+`release` 的 `needs` 里挂了安卓与 iOS，但**不要求它们成功**：
+iOS 依赖 Apple 证书生态、Android 的 armeabi-v7a 依赖链最脆，
+让它们中任何一个拦住 Windows 客户端发版，代价明显不对等。
+缺哪个端会明写进 Release Notes，不静默。
+
 ### 为什么拆成多个 job
 
 bridge 产物平台无关，生成器依赖 `cargo install` + `dart pub get`，跑起来不便宜，
-单独一个 job 做完再传给 Windows job，失败时可以单独重跑，不必连带重编 C++ 依赖。
+单独一个 job 做完再传给各平台 job，失败时可以单独重跑，不必连带重编 C++ 依赖。
 更实际的原因是：**这几步的失败模式完全不同**，分开后看日志一眼就知道挂在哪。
+
+Android 又额外拆成「编 `.so`」与「打 APK」两步：Gradle/AGP 跑一次十分钟以上，
+三个 ABI 各跑一遍就是半小时纯重复；而 `.so` 与 ABI 绑定、APK 组装与 ABI 无关，
+先汇总 3 份 `.so` 再只跑一次 Gradle 是这里最大的收益。
 
 release 单独成 job 则是为了**权限收敛**：发布需要 `contents: write`，
 而构建环节只有 `contents: read`。构建机上的第三方 action 因此碰不到发布能力。
@@ -112,10 +137,22 @@ Release 里会有：
 |---|---|
 | `wedesk-<版本>-windows-x64-portable.zip` | 便携版，解压即用 |
 | `wedesk-<版本>-windows-x64.msi` | 安装包，适合域控/组策略批量部署 |
+| `wedesk-<版本>-android-arm64-v8a.apk` | Android 安装包（**主流手机装这个**） |
+| `wedesk-<版本>-android-armeabi-v7a.apk` | Android 老设备（32 位 ARM） |
+| `wedesk-<版本>-android-x86_64.apk` | Android 模拟器 / x86 平板 |
+| `wedesk-<版本>-android.aab` | Android App Bundle，上传 Google Play 用 |
+| `wedesk-<版本>-ios-unsigned.ipa` | **未签名**，需自备 Apple 证书重签 |
 | `SHA256SUMS.txt` | 校验和，分发前核对 |
 | Source code (zip/tar.gz) | GitHub 自动生成，即 AGPL 要求的完整源码 |
 
 带 `-` 的标签（如 `v1.5.2-rc1`）会自动标记为**预发布**，不会抢占 `latest`。
+
+> **Android 是 debug 签名**：CI 上没有正式 keystore，包能装能跑，但**不能直接上架**。
+> 正式分发请用本地 `apksigner` 重签，或在仓库 secrets 里配置签名密钥后改流水线。
+>
+> **iOS 是未签名**：签名需要 Apple 开发者账号的证书与描述文件，
+> 工程里现在还留着上游的 `DEVELOPMENT_TEAM`（HZF9JMC8YN），用它签名必然失败。
+> 拿到的 IPA 要交给有证书的一方重签后才能真机安装或上架。
 
 ### 手动触发
 
@@ -129,6 +166,8 @@ Release 里会有：
 | `build_args` | 传给 `build.py` 的额外参数，默认 `--vram`（显存编码，进一步降低延迟与 CPU） |
 | `skip_customize` | 跳过品牌注入（抓 CI 本身的问题时用） |
 | `build_msi` | 额外产出 MSI 安装包 |
+| `build_android` | 是否构建 Android（默认开） |
+| `build_ios` | 是否构建 iOS（默认开。**macOS runner 的计费分钟数是 Linux 的 10 倍**，非发版可关） |
 
 手动输 CI 的意义在于：**临时换个品牌试一次，不必改源码也不用留提交**。
 
@@ -190,6 +229,18 @@ if: ${{ env.ENABLE_HWCODEC }}              # 错：值为 "false" 时仍然执�
 
 另外，step 自己定义的 `env` 在它自己的 `if` 里**取不到**，
 所以兜底变量必须放在 job 级。
+
+安卓与 iOS 的开同样是这个坑，但形态不一样：它们决定的是**整个 job 跑不跑**，
+所以不能用 env 兜底（`if` 里读不到），只能把"非手动触发"这一支先短路掉：
+
+```yaml
+if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true'
+        && (github.event_name != 'workflow_dispatch' || inputs.build_android == true) }}
+```
+
+前半段 `github.event_name != 'workflow_dispatch'` 为真时后半段不再参与判断，
+push / tag 触发时因此一定构建；手动触发时才看输入。
+写成 `inputs.build_android == true` 单独使用，push 时整个 job 会被静默跳过。
 
 ---
 

@@ -24,7 +24,7 @@
 | # | 文档 | 回答什么问题 |
 |---|---|---|
 | 03 | [本地构建](03-build.md) | 怎么在本机编译出 exe？依赖怎么装？ |
-| 03b | [GitHub Actions 云构建](03b-ci.md) | 不想装工具链，怎么在云端编译？ |
+| 03b | [GitHub Actions 云构建](03b-ci.md) | 不想装工具链，怎么在云端一次编译 Windows / Android / iOS 三端？ |
 | 04 | [部署指南](04-deploy.md) | 服务端怎么起？密钥怎么管？客户端怎么发给员工？ |
 | 09 | [服务端自编译](09-server-build.md) | 服务端源码在哪？怎么自己编译 hbbs/hbbr？ |
 | 10 | [端口与网络规划](10-ports.md) | 用到哪些端口？怎么统一规划？改端口要动哪几处？ |
@@ -97,8 +97,9 @@ python rdctl.py build         # 服务端：从源码构建镜像（首次，15-
 
 cd ../../build/common
 tag-release.bat --dry         # 预演发版（看将要打什么标签）
-tag-release.bat               # 发版：打标签 → CI 自动发布 Release
-                              #        同时产出客户端 exe/MSI 与服务端 hbbs/hbbr
+tag-release.bat                                             # 发版：打标签 → CI 自动发布 Release
+                              #        同时产出三端客户端（exe/MSI、APK/AAB、IPA）
+                              #        与服务端 hbbs/hbbr
 ```
 
 > 各脚本归哪一段、什么时候跑，见 [`../build/README.md`](../build/README.md)。

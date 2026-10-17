@@ -1,5 +1,5 @@
 # =============================================================================
-# Wedesk —— Windows 客户端构建
+# Wedesk —— 三端客户端（Windows / Android / iOS）+ 服务端构建
 #
 # 与上游 rustdesk/rustdesk 的关键差异（也是这份文件存在的理由）：
 #
@@ -9,18 +9,23 @@
 #   3. 构建前会执行 build/client/customize.py 做品牌/服务器注入，
 #      唯一输入是仓库里的 build/client/custom.toml（可用 workflow_dispatch 输入覆盖）。
 #   4. 不签名。产物以 Artifact 供日常下载；推送 v* 标签时额外发布 GitHub Release。
+#      iOS 只能产出未签名 IPA —— 签名要 Apple 开发者证书，属仓库 secrets。
 #   5. 服务端 hbbs/hbbr 由 build-server job 在同一条流水线里编译 —— 文件名沿用
 #      build-windows.yml 是为了保留既有的 Actions 连接与 badge，但这个文件现在
-#      产出的是「客户端 + 服务端」两套产物，一次发版两样都有。
+#      产出的是「三端客户端 + 服务端」，一次发版全都齐。
 #
 #      为什么不拆成第二条流水线：两条流水线都要往同一个 GitHub Release 传文件，
 #      而发布 job 分属两个 workflow 就必然出现竞态 —— 谁先跑完谁创建 Release，
 #      后到的要么覆盖、要么失败。合并进同一条流水线是这个竞态的根治手段。
 #
-# 流水线为什么是两个 job：
+#      三端客户端同理：它们共用同一份 bridge 产物、同一套品牌注入、同一个
+#      版本号与同一套服务器密钥。分开跑就等于这三份输入各自漂移 ——
+#      版本号对不齐、服务器地址只改了一端，都是反复会犯的错。
+#
+# 流水线为什么是两个 job（bridge + 各平台）：
 #   bridge_generated.rs / generated_bridge.dart 是 flutter_rust_bridge 生成的，
 #   且被 .gitignore 排除（构建产物不属于源码）。它们的生成依赖 cargo-expand +
-#   dart pub get，跑起来不便宜，所以单独一个 job 做完再传给 Windows job，
+#   dart pub get，跑起来不便宜，所以单独一个 job 做完再传给各平台 job，
 #   也方便本地复用同样的产物。
 #
 # 为什么没有用 paths-ignore：
@@ -64,6 +69,14 @@ on:
         description: "额外构建 MSI 安装包（较慢，有 continue-on-error 保护，失败不阻断便携版）"
         type: boolean
         default: true
+      build_android:
+        description: "构建 Android 客户端（按 ABI 分包 APK + AAB）"
+        type: boolean
+        default: true
+      build_ios:
+        description: "构建 iOS 客户端（未签名 IPA；macOS runner 分钟数是 Linux 的 10 倍，非发版可关）"
+        type: boolean
+        default: true
 
 # 显式收敛权限：本流水线只上传 artifact，不需要写仓库
 permissions:
@@ -84,6 +97,12 @@ env:
   # x-gha 让 vcpkg 用 GitHub Actions Cache 当二进制缓存，
   # 少了这个每次都要重编译 aom/libvpx/ffmpeg，单次 40 分钟以上
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+  # ---- Android ----
+  # NDK 版本对齐上游 flutter-build.yml。r25c 起才支持 armv7 的 NEON triplet，
+  # 太旧的版本编 ffmpeg 会在汇编阶段失败。
+  NDK_VERSION: "r28c"
+  CARGO_NDK_VERSION: "3.1.2"
 
   # ---- 服务端（server/src 是独立 workspace，工具链单独定） ----
   # 服务端 Cargo.lock 是 lockfile v4，cargo < 1.78 读不了；它的依赖
@@ -214,7 +233,11 @@ jobs:
             ${{ env.SERVER_DIR }}/Cargo.lock \
             client/vcpkg.json \
             client/build.py \
-            client/flutter/pubspec.yaml; do
+            client/flutter/pubspec.yaml \
+            client/flutter/build_android_deps.sh \
+            client/flutter/ndk_arm64.sh \
+            client/flutter/android/app/build.gradle \
+            client/flutter/ios/Runner.xcodeproj/project.pbxproj; do
             if [ ! -f "$f" ]; then
               echo "::error::编译期必需文件缺失: $f"
               echo "::error::若是重构/迁移漏移，用 git log --diff-filter=D -- <路径> 找回。"
@@ -698,7 +721,480 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # 3. 服务端 hbbs / hbbr —— Linux musl 静态二进制
+  # 3. Android —— 先按 ABI 编 Rust 核心库（librustdesk.so）
+  #
+  #    为什么要拆成「编 .so」与「打 APK」两个 job：
+  #    Gradle/AGP 跑一次要十分钟以上，三个 ABI 各跑一遍就是半小时纯重复。
+  #    .so 与 ABI 绑定、APK 组装与 ABI 无关 —— 把 3 份 .so 先作为 artifact
+  #    汇总，再只跑一次 Gradle，就能同时拿到按 ABI 分包的 APK 与 AAB。
+  #
+  #    与上游 rustdesk CI 的差异（改动前请先读）：
+  #      - 客户端整棵树在 client/ 下，cargo 必须在 client/ 里执行：
+  #        vcpkg.json 在 client/，cargo 只在当前目录认 manifest。
+  #      - build_android_deps.sh 内部会 pushd 到脚本的上一级目录（正好是
+  #        client/），所以从仓库根直接调用即可，不需要先 cd。
+  #      - 品牌注入必须在【编 .so 之前】完成：内置服务器地址写在
+  #        libs/hbb_common/src/config.rs 里，会被编译进 .so，后补无效。
+  # ---------------------------------------------------------------------------
+  build-android:
+    name: android ${{ matrix.job.abi }}
+    # inputs.build_android 只在 workflow_dispatch 时有值；push/tag 时为空，
+    # 所以要在前半段先排除 workflow_dispatch，否则空值会让整个 job 被跳过。
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_android == true) }}
+    needs: [preflight, generate-bridge]
+    runs-on: ubuntu-22.04
+    strategy:
+      # 单个 ABI 失败不应连坐：armeabi-v7a 的 vcpkg（ffmpeg/aom）是最容易
+      # 在工具链升级后挂掉的一环，而 arm64 才是绝大多数真机要用的。
+      fail-fast: false
+      matrix:
+        job:
+          - { abi: arm64-v8a,   target: aarch64-linux-android,   ndk-script: ndk_arm64.sh }
+          - { abi: armeabi-v7a, target: armv7-linux-androideabi, ndk-script: ndk_arm.sh }
+          - { abi: x86_64,      target: x86_64-linux-android,    ndk-script: ndk_x64.sh }
+
+    steps:
+      # vcpkg 要为三个 ABI 各编一遍 ffmpeg/aom/libvpx，磁盘压力最大的一环。
+      # android: false / tool-cache: false —— 这两个删了就得重下 SDK 与工具链。
+      - name: 释放磁盘空间
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Linux 的 runner 只有 python3，没有 `python` 这个别名 ——
+      # 品牌注入脚本是用 `python` 调的，少了这一步会直接 "command not found"。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # AGP 8.x 要求 JDK 17。用 setup-java 而不是 apt + 猜路径：
+      # 后者写死 /usr/lib/jvm/java-17-openjdk-amd64，换 runner 镜像就 404。
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      - name: Patch flutter
+        shell: bash
+        run: |
+          set -e
+          FLUTTER_ROOT="$(dirname "$(dirname "$(readlink -f "$(command -v flutter)")")")"
+          if [ "${{ env.FLUTTER_VERSION }}" != "3.24.5" ]; then
+            echo "当前 Flutter 非 3.24.5，跳过 dropdown 补丁"
+            exit 0
+          fi
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
+          cd "$FLUTTER_ROOT"
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+          echo "✓ flutter 补丁已应用"
+
+      - name: 接受 Android SDK 许可
+        # 不接受许可时 gradle 会以 "Failed to install the following SDK components"
+        # 收场，且报错里不提 license 二字，是典型的难查失败。
+        run: yes | flutter doctor --android-licenses || echo "（部分许可未接受，继续尝试构建）"
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies (android)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        shell: bash
+        run: |
+          set -e
+          if ! ./client/flutter/build_android_deps.sh "${{ matrix.job.abi }}"; then
+            echo "===== vcpkg 失败，输出全部日志 ====="
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do
+              echo "--- $f ---"; cat "$f"
+            done
+            exit 1
+          fi
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-bridge
+          path: ./
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.job.target }}
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: wedesk-android
+          key: ${{ matrix.job.target }}
+
+      - name: Apply brand customization
+        if: ${{ inputs.skip_customize != true }}
+        run: python build/client/customize.py --source client --config build/client/custom.toml
+
+      - name: Build rustdesk lib
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        shell: bash
+        run: |
+          set -e
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          # 必须在 client/ 里跑：ndk_*.sh 里的 cargo 需要本目录的 Cargo.toml。
+          # 产物因此落在 client/target/<triple>/release/ —— 不是仓库根的 target/。
+          (cd client && ./flutter/${{ matrix.job.ndk-script }})
+          mkdir -p "client/flutter/android/app/src/main/jniLibs/${{ matrix.job.abi }}"
+          cp "client/target/${{ matrix.job.target }}/release/liblibrustdesk.so" \
+             "client/flutter/android/app/src/main/jniLibs/${{ matrix.job.abi }}/librustdesk.so"
+
+      - name: Upload librustdesk.so
+        uses: actions/upload-artifact@v4
+        with:
+          name: librustdesk.so.${{ matrix.job.abi }}
+          path: client/flutter/android/app/src/main/jniLibs/${{ matrix.job.abi }}/librustdesk.so
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 3b. Android —— 汇总三个 .so，跑一次 Gradle 产出分包 APK 与 AAB
+  #
+  #    只跑一次 Gradle 是这里最大的收益；另外下载 .so 全部用 continue-on-error，
+  #    某个 ABI 编挂了不影响把其余 ABI 的包发出去 —— 缺哪个 ABI 会写进摘要，
+  #    不会静默产出一个装不上的包。
+  #
+  #    产物刻意【不做 fat 通用包】：三个 ABI 全塞进一个 APK 体积上百 MB，
+  #    而 Google Play 用 AAB、侧载用按 ABI 分包，fat 包两头都不划算。
+  # ---------------------------------------------------------------------------
+  build-android-apk:
+    name: android apk/aab
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_android == true) && !cancelled() && needs.build-android.result != 'skipped' }}
+    needs: [preflight, generate-bridge, build-android]
+    runs-on: ubuntu-22.04
+    env:
+      # 真实值由下面的 Build APK 步骤写进 GITHUB_ENV（取自 client/Cargo.toml）。
+      # 这里先声明为空串，是为了让 build/common/check-workflow.py 能解析到
+      # 摘要步骤里的 ${{ env.VERSION }} —— 否则它会被判成"引用了不存在的变量"。
+      VERSION: ""
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      - name: Patch flutter
+        shell: bash
+        run: |
+          set -e
+          FLUTTER_ROOT="$(dirname "$(dirname "$(readlink -f "$(command -v flutter)")")")"
+          if [ "${{ env.FLUTTER_VERSION }}" != "3.24.5" ]; then
+            exit 0
+          fi
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
+          cd "$FLUTTER_ROOT"
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - name: 接受 Android SDK 许可
+        run: yes | flutter doctor --android-licenses || echo "（部分许可未接受，继续尝试构建）"
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-bridge
+          path: ./
+
+      # 三个 .so 各自下载、各自允许失败：缺哪个 ABI 后面就只打剩下的，
+      # 而不是整个 job 红掉连 arm64 都拿不到。
+      - name: Download librustdesk.so (arm64-v8a)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: librustdesk.so.arm64-v8a
+          path: client/flutter/android/app/src/main/jniLibs/arm64-v8a
+
+      - name: Download librustdesk.so (armeabi-v7a)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: librustdesk.so.armeabi-v7a
+          path: client/flutter/android/app/src/main/jniLibs/armeabi-v7a
+
+      - name: Download librustdesk.so (x86_64)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: librustdesk.so.x86_64
+          path: client/flutter/android/app/src/main/jniLibs/x86_64
+
+      - name: Apply brand customization
+        if: ${{ inputs.skip_customize != true }}
+        run: python build/client/customize.py --source client --config build/client/custom.toml
+
+      - name: Build APK (split per ABI) and AAB
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        shell: bash
+        run: |
+          set -e
+          JNI=client/flutter/android/app/src/main/jniLibs
+          # 实际拿到了哪些 .so，就只编哪些 ABI —— 避免产出"装得上但一运行就
+          # 报找不到 librustdesk.so"的包，这种问题只能等用户在手机上发现。
+          PLATFORMS=""
+          [ -f "$JNI/arm64-v8a/librustdesk.so" ]   && PLATFORMS="$PLATFORMS,android-arm64"
+          [ -f "$JNI/armeabi-v7a/librustdesk.so" ] && PLATFORMS="$PLATFORMS,android-arm"
+          [ -f "$JNI/x86_64/librustdesk.so" ]      && PLATFORMS="$PLATFORMS,android-x64"
+          PLATFORMS="${PLATFORMS#,}"
+          if [ -z "$PLATFORMS" ]; then
+            echo "::error::三个 ABI 的 librustdesk.so 一个都没拿到，无法打包"
+            exit 1
+          fi
+          echo "target-platform = $PLATFORMS"
+          echo "target-platform = $PLATFORMS" >> "$GITHUB_STEP_SUMMARY"
+
+          # libc++_shared.so 是 librustdesk.so 的运行时依赖，缺了会在启动时
+          # 直接崩，且崩溃日志里只写 dlopen 失败 —— 从 NDK 的 sysroot 补齐。
+          SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib"
+          [ -f "$JNI/arm64-v8a/librustdesk.so" ]   && cp "$SYSROOT/aarch64-linux-android/libc++_shared.so"   "$JNI/arm64-v8a/"
+          [ -f "$JNI/armeabi-v7a/librustdesk.so" ] && cp "$SYSROOT/arm-linux-androideabi/libc++_shared.so"   "$JNI/armeabi-v7a/"
+          [ -f "$JNI/x86_64/librustdesk.so" ]      && cp "$SYSROOT/x86_64-linux-android/libc++_shared.so"    "$JNI/x86_64/"
+
+          # CI 上 Gradle 默认 1 GB 堆不够，AGP 会在 dexing 阶段 OOM
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" client/flutter/android/gradle.properties
+          # 没有正式签名密钥，退回 debug 签名：包能装能跑，但不能用以上架。
+          # 正式分发请用本地 apksigner 重签，或配 ANDROID_SIGNING_KEY 等 secrets。
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" client/flutter/android/app/build.gradle
+
+          V="$(grep -m1 -E '^version = ' client/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          mkdir -p android-out
+
+          pushd client/flutter
+          flutter build apk --release --split-per-abi --target-platform "$PLATFORMS"
+          flutter build appbundle --release --target-platform "$PLATFORMS"
+          popd
+
+          APKDIR=client/flutter/build/app/outputs/flutter-apk
+          [ -f "$APKDIR/app-arm64-v8a-release.apk" ]   && cp "$APKDIR/app-arm64-v8a-release.apk"   "android-out/wedesk-$V-android-arm64-v8a.apk"
+          [ -f "$APKDIR/app-armeabi-v7a-release.apk" ] && cp "$APKDIR/app-armeabi-v7a-release.apk" "android-out/wedesk-$V-android-armeabi-v7a.apk"
+          [ -f "$APKDIR/app-x86_64-release.apk" ]      && cp "$APKDIR/app-x86_64-release.apk"      "android-out/wedesk-$V-android-x86_64.apk"
+          cp client/flutter/build/app/outputs/bundle/release/app-release.aab "android-out/wedesk-$V-android.aab"
+          ls -lh android-out
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wedesk-android
+          path: android-out
+          retention-days: 14
+
+      - name: Build summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "## Wedesk Android 构建结果"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 版本 | \`${{ env.VERSION }}\` |"
+            echo "| 签名 | debug（非正式签名，不能直接上架） |"
+            echo ""
+            echo "产物在本页底部 Artifacts 的 **wedesk-android**，保留 14 天："
+            echo "按 ABI 分包的 APK（侧载安装）+ 一个 AAB（上传 Google Play）。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 4. iOS —— 未签名 IPA
+  #
+  #    为什么是"未签名"：签名需要 Apple 开发者账号的证书与描述文件，
+  #    那属于仓库 secrets，且绑定的 Bundle ID 与团队 ID 因人而异。
+  #    工程里现在还留着上游的 DEVELOPMENT_TEAM（HZF9JMC8YN），
+  #    用它签名必然失败，所以统一走 --no-codesign。
+  #
+  #    未签名 IPA 的用途：交给有证书的人用 `codesign`/`xcrun` 重签后分发，
+  #    或用于企业内部分发渠道二次签名。真机直接安装是装不上的。
+  # ---------------------------------------------------------------------------
+  build-ios:
+    name: ios (unsigned ipa)
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_ios == true) }}
+    needs: [preflight, generate-bridge]
+    # macos-latest 现在是 arm64，正好对应 aarch64-apple-ios 目标
+    runs-on: macos-latest
+
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # vcpkg 编 arm64-ios 的 ffmpeg/aom 需要这两个汇编器
+      - name: Install dependencies
+        run: brew install nasm yasm
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      - name: Patch flutter
+        shell: bash
+        run: |
+          set -e
+          FLUTTER_ROOT="$(dirname "$(dirname "$(readlink -f "$(command -v flutter)")")")"
+          if [ "${{ env.FLUTTER_VERSION }}" != "3.24.5" ]; then
+            echo "当前 Flutter 非 3.24.5，跳过 dropdown 补丁"
+            exit 0
+          fi
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
+          cd "$FLUTTER_ROOT"
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+          echo "✓ flutter 补丁已应用"
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies (ios)
+        # working-directory 必须是 client/：vcpkg 只认当前目录的 vcpkg.json
+        working-directory: client
+        shell: bash
+        run: |
+          set -e
+          if ! "$VCPKG_ROOT/vcpkg" install --triplet arm64-ios --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do
+              echo "--- $f ---"; cat "$f"
+            done
+            exit 1
+          fi
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-bridge
+          path: ./
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-apple-ios
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: wedesk-ios
+          key: aarch64-apple-ios
+
+      - name: Apply brand customization
+        if: ${{ inputs.skip_customize != true }}
+        run: python build/client/customize.py --source client --config build/client/custom.toml
+
+      - name: Build rustdesk lib (ios)
+        shell: bash
+        run: |
+          set -e
+          # 与上游 flutter/ios_arm64.sh 一致：iOS 端带 hwcodec 特性
+          (cd client && cargo build --locked --features flutter,hwcodec --release --target aarch64-apple-ios --lib)
+          ls -lh client/target/aarch64-apple-ios/release/liblibrustdesk.a
+
+      - name: Build IPA
+        shell: bash
+        run: |
+          set -e
+          (cd client/flutter && flutter build ipa --release --no-codesign)
+          ls -lh client/flutter/build/ios/ipa/
+
+      - name: Upload iOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wedesk-ios
+          path: client/flutter/build/ios/ipa/*.ipa
+          retention-days: 14
+
+      - name: Build summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "## Wedesk iOS 构建结果"
+            echo ""
+            echo "产物在本页底部 Artifacts 的 **wedesk-ios**，保留 14 天。"
+            echo ""
+            echo "> **未签名**：无 Apple 开发者证书，需由具备证书的一方重签后才能真机安装或上架。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 5. 服务端 hbbs / hbbr —— Linux musl 静态二进制
   #
   #    服务端是独立 Rust workspace（server/src），与客户端互不影响，
   #    所以能在同一条流水线里并行编译，互不污染 target 与工具链。
@@ -824,7 +1320,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # 4. 服务端容器镜像 —— 推到 Docker Hub（liaozhiming/wedesk-server）
+  # 6. 服务端容器镜像 —— 推到 Docker Hub（liaozhiming/wedesk-server）
   #
   #    这里刻意用 Dockerfile.prebuilt 而不是 server/deploy/Dockerfile：
   #    后者在容器里从源码编译（方便本机零 Rust 环境构建），
@@ -1040,11 +1536,16 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # 5. 发布 GitHub Release（仅 v* 标签）
+  # 7. 发布 GitHub Release（仅 v* 标签）
   #
   #    为什么单独一个 job 而不在 build-windows 里顺手做：
   #    发布需要 contents: write 权限。单独一个 job 能把权限收敛到最小范围，
   #    构建环节依然只有 read —— 构建机上的第三方 action 碰不到发布能力。
+  #
+  #    为什么 needs 里挂了安卓/iOS 却不要求它们成功：
+  #    iOS 需要 Apple 证书生态、Android armeabi-v7a 的 vcpkg 依赖链最脆，
+  #    让它们中的任何一个拦住 Windows 客户端发版，代价明显不对等。
+  #    缺哪个端会写进 Release Notes，不静默。
   # ---------------------------------------------------------------------------
   release:
     name: Publish Release
@@ -1052,7 +1553,7 @@ jobs:
     # 用户仍可拿到客户端；服务端缺失会在 Release Notes 里标注。
     # 但如果客户端本身没成功，就什么都不发：没有客户端的 Release 没有意义。
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && needs.build-windows.result == 'success' }}
-    needs: [build-windows, build-server]
+    needs: [build-windows, build-server, build-android-apk, build-ios]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1125,6 +1626,25 @@ jobs:
           name: wedesk-server-linux-x64
           path: dist/server
 
+      # Android / iOS 同理：缺了只少一个端，不该让已经编好的 Windows 版发不出去。
+      # 它们可能是被 workflow_dispatch 的输入关掉的，也可能是某个 ABI 编挂了，
+      # 两种情况都不影响"Windows 客户端 + 服务端"这套主产物成立。
+      - name: 下载 Android 产物（若构建）
+        id: dl-android
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-android
+          path: dist/android
+
+      - name: 下载 iOS 产物（若构建）
+        id: dl-ios
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-ios
+          path: dist/ios
+
       - name: 打包并生成校验和
         id: pack
         shell: bash
@@ -1155,6 +1675,32 @@ jobs:
             echo "::warning::未找到服务端产物（build-server job 可能失败或被跳过）"
           fi
           echo "has_server=$has_server" >> "$GITHUB_OUTPUT"
+          # Android：APK 按 ABI 分包 + AAB。
+          # 两个 glob 分开判存在：写进同一条 cp 时，只要其中一个没匹配上，
+          # bash 会把字面量原样传给 cp 并让整条命令失败（哪怕另一个其实拷贝成功了）。
+          has_android=false
+          if ls dist/android/*.apk >/dev/null 2>&1; then
+            cp -f dist/android/*.apk out/
+            has_android=true
+          fi
+          if ls dist/android/*.aab >/dev/null 2>&1; then
+            cp -f dist/android/*.aab out/
+            has_android=true
+          fi
+          if [ "$has_android" = "false" ]; then
+            echo "::warning::未找到 Android 产物（build-android-apk 可能失败或被跳过）"
+          fi
+          echo "has_android=$has_android" >> "$GITHUB_OUTPUT"
+          # iOS：未签名 IPA（目录里理论只有一个，取第一个避免 cp 多文件到单文件名报错）
+          has_ios=false
+          IPA="$(ls dist/ios/*.ipa 2>/dev/null | head -1 || true)"
+          if [ -n "$IPA" ]; then
+            cp -f "$IPA" "out/wedesk-${V}-ios-unsigned.ipa"
+            has_ios=true
+          else
+            echo "::warning::未找到 iOS 产物（build-ios 可能失败或被跳过）"
+          fi
+          echo "has_ios=$has_ios" >> "$GITHUB_OUTPUT"
           cd out
           sha256sum ./* > SHA256SUMS.txt
           echo "=== 待发布文件 ==="
@@ -1184,6 +1730,31 @@ jobs:
             echo "| \`wedesk-${V}-windows-x64-portable.zip\` | 便携版：解压后运行 \`${EXE}\`，无需安装 |"
             if [ "${{ steps.pack.outputs.has_msi }}" = "true" ]; then
               echo "| \`wedesk-${V}-windows-x64.msi\` | 安装包：适合域控 / 组策略批量部署 |"
+            fi
+            echo ""
+            echo "### 客户端（Android）"
+            echo ""
+            if [ "${{ steps.pack.outputs.has_android }}" = "true" ]; then
+              echo "按 ABI 分包，按设备架构挑一个装即可；AAB 用于上传 Google Play。"
+              echo ""
+              echo "| 文件 | 说明 |"
+              echo "|---|---|"
+              for f in out/wedesk-${V}-android-*.apk; do
+                [ -f "$f" ] && echo "| \`$(basename "$f")\` | Android 安装包（**debug 签名**，正式分发请重签） |"
+              done
+              echo "| \`wedesk-${V}-android.aab\` | Android App Bundle，上传 Google Play 用 |"
+            else
+              echo "_本次未产出 Android 包 —— 查看 build-android-apk job 日志。_"
+            fi
+            echo ""
+            echo "### 客户端（iOS）"
+            echo ""
+            if [ "${{ steps.pack.outputs.has_ios }}" = "true" ]; then
+              echo "| 文件 | 说明 |"
+              echo "|---|---|"
+              echo "| \`wedesk-${V}-ios-unsigned.ipa\` | **未签名**：需由具备 Apple 开发者证书的一方重签后才能真机安装 / 上架 |"
+            else
+              echo "_本次未产出 iOS 包 —— 查看 build-ios job 日志（未签名 IPA 也需要 macOS runner 可用）。_"
             fi
             echo ""
             echo "### 服务端（Linux x64 / musl 静态）"
@@ -1247,6 +1818,9 @@ jobs:
           files: |
             out/*.zip
             out/*.msi
+            out/*.apk
+            out/*.aab
+            out/*.ipa
             out/SHA256SUMS.txt
             out/hbbs
             out/hbbr
@@ -1263,6 +1837,8 @@ jobs:
             echo "| 版本 | \`v${{ steps.ver.outputs.version }}\` |"
             echo "| 预发布 | ${{ steps.ver.outputs.prerelease }} |"
             echo "| 含 MSI | ${{ steps.pack.outputs.has_msi }} |"
+            echo "| 含 Android APK/AAB | ${{ steps.pack.outputs.has_android }} |"
+            echo "| 含 iOS IPA（未签名） | ${{ steps.pack.outputs.has_ios }} |"
             echo "| 含服务端 hbbs/hbbr | ${{ steps.pack.outputs.has_server }} |"
             echo "| 服务端镜像 | \`${{ env.DH_NAMESPACE }}/${{ env.DH_REPO }}:latest\` |"
             echo "| 地址 | ${{ steps.publish.outputs.url }} |"

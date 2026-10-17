@@ -84,7 +84,8 @@ impl PeerMap {
             }
             db
         });
-        log::info!("DB_URL={}", db);
+        // 脱敏后再打：Postgres 连接串里带明文口令，直接 log 等于写进日志文件
+        log::info!("DB_URL={}", database::mask_password(&db));
         let pm = Self {
             map: Default::default(),
             db: database::Database::new(&db).await?,

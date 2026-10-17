@@ -77,6 +77,9 @@ services:
       #   postgres → 8
       # 这里一旦写死某个数字，默认的 SQLite 路径也会被迫用它，偏离上游行为。
       - MAX_DATABASE_CONNECTIONS=${MAX_DATABASE_CONNECTIONS:-}
+      # 首次连库失败的重试次数（仅 postgres 后端，间隔 3 秒，默认 10 次）。
+      # 留空即用默认值；设 1 表示"连不上就立刻失败，交给编排器重启"。
+      - DB_CONNECT_RETRIES=${DB_CONNECT_RETRIES:-}
       # 默认 warn 而非 info：hbbs 在 info 级别下每注册/心跳都落一行日志，
       # 长期运行的磁盘写入与格式化开销是可观测的，而排障时临时调高即可。
       - RUST_LOG=${RUST_LOG:-warn}

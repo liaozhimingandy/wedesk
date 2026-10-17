@@ -70,7 +70,8 @@ wedesk/
 │   ├── UPSTREAM.md                #   升级上游前必读
 │   ├── custom.patch  server.patch #   两端各自的定制 diff
 │   └── verify_patch.py            #   验证补丁仍可完整重建定制状态
-└── .github/workflows/build-windows.yml   # 唯一在用的 CI（客户端+服务端+镜像+Release）
+└── .github/workflows/build-windows.yml   # 唯一在用的 CI
+                                   #   （Windows/Android/iOS 三端 + 服务端 + 镜像 + Release）
 ```
 
 ### 三个"最容易看错"的地方

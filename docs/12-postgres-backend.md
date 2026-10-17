@@ -118,6 +118,19 @@ python rdctl.py doctor
 | PG 查不到、本地 SQLite 有数据 | 提醒「实际仍在用 SQLite」，提示检查 `--profile pg` 与 `DB_URL` |
 | 两边都有数据 | 正常显示 PG 行数，并提示本地还有 N 行历史数据可迁移 |
 
+### 两个新加的保护（2026-10 补）
+
+| 保护 | 解决什么 |
+|---|---|
+| `DB_TYPE=postgres` 但 `DB_URL` 不是 `postgres://` 连接串 → **启动即硬失败**并指明该填什么 | 只改 `DB_TYPE`、忘了改 `DB_URL` 时，`DB_URL` 会退回 `db_v2.sqlite3` 这个文件路径，sqlx 抛出的错误跟 PostgreSQL 毫无关系，排查方向直接跑偏 |
+| 首次连库失败自动重试（默认 10 次 × 3 秒，可用 `DB_CONNECT_RETRIES` 调，设 1 即恢复"立刻失败"） | 容器并发启动时 hbbs 常常先于 PG 可用；`depends_on: service_healthy` 只覆盖首次编排，PG 自身重启、宿主机重启两者同时拉起时依然会撞上。一次连不上就退出 → CrashLoop，日志里只有一行看不懂的连接错误 |
+
+顺带把连接串做了**脱敏**：`peer.rs` 与 `database.rs` 的启动日志里，
+`DB_URL` 的密码位会被替换成 `******`（用户名、主机、库名保留，不影响排障）。
+PG 连接串含明文口令，直接 log 等于把数据库密码写进日志文件。
+
+`rdctl.py doctor` 也会挡第一种情况，且给出可复制的修复命令 —— 不用等容器起来再猜。
+
 ### 迁移存量数据
 
 `data/db_v2.sqlite3` 里已有的 ID 必须搬过去，否则旧客户端会连不上或被分配新 ID：
@@ -143,6 +156,7 @@ blobs 用 PG 的 bytea 十六进制字面量 `'\x...'`，二进制安全；
 | 项目 | 结果 |
 |---|---|
 | `cargo check --locked` | ✅ 通过，无新增告警（告警集与上游基线逐条一致） |
+| `mask_password` / `is_pg_url` 单测 | ✅ 通过（含"密码不得出现在输出里""SQLite 文件路径不得误判为 PG"） |
 | `peer` 表 DDL 被 PostgreSQL 接受 | ✅ CREATE TABLE + 4 个索引 |
 | SQLite → PostgreSQL 数据迁移 | ✅ 记录迁移成功，guid / pk / uuid 三个 blob 字段**逐字节比对一致** |
 | `PgBackend` 往返（insert / get / update_pk） | ✅ 真跑 PostgreSQL 通过 |

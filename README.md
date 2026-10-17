@@ -153,8 +153,8 @@ wedesk/                          ← 最终仓库，自主可控
 | 想干什么 | 读哪篇 |
 |---|---|
 | **搞懂这套东西怎么跑的** | [01 架构总览](docs/01-architecture.md) → [02 运行原理](docs/02-runtime.md) |
-| **拿到一个 exe** | [03b GitHub Actions 云构建](docs/03b-ci.md)（推荐）或 [03 本地构建](docs/03-build.md) |
-| **发一个正式版本** | `build\common\tag-release.bat` —— 打标签即自动构建并发布 Release（见 [03b](docs/03b-ci.md)）<br>一次产出：客户端便携版 / MSI + **服务端 hbbs/hbbr** + Docker Hub 镜像 |
+| **拿到一个安装包** | [03b GitHub Actions 云构建](docs/03b-ci.md)（推荐）或 [03 本地构建](docs/03-build.md) |
+| **发一个正式版本** | `build\common\tag-release.bat` —— 打标签即自动构建并发布 Release（见 [03b](docs/03b-ci.md)）<br>一次产出：**Windows 便携版 / MSI + Android APK·AAB + iOS IPA（未签名）** + **服务端 hbbs/hbbr** + Docker Hub 镜像 |
 | **上线给用户用** | [04 部署指南](docs/04-deploy.md) |
 | **端口怎么规划 / 上公网怎么配防火墙** | [10 端口与网络规划](docs/10-ports.md)<br>对外只要 3 个：TCP 5186/5187 + UDP 5187 + TCP 5188 |
 | **不想用官方服务端镜像，要自己编译 hbbs/hbbr** | [09 服务端自编译](docs/09-server-build.md) |

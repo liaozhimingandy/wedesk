@@ -864,6 +864,39 @@ jobs:
           docker-images: true
           swap-storage: false
 
+      # 上游 flutter-build.yml 的 build-rustdesk-android 有这一步，我们之前没有 ——
+      # 这是安卓 job 与上游最实质的差异之一。runner 镜像自带 cmake / ninja /
+      # pkg-config / autoconf / libtool（见 runner-images 的 Ubuntu2204-Readme），
+      # 但**不带 nasm / yasm**：aom、libvpx、ffmpeg 这三个 port 的 x86 汇编都
+      # 要用它。vcpkg 的 vcpkg_find_acquire_program(NASM) 理论上会自己下载，
+      # 但那只在 Linux 上下载受限版本， overlay port 里的 ffmpeg 还打了
+      # 0005-fix-nasm.patch —— 与其赌它能自愈，不如按上游把包装上。
+      # g++-multilib / gcc-multilib 是给 x86 ABI 的 host 侧 32 位编译准备的。
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+               clang \
+               cmake \
+               curl \
+               gcc-multilib \
+               git \
+               g++ \
+               g++-multilib \
+               libc6-dev \
+               libclang-dev \
+               libunwind-dev \
+               llvm-dev \
+               nasm \
+               ninja-build \
+               openjdk-17-jdk-headless \
+               pkg-config \
+               tree \
+               unzip \
+               wget \
+               zip
+          nasm -v || echo "::warning::nasm 仍未装上"
+
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v7
         with:
@@ -933,12 +966,35 @@ jobs:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         shell: bash
         run: |
-          set -e
-          if ! ./client/flutter/build_android_deps.sh "${{ matrix.job.abi }}"; then
-            echo "===== vcpkg 失败，输出全部日志 ====="
-            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do
-              echo "--- $f ---"; cat "$f"
-            done
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          ABI="${{ matrix.job.abi }}"
+          LOG="$RUNNER_TEMP/vcpkg-android-$ABI.log"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          echo "VCPKG_ROOT=$VCPKG_ROOT"
+          # 这两个变量任一个为空，build_android_deps.sh 都会立刻 exit 1，
+          # 但它的报错只是一句 "Please set XXX"，看不出是 setup-ndk 的输出
+          # 没接上还是 run-vcpkg 没导出 —— 在这里先点名，省掉一轮排查。
+          [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ] \
+            || echo "::error::[vcpkg:android/$ABI] ANDROID_NDK_HOME='$ANDROID_NDK_HOME' 无效（setup-ndk 的 ndk-path 没接上）"
+          [ -n "$VCPKG_ROOT" ] && [ -d "$VCPKG_ROOT" ] \
+            || echo "::error::[vcpkg:android/$ABI] VCPKG_ROOT='$VCPKG_ROOT' 无效（run-vcpkg 没导出）"
+          ls "$ANDROID_NDK_HOME" 2>&1 | head -5
+          # 失败分支里能读到的只有 Annotations（远端日志要管理员权限），
+          # 所以必须把真因主动抛到 ::error:: —— 否则只能看到一句 exit code 1。
+          if ! ./client/flutter/build_android_deps.sh "$ABI" 2>&1 | tee "$LOG"; then
+            echo "::error::[vcpkg:android/$ABI] install 失败。剩余磁盘：$(df -h "$RUNNER_TEMP" 2>/dev/null | tail -1 | tr -s ' ')"
+            emit_error_lines "$LOG" "vcpkg:android/$ABI" 20
+            # 主 stdout 里通常只剩一句 "Building package xxx failed"，
+            # 真因在 buildtrees 下的 port 日志里 —— 按修改时间取最近 3 个。
+            if [ -d "$VCPKG_ROOT/buildtrees" ]; then
+              find "$VCPKG_ROOT/buildtrees" -name "*.log" -printf "%T@ %p\n" \
+                | sort -rn | head -3 | cut -d' ' -f2- | while read -r f; do
+                    emit_log_tail "$f" "$(basename "$f")" 25
+                  done
+            else
+              echo "::error::[vcpkg:android/$ABI] $VCPKG_ROOT/buildtrees 不存在 —— vcpkg 在建任何东西之前就失败了，优先怀疑 manifest 没找到或 triplet 缺失。"
+            fi
             exit 1
           fi
 
@@ -1288,11 +1344,29 @@ jobs:
           (cd client && cargo build --locked --features flutter,hwcodec --release --target aarch64-apple-ios --lib)
           ls -lh client/target/aarch64-apple-ios/release/liblibrustdesk.a
 
+      # 单独一步而不是让 build ipa 顺带跑：pub 解析失败（git 依赖拉不下来、
+      # pubspec.lock 与 SDK 版本冲突）会混在几百行 xcodebuild 输出里，
+      # 单独跑就能在步骤名上一眼看出是"依赖没拿到"还是"Xcode 编不过"。
+      - name: Flutter pub get (ios)
+        shell: bash
+        run: |
+          set -eo pipefail
+          (cd client/flutter && flutter pub get)
+
       - name: Build IPA
         shell: bash
         run: |
-          set -e
-          (cd client/flutter && flutter build ipa --release --no-codesign)
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          LOG="$RUNNER_TEMP/flutter-build-ipa.log"
+          if ! (cd client/flutter && flutter build ipa --release --no-codesign) 2>&1 | tee "$LOG"; then
+            # xcodebuild 的真因常常被几百行 pod 编译日志埋掉：
+            # 先挑"像报错"的行，再把尾部整段搬出来看上下文。
+            emit_error_lines "$LOG" "flutter:ipa" 15
+            emit_log_tail "$LOG" "flutter:ipa-tail" 30
+            echo "::error::[flutter:ipa] Xcode 版本：$(xcodebuild -version 2>/dev/null | tr '\n' ' ')"
+            exit 1
+          fi
           ls -lh client/flutter/build/ios/ipa/
 
       - name: Upload iOS artifacts

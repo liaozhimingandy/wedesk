@@ -45,3 +45,30 @@ emit_error_lines() {
     echo "::error::[$tag] $line"
   done < <(grep -inE 'error(\[|:| )|failed|fatal|LNK[0-9]+|CMake Error|panicked' "$log" | head -n "$max")
 }
+
+# 把日志的最后 N 行整段抛进 Annotations。
+#
+# 与 emit_error_lines 的分工：那个挑"看起来像报错"的行，适合 cargo / flutter
+# 这种把结果打在 stdout 里的工具；但 vcpkg / CMake / xcodebuild 的真正原因
+# 常常在【另一个文件】里（buildtrees/*-out.log、xcodebuild 的派生日志），
+# 主 stdout 里只剩一句 "Building package ffmpeg failed"。那种情况下挑行没用，
+# 必须整段把尾部搬出来看上下文。
+#
+# 用法：emit_log_tail <日志文件> <标签> [行数]
+emit_log_tail() {
+  local log="${1:?用法: emit_log_tail <日志文件> <标签> [行数]}"
+  local tag="${2:-log}"
+  local lines="${3:-25}"
+  local line
+
+  if [ ! -f "$log" ]; then
+    echo "::error::[$tag] 日志文件不存在：$log"
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    line="${line//%/%25}"
+    line="${line//$'\r'/%0D}"
+    echo "::error::[$tag] $line"
+  done < <(tail -n "$lines" "$log")
+}

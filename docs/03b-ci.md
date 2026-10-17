@@ -464,6 +464,37 @@ python -c "import sys; sys.exit(-1)"; echo $?   # → 127
 
 ---
 
+### 14. 拿不到远端日志时，把真因抛进 Annotations
+
+`GET /repos/{o}/{r}/actions/runs/{id}/logs` **需要管理员权限**（匿名直接 403），
+日志页面也要登录；公开仓库里唯一匿名可读的失败信息是
+`GET /repos/{o}/{r}/check-runs/{id}/annotations` —— 也就是 `::error::` 写出来的东西。
+
+所以凡是"可能挂且挂了看不懂"的步骤，都要自己把真因写进去：
+
+| 函数 | 用途 | 适用 |
+|---|---|---|
+| `emit_error_lines <日志> <标签> [条数]` | 挑"像报错"的行 | cargo / flutter 这类把结果打在 stdout 的工具 |
+| `emit_log_tail <日志> <标签> [行数]` | 整段搬日志尾部 | vcpkg / CMake / xcodebuild —— 主 stdout 只剩一句 `Building package xxx failed`，真因在 `buildtrees/*.log` 里 |
+
+三个具体用法已经固化在流水线里：
+
+- **安卓 vcpkg**：失败时打印剩余磁盘、`emit_error_lines` 挑主日志，再把
+  `buildtrees` 下**最近修改的 3 个日志**整段搬出来。vcpkg 报错说"哪个包挂了"
+  但不说为什么，原因只在那几个日志里。
+- **vcpkg 之前先校验 `ANDROID_NDK_HOME` / `VCPKG_ROOT` 非空**。
+  这两个变量任一为空，`build_android_deps.sh` 都只回一句 `Please set XXX`，
+  完全看不出是 `setup-ndk` 的输出没接上还是 `run-vcpkg` 没导出。
+- **iOS IPA**：拆出 `Flutter pub get (ios)` 单独一步（区分"依赖没拿到"与
+  "Xcode 编不过"），失败时挑行 + 搬尾部 + 打印 Xcode 版本。
+
+顺带一个排查经验：**步骤耗时是廉价且强力的线索**。
+失败耗时与成功耗时接近，说明挂在编译/链接末尾而不是开头就失败；
+安卓三个 ABI 在**同一步**一起挂，说明是 ABI 无关的东西（依赖、磁盘、NDK、vcpkg 配置），
+不是某个架构的汇编问题。
+
+---
+
 ## 四、上游工作流都去哪了
 
 原本有 11 条 `.github/workflows/*.yml`（Android / iOS / macOS / Linux / Flatpak /
@@ -496,6 +527,8 @@ GitHub 只加载 `workflows/*.yml`，所以移过去 = 停用，纯做存档参�
 | GitHub 提示"无效的工作流文件：…（第 N 行，第 M 列）：预期出现表达式" | 工作流里有空的或语法错的 `${{ }}` | 见[设计点 11](#11-run-脚本里的--也要过语法校验)；用 `python build/common/check-workflow.py` 定位 |
 | 构建步骤报 `Process completed with exit code 127` | **不是**命令找不到，是 `build.py` 内部 `sys.exit(-1)` 在 Git Bash 里的映射 | 见[设计点 13](#13-构建步骤失败时退出码-127-不等于命令找不到)；流水线已拆成 Rust / Flutter 两步，看失败的是哪一步 |
 | cargo 报 `error[E0583]: file not found for module bridge_generated` | bridge 产物没落到 `client/src/`，落到了 `./src/` | 见[设计点 12](#12-bridge-产物打成-tar-包不直接列多个路径上传) |
+| 安卓 vcpkg 步骤三个 ABI 一起挂 | 多为 vcpkg port 编译失败，真因在 `buildtrees/*.log` 里 | 见[设计点 14](#14-拿不到远端日志时把真因抛进-annotations)；该步骤失败时会把真因打到 Annotations |
+| `flutter build ipa` 挂，但 vcpkg 与 cargo 都过了 | Flutter 版本与 macOS runner 的 Xcode 不匹配，或 pod 解析失败 | IPA 步骤已拆出 `Flutter pub get (ios)` 单独一步；失败时会打出 Xcode 版本 |
 
 ---
 

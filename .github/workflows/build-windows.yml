@@ -1182,7 +1182,18 @@ jobs:
           fi
           cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
           cd "$FLUTTER_ROOT"
-          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+          # 幂等：flutter-action 开了 cache:true 后，热缓存里的 SDK 已含本补丁，
+          # 再次 git apply 会报 "already applied" 而失败，故先 --check 探测再决定。
+          # （上一轮这个 job 的 Patch flutter 就是漏了这层判断，热缓存命中即挂。）
+          if git apply --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+            echo "✓ flutter 补丁已应用"
+          elif git apply -R --check flutter_3.24.4_dropdown_menu_enableFilter.diff 2>/dev/null; then
+            echo "✓ flutter 补丁已存在（缓存热命中，跳过）"
+          else
+            echo "::error::flutter 补丁既无法应用也无法确认已存在"
+            exit 1
+          fi
 
       - name: 接受 Android SDK 许可
         run: yes | flutter doctor --android-licenses || echo "（部分许可未接受，继续尝试构建）"
@@ -1674,9 +1685,16 @@ jobs:
       - name: Build rustdesk lib + service (macos)
         shell: bash
         run: |
-          set -e
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          LOG="$RUNNER_TEMP/cargo-build-macos.log"
           # 与上游 build_flutter_dmg 一致：macOS 需把 service bin 一起打进 .app
-          (cd client && MACOSX_DEPLOYMENT_TARGET=10.14 cargo build --locked --features flutter --release)
+          if ! (cd client && MACOSX_DEPLOYMENT_TARGET=10.14 cargo build --locked --features flutter --release) 2>&1 | tee "$LOG"; then
+            emit_error_lines "$LOG" "cargo:macos" 25
+            emit_log_tail "$LOG" "cargo:macos-tail" 40
+            emit_summary_tail "$LOG" "cargo build 失败（macOS）—— 日志尾部" 100
+            exit 1
+          fi
           (cd client && cp target/release/liblibrustdesk.dylib target/release/librustdesk.dylib)
           ls -lh client/target/release/liblibrustdesk.dylib
 
@@ -1867,8 +1885,15 @@ jobs:
       - name: Build rustdesk lib (linux)
         shell: bash
         run: |
-          set -e
-          (cd client && cargo build --locked --features flutter --lib --release)
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          LOG="$RUNNER_TEMP/cargo-build-linux.log"
+          if ! (cd client && cargo build --locked --features flutter --lib --release) 2>&1 | tee "$LOG"; then
+            emit_error_lines "$LOG" "cargo:linux" 25
+            emit_log_tail "$LOG" "cargo:linux-tail" 40
+            emit_summary_tail "$LOG" "cargo build 失败（Linux）—— 日志尾部" 100
+            exit 1
+          fi
           ls -lh client/target/release/liblibrustdesk.so
 
       - name: Flutter pub get (linux)
@@ -1950,24 +1975,31 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          set -e
+          set -u
           API="https://api.github.com/repos/$GITHUB_REPOSITORY/actions"
           mkdir -p ci-logs
           echo "run=$GITHUB_RUN_NUMBER sha=$GITHUB_SHA" > ci-logs/META.txt
-          jobs_json=$(curl -sL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$API/runs/$GITHUB_RUN_ID/jobs?per_page=100")
-          echo "$jobs_json" > ci-logs/jobs.json
-          echo "$jobs_json" | python3 -c "import sys,json; [print(j['id'], '|', j['name'], '|', j.get('conclusion')) for j in json.load(sys.stdin).get('jobs',[])]" > ci-logs/jobs.txt
-          for jid in $(echo "$jobs_json" | python3 -c "import sys,json; print(' '.join(str(j['id']) for j in json.load(sys.stdin).get('jobs',[])))"); do
-            name=$(echo "$jobs_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print([j['name'] for j in d['jobs'] if str(j['id'])=='$jid'][0])")
-            safe=$(echo "$name" | tr ' /()' '____')
-            curl -sL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$API/jobs/$jid/logs" -o "ci-logs/job_${safe}.log"
-          done
+          # 一次调用拿整个 run 的日志 zip（含每个 job 的完整输出），无需逐个 job 解析
+          http_code=$(curl -sSL -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$API/runs/$GITHUB_RUN_ID/logs" -o "$RUNNER_TEMP/run-logs.zip" || echo "curl-fail")
+          echo "logs zip: http=$http_code size=$(stat -c%s "$RUNNER_TEMP/run-logs.zip" 2>/dev/null || echo 0)"
+          if [ "${http_code:0:1}" != "2" ]; then
+            echo "::error::日志 zip 下载失败（HTTP $http_code），响应前 500 字节："
+            head -c 500 "$RUNNER_TEMP/run-logs.zip" || true
+            exit 1
+          fi
+          ( cd ci-logs && unzip -o -q "$RUNNER_TEMP/run-logs.zip" ) || { echo "::error::unzip 失败"; exit 1; }
+          echo "=== ci-logs 内容 ==="
+          find ci-logs -type f | head -40
           git config user.name ci-bot
           git config user.email ci-bot@users.noreply.github.com
           git checkout -B ci-logs
           git add -f ci-logs
           git commit -m "CI 诊断日志 run=$GITHUB_RUN_NUMBER" || echo "(无变化跳过)"
-          git push -f "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" HEAD:ci-logs
+          git push -f "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" HEAD:ci-logs \
+            || { echo "::error::推送 ci-logs 分支失败"; exit 1; }
+          echo "✓ 诊断日志已推送到 ci-logs 分支"
 
   # ---------------------------------------------------------------------------
   # 5. 服务端 hbbs / hbbr —— Linux musl 静态二进制

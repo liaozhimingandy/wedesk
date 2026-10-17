@@ -1,0 +1,98 @@
+[
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 3,
+    "start_column": null,
+    "end_line": 3,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/download-artifact@v4, actions/setup-java@v4, actions/setup-python@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 88,
+    "start_column": null,
+    "end_line": 88,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "Process completed with exit code 1.",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 87,
+    "start_column": null,
+    "end_line": 87,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "三个 ABI 的 librustdesk.so 一个都没拿到，无法打包",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 85,
+    "start_column": null,
+    "end_line": 85,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "gradle wrapper 生成失败，继续尝试",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 40,
+    "start_column": null,
+    "end_line": 40,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "Unable to download artifact(s): Artifact not found for name: librustdesk.so.x86_64\n        Please ensure that your artifact is not expired and the artifact was uploaded using a compatible version of toolkit/upload-artifact.\n        For more information, visit the GitHub Artifacts FAQ: https://github.com/actions/toolkit/blob/main/packages/artifact/docs/faq.md",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 40,
+    "start_column": null,
+    "end_line": 40,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "Unable to download artifact(s): Artifact not found for name: librustdesk.so.armeabi-v7a\n        Please ensure that your artifact is not expired and the artifact was uploaded using a compatible version of toolkit/upload-artifact.\n        For more information, visit the GitHub Artifacts FAQ: https://github.com/actions/toolkit/blob/main/packages/artifact/docs/faq.md",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 40,
+    "start_column": null,
+    "end_line": 40,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "Unable to download artifact(s): Artifact not found for name: librustdesk.so.arm64-v8a\n        Please ensure that your artifact is not expired and the artifact was uploaded using a compatible version of toolkit/upload-artifact.\n        For more information, visit the GitHub Artifacts FAQ: https://github.com/actions/toolkit/blob/main/packages/artifact/docs/faq.md",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 38,
+    "start_column": null,
+    "end_line": 38,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "setup-java v4 is deprecated and will no longer receive updates. Please migrate to actions/setup-java@v5.",
+    "raw_details": ""
+  }
+]

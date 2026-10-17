@@ -1,0 +1,122 @@
+[
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 3,
+    "start_column": null,
+    "end_line": 3,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/download-artifact@v4, actions/github-script@v7, actions/setup-python@v5, KyleMayes/install-llvm-action@v2. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 2704,
+    "start_column": null,
+    "end_line": 2704,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "Process completed with exit code 1.",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 2703,
+    "start_column": null,
+    "end_line": 2703,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "cargo build 失败（libs/virtual_display/dylib）—— 关键行见 Annotations",
+    "raw_details": ""
+  },
+  {
+    "path": "client/res/vcpkg/libyuv/portfile.cmake",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/client/res/vcpkg/libyuv/portfile.cmake",
+    "start_line": 77,
+    "start_column": null,
+    "end_line": 77,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "Use MSVC to compile libyuv results in a very slow library.",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 17,
+    "start_column": null,
+    "end_line": 17,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "vcpkg_replace_string made no changes.",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 17,
+    "start_column": null,
+    "end_line": 17,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "vcpkg_replace_string made no changes.",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 17,
+    "start_column": null,
+    "end_line": 17,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "vcpkg_replace_string made no changes.",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 17,
+    "start_column": null,
+    "end_line": 17,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "vcpkg_replace_string made no changes.",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 155,
+    "start_column": null,
+    "end_line": 155,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "Failed to save: <h2>Our services aren't available right now</h2><p>We're working to restore all services as soon as possible. Please check back soon.</p>0y5XTagAAAADp82VGwVIiQ4ymPGRp/1h6U0xDMzFFREdFMDgxMwBFZGdl",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/liaozhimingandy/wedesk/blob/9b4388b07e836f6c0e2a1ddb6c0fb1ef8edcb31c/.github",
+    "start_line": 70,
+    "start_column": null,
+    "end_line": 70,
+    "end_column": null,
+    "annotation_level": "warning",
+    "title": "",
+    "message": "Failed to restore: Cache service responded with 400",
+    "raw_details": ""
+  }
+]

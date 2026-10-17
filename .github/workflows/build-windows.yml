@@ -77,6 +77,14 @@ on:
         description: "构建 iOS 客户端（未签名 IPA；macOS runner 分钟数是 Linux 的 10 倍，非发版可关）"
         type: boolean
         default: true
+      build_macos:
+        description: "构建 macOS 桌面客户端（.app；macOS runner 分钟数高，非发版可关）"
+        type: boolean
+        default: true
+      build_linux:
+        description: "构建 Linux 桌面客户端（x64 bundle）"
+        type: boolean
+        default: true
 
 # 显式收敛权限：本流水线只上传 artifact，不需要写仓库
 permissions:
@@ -517,6 +525,7 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
+          cache: true
 
       # Flutter 3.24.5 的 Windows engine 缺 dropdown enableFilter 需要的接口，
       # 必须换成 RustDesk 自研 engine，否则 flutter build 直接编译失败。
@@ -954,6 +963,7 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
+          cache: true
 
       - name: Patch flutter
         shell: bash
@@ -1142,6 +1152,7 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
+          cache: true
 
       - name: Patch flutter
         shell: bash
@@ -1339,10 +1350,6 @@ jobs:
     needs: [preflight, generate-bridge]
     # macos-latest 现在是 arm64，正好对应 aarch64-apple-ios 目标
     runs-on: macos-latest
-    # 临时：供下面的"失败日志回传"步骤用。定位完 iOS 根因请删除本块与诊断步骤。
-    permissions:
-      contents: write
-      actions: read
 
     steps:
       - name: Export GitHub Actions cache environment variables
@@ -1370,6 +1377,7 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
+          cache: true
 
       - name: Patch flutter
         shell: bash
@@ -1501,35 +1509,6 @@ jobs:
           ( cd "$IPA_DIR" && zip -r -q "wedesk-ios-unsigned.ipa" Payload )
           ls -lh "$IPA_DIR"/*.ipa
 
-      # 临时诊断：用仓库自带 GITHUB_TOKEN 拉取本次运行【全部 job】的完整日志
-      # （含 subosito/flutter-action 这类 uses: 步骤的内部输出，API 走 token 额度
-      # 不受匿名 60/小时限制），推到 ci-logs 分支，raw.githubusercontent.com 匿名可读。
-      # 定位 iOS 失败根因后请删除本步骤与上面的 permissions 块。
-      - name: 回传全部 job 日志到 ci-logs（临时诊断，定位后删除）
-        if: ${{ failure() }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -e
-          API="https://api.github.com/repos/$GITHUB_REPOSITORY/actions"
-          mkdir -p ci-logs
-          curl -sL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$API/runs/$GITHUB_RUN_ID/logs" -o ci-logs/run-logs.zip
-          cd ci-logs && unzip -o -q run-logs.zip && rm -f run-logs.zip
-          {
-            echo "run=$GITHUB_RUN_NUMBER"
-            echo "sha=$GITHUB_SHA"
-            echo "ios_xcode=$(xcodebuild -version 2>/dev/null | tr '\n' ' ')"
-            echo "flutter=$(flutter --version 2>/dev/null | head -1)"
-          } > META.txt
-          git config user.name ci-bot
-          git config user.email ci-bot@users.noreply.github.com
-          git checkout -B ci-logs
-          git add -f ci-logs
-          git commit -m "CI 诊断日志 run=$GITHUB_RUN_NUMBER" || echo "(无变化跳过)"
-          git push -f "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" HEAD:ci-logs
-
       - name: Upload iOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -1547,6 +1526,292 @@ jobs:
             echo "产物在本页底部 Artifacts 的 **wedesk-ios**，保留 14 天。"
             echo ""
             echo "> **未签名**：无 Apple 开发者证书，需由具备证书的一方重签后才能真机安装或上架。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 5a. macOS 桌面客户端（Apple 电脑）
+  #
+  #   走 Flutter 桌面通道：cargo build 产出 liblibrustdesk.dylib，macos/Runner
+  #   的 xcworkspace 直接引用 ../../target/release/liblibrustdesk.dylib，无需手动
+  #   拷贝；再 flutter build macos --release 编出 .app。service 助手进程需塞进
+  #   .app（与上游 build_flutter_dmg 一致）。
+  #   v1 先关 hwcodec（纯软编），避开 vcpkg/FFmpeg 在 macOS 的链接坑；
+  #   rustdesk/engine 的 main 发布只有 windows 版，macOS 用官方 engine。
+  # ---------------------------------------------------------------------------
+  build-macos:
+    name: macos (desktop app)
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_macos == true) }}
+    needs: [preflight, generate-bridge]
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+          cache: true
+
+      - name: Patch flutter
+        shell: bash
+        run: |
+          set -e
+          FLUTTER_ROOT="$(dirname "$(dirname "$(readlink -f "$(command -v flutter)")")")"
+          if [ "${{ env.FLUTTER_VERSION }}" != "3.24.5" ]; then
+            echo "当前 Flutter 非 3.24.5，跳过 dropdown 补丁"
+            exit 0
+          fi
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
+          cd "$FLUTTER_ROOT"
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+          echo "✓ flutter 补丁已应用"
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-bridge
+          path: .
+
+      - name: Unpack bridge files
+        shell: bash
+        run: bash build/common/unpack-bridge.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: wedesk-macos
+          key: macos-desktop
+
+      - name: Apply brand customization
+        if: ${{ inputs.skip_customize != true }}
+        run: python build/client/customize.py --source client --config build/client/custom.toml
+
+      - name: Build rustdesk lib + service (macos)
+        shell: bash
+        run: |
+          set -e
+          # 与上游 build_flutter_dmg 一致：macOS 需把 service bin 一起打进 .app
+          (cd client && MACOSX_DEPLOYMENT_TARGET=10.14 cargo build --locked --features flutter --release)
+          (cd client && cp target/release/liblibrustdesk.dylib target/release/librustdesk.dylib)
+          ls -lh client/target/release/liblibrustdesk.dylib
+
+      - name: Flutter pub get (macos)
+        shell: bash
+        run: |
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          LOG="$RUNNER_TEMP/flutter-pub-get-macos.log"
+          if ! (cd client/flutter && flutter pub get) 2>&1 | tee "$LOG"; then
+            emit_error_lines "$LOG" "flutter:pub-get-macos" 20
+            emit_log_tail "$LOG" "flutter:pub-get-macos-tail" 30
+            exit 1
+          fi
+
+      - name: Build macOS app
+        shell: bash
+        run: |
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          LOG="$RUNNER_TEMP/flutter-build-macos.log"
+          MAC_ARCH="$(uname -m)"
+          MAC_ARCH="${MAC_ARCH/aarch64/arm64}"
+          if ! (cd client/flutter && FLUTTER_XCODE_ARCHS="$MAC_ARCH" FLUTTER_XCODE_ONLY_ACTIVE_ARCH=YES flutter build macos --release) 2>&1 | tee "$LOG"; then
+            emit_error_lines "$LOG" "flutter:macos" 15
+            emit_log_tail "$LOG" "flutter:macos-tail" 30
+            emit_summary_tail "$LOG" "Build macOS 失败 —— 日志尾部" 80
+            exit 1
+          fi
+          APP_DIR="client/flutter/build/macos/Build/Products/Release"
+          if [ -f client/target/release/service ]; then
+            find "$APP_DIR" -maxdepth 1 -name '*.app' -exec cp -f client/target/release/service {}/Contents/MacOS/ \;
+          fi
+          echo "=== 产物 ==="
+          find "$APP_DIR" -maxdepth 1 -name '*.app'
+
+      - name: Zip macOS app
+        shell: bash
+        run: |
+          set -e
+          APP_DIR="client/flutter/build/macos/Build/Products/Release"
+          APP="$(find "$APP_DIR" -maxdepth 1 -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "::error::未找到 .app"; exit 1; }
+          ( cd "$APP_DIR" && zip -r -q "$RUNNER_TEMP/wedesk-macos.zip" "$(basename "$APP")" )
+          mv "$RUNNER_TEMP/wedesk-macos.zip" client/flutter/build/macos/wedesk-macos.zip
+          ls -lh client/flutter/build/macos/wedesk-macos.zip
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wedesk-macos
+          path: client/flutter/build/macos/wedesk-macos.zip
+          retention-days: 14
+
+      - name: Build summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "## Wedesk macOS 构建结果"
+            echo ""
+            echo "产物在本页底部 Artifacts 的 **wedesk-macos**（.app 的 zip，保留 14 天）。"
+            echo ""
+            echo "> 解压后拖入 /Applications 即可使用；v1 为纯软编（未启用 hwcodec）。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 5b. Linux 桌面客户端（x64）
+  #
+  #   cargo build 产出 liblibrustdesk.so；flutter/linux/CMakeLists.txt 用
+  #   $<CONFIG> 经 TOLOWER 得到 release，引用 ../../target/release/liblibrustdesk.so
+  #   （与 cargo 的 target/release 一致），无需手动拷贝。
+  #   v1 先关 hwcodec（纯软编）以避开 vcpkg/FFmpeg 链接坑。
+  # ---------------------------------------------------------------------------
+  build-linux:
+    name: linux (desktop x64)
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_linux == true) }}
+    needs: [preflight, generate-bridge]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux build dependencies
+        run: |
+          set -e
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev libayatana-appindicator3-dev
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+          cache: true
+
+      - name: Patch flutter
+        shell: bash
+        run: |
+          set -e
+          FLUTTER_ROOT="$(dirname "$(dirname "$(readlink -f "$(command -v flutter)")")")"
+          if [ "${{ env.FLUTTER_VERSION }}" != "3.24.5" ]; then
+            echo "当前 Flutter 非 3.24.5，跳过 dropdown 补丁"
+            exit 0
+          fi
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
+          cd "$FLUTTER_ROOT"
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+          echo "✓ flutter 补丁已应用"
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-bridge
+          path: .
+
+      - name: Unpack bridge files
+        shell: bash
+        run: bash build/common/unpack-bridge.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: wedesk-linux
+          key: linux-desktop
+
+      - name: Apply brand customization
+        if: ${{ inputs.skip_customize != true }}
+        run: python build/client/customize.py --source client --config build/client/custom.toml
+
+      - name: Build rustdesk lib (linux)
+        shell: bash
+        run: |
+          set -e
+          (cd client && cargo build --locked --features flutter --lib --release)
+          ls -lh client/target/release/liblibrustdesk.so
+
+      - name: Flutter pub get (linux)
+        shell: bash
+        run: |
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          LOG="$RUNNER_TEMP/flutter-pub-get-linux.log"
+          if ! (cd client/flutter && flutter pub get) 2>&1 | tee "$LOG"; then
+            emit_error_lines "$LOG" "flutter:pub-get-linux" 20
+            emit_log_tail "$LOG" "flutter:pub-get-linux-tail" 30
+            exit 1
+          fi
+
+      - name: Build Linux bundle
+        shell: bash
+        run: |
+          set -eo pipefail
+          source build/common/emit-error-lines.sh
+          LOG="$RUNNER_TEMP/flutter-build-linux.log"
+          if ! (cd client/flutter && flutter build linux --release) 2>&1 | tee "$LOG"; then
+            emit_error_lines "$LOG" "flutter:linux" 15
+            emit_log_tail "$LOG" "flutter:linux-tail" 30
+            emit_summary_tail "$LOG" "Build Linux 失败 —— 日志尾部" 80
+            exit 1
+          fi
+          # 官方 bundle 内的 .so 未 strip，压一下体积
+          find client/flutter/build/linux -name 'liblibrustdesk.so' -exec strip {} \;
+          echo "=== 产物 ==="
+          ls -lh client/flutter/build/linux/x64/release/bundle/
+
+      - name: Zip Linux bundle
+        shell: bash
+        run: |
+          set -e
+          BUNDLE="client/flutter/build/linux/x64/release/bundle"
+          [ -d "$BUNDLE" ] || { echo "::error::未找到 bundle 目录"; exit 1; }
+          ( cd "$BUNDLE/.." && zip -r -q "$RUNNER_TEMP/wedesk-linux.zip" "bundle" )
+          mv "$RUNNER_TEMP/wedesk-linux.zip" client/flutter/build/linux/wedesk-linux.zip
+          ls -lh client/flutter/build/linux/wedesk-linux.zip
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wedesk-linux
+          path: client/flutter/build/linux/wedesk-linux.zip
+          retention-days: 14
+
+      - name: Build summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "## Wedesk Linux 构建结果"
+            echo ""
+            echo "产物在本页底部 Artifacts 的 **wedesk-linux**（bundle 的 zip，保留 14 天）。"
+            echo ""
+            echo "> 解压后运行 bundle/ 内的可执行文件即可；v1 为纯软编（未启用 hwcodec）。"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
@@ -1898,7 +2163,7 @@ jobs:
   #    发布需要 contents: write 权限。单独一个 job 能把权限收敛到最小范围，
   #    构建环节依然只有 read —— 构建机上的第三方 action 碰不到发布能力。
   #
-  #    为什么 needs 里挂了安卓/iOS 却不要求它们成功：
+  #    为什么 needs 里挂了安卓/iOS/macOS/Linux 却不要求它们成功：
   #    iOS 需要 Apple 证书生态、Android armeabi-v7a 的 vcpkg 依赖链最脆，
   #    让它们中的任何一个拦住 Windows 客户端发版，代价明显不对等。
   #    缺哪个端会写进 Release Notes，不静默。
@@ -1909,7 +2174,7 @@ jobs:
     # 用户仍可拿到客户端；服务端缺失会在 Release Notes 里标注。
     # 但如果客户端本身没成功，就什么都不发：没有客户端的 Release 没有意义。
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && needs.build-windows.result == 'success' }}
-    needs: [build-windows, build-server, build-android-apk, build-ios]
+    needs: [build-windows, build-server, build-android-apk, build-ios, build-macos, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -2001,6 +2266,22 @@ jobs:
           name: wedesk-ios
           path: dist/ios
 
+      - name: 下载 macOS 桌面产物（若构建）
+        id: dl-macos
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-macos
+          path: dist/macos
+
+      - name: 下载 Linux 桌面产物（若构建）
+        id: dl-linux
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: wedesk-linux
+          path: dist/linux
+
       - name: 打包并生成校验和
         id: pack
         shell: bash
@@ -2057,6 +2338,26 @@ jobs:
             echo "::warning::未找到 iOS 产物（build-ios 可能失败或被跳过）"
           fi
           echo "has_ios=$has_ios" >> "$GITHUB_OUTPUT"
+          # macOS 桌面：未签名的 .app zip（解开后拖入 /Applications）
+          has_macos=false
+          MACOS_ZIP="$(ls dist/macos/wedesk-macos.zip 2>/dev/null | head -1 || true)"
+          if [ -n "$MACOS_ZIP" ]; then
+            cp -f "$MACOS_ZIP" "out/wedesk-${V}-macos.zip"
+            has_macos=true
+          else
+            echo "::warning::未找到 macOS 桌面产物（build-macos 可能失败或被跳过）"
+          fi
+          echo "has_macos=$has_macos" >> "$GITHUB_OUTPUT"
+          # Linux 桌面：x64 bundle zip
+          has_linux=false
+          LINUX_ZIP="$(ls dist/linux/wedesk-linux.zip 2>/dev/null | head -1 || true)"
+          if [ -n "$LINUX_ZIP" ]; then
+            cp -f "$LINUX_ZIP" "out/wedesk-${V}-linux.zip"
+            has_linux=true
+          else
+            echo "::warning::未找到 Linux 桌面产物（build-linux 可能失败或被跳过）"
+          fi
+          echo "has_linux=$has_linux" >> "$GITHUB_OUTPUT"
           cd out
           sha256sum ./* > SHA256SUMS.txt
           echo "=== 待发布文件 ==="

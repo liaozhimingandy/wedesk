@@ -406,9 +406,12 @@ mod test {
         for _ in 0..100 {
             let p = get_auto_password();
             assert_eq!(p.len(), 6, "密码长度必须是 6 位: {p}");
+            // 同上：edition 2018 下单参数 assert! 的消息不做格式化，
+            // 写 `{p}` 只会把占位符原样打印出来。
             assert!(
                 p.bytes().all(|b| b.is_ascii_digit()),
-                "密码必须是纯数字: {p}"
+                "密码必须是纯数字: {}",
+                p
             );
         }
     }

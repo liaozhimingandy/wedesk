@@ -3723,9 +3723,12 @@ mod tests {
         // 区间下界 10^11 保证位数；若哪天改成 gen_range(0..10^12) 这里会立刻红。
         for _ in 0..200 {
             let id = Config::gen_auto_id();
+            // 显式传参，不写 `{id}`：本 crate 是 edition 2018，单参数的
+            // assert!/panic! 不把消息当格式串，占位符会原样打印出来。
             assert!(
                 Config::is_unified_id(&id),
-                "生成的 ID 不符合统一规范: {id}"
+                "生成的 ID 不符合统一规范: {}",
+                id
             );
         }
     }

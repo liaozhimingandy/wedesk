@@ -818,5 +818,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("shortcut-key-not-supported", ""),
         ("On", ""),
         ("Off", ""),
+        ("Remote control", "遠端控制"),
+        ("Show", "顯示"),
+        ("Hide", "隱藏"),
+        ("Active sessions", "活動連線"),
+        ("remote_control_hint", "輸入對方的設備碼即可發起遠端協助，也可以搜尋已儲存的設備。"),
+        ("Copy", "複製"),
     ].iter().cloned().collect();
 }

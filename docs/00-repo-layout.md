@@ -97,6 +97,7 @@ wedesk/
 | 改软件名 / 公司名 / 官网 | `build/client/custom.toml` 的 `[brand]` | 注入 + 客户端 |
 | 改窗口图标、安装器图标 | `client/res/`（替换后跑注入） | 注入 + 客户端 |
 | 改 UI 文案、界面布局 | `client/flutter/lib/` | bridge + 客户端 |
+| **改桌面端配色 / 圆角 / 间距** | `client/flutter/lib/common/widgets/wedesign.dart`（详见 [14](14-desktop-ui.md)） | 客户端 |
 | 改 Windows 安装器界面 | `client/res/msi/` | 客户端 |
 
 ### 服务器与连接

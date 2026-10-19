@@ -17,6 +17,7 @@ import '../../common.dart';
 import '../../models/peer_model.dart';
 import '../../models/platform_model.dart';
 import 'peer_card.dart';
+import 'wedesign.dart';
 
 typedef PeerFilter = bool Function(Peer peer);
 typedef PeerCardBuilder = Widget Function(Peer peer);
@@ -187,24 +188,45 @@ class _PeersViewState extends State<_PeersView>
       child: Consumer<Peers>(builder: (context, peers, child) {
         if (peers.peers.isEmpty) {
           gFFI.peerTabModel.setCurrentTabCachedPeers([]);
+          // Desktop gets a calm, informative empty state; mobile keeps the
+          // original compact one.
+          final desktopLike = isDesktop || isWebDesktop;
+          final colors = WeColors.of(context);
+          final labelColor = desktopLike
+              ? colors.textTertiary
+              : Theme.of(context).tabBarTheme.labelColor;
           return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(
-                  Icons.sentiment_very_dissatisfied_rounded,
-                  color: Theme.of(context).tabBarTheme.labelColor,
-                  size: 40,
-                ).paddingOnly(bottom: 10),
+                  desktopLike
+                      ? Icons.devices_other_rounded
+                      : Icons.sentiment_very_dissatisfied_rounded,
+                  color: labelColor,
+                  size: desktopLike ? 46 : 40,
+                ).paddingOnly(bottom: desktopLike ? 14 : 10),
                 Text(
                   translate(
                     _emptyMessages[widget.peers.loadEvent] ?? 'Empty',
                   ),
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: Theme.of(context).tabBarTheme.labelColor,
+                    color: desktopLike ? colors.textSecondary : labelColor,
+                    fontSize: desktopLike ? 13.5 : null,
+                    height: 1.5,
                   ),
                 ),
+                if (desktopLike)
+                  Text(
+                    translate('remote_control_hint'),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: colors.textTertiary,
+                      fontSize: 12,
+                      height: 1.5,
+                    ),
+                  ).paddingOnly(top: 4),
               ],
             ),
           );

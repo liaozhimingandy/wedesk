@@ -7,6 +7,7 @@ import 'package:flutter_hbb/common/widgets/dialog.dart';
 import 'package:flutter_hbb/common/widgets/my_group.dart';
 import 'package:flutter_hbb/common/widgets/peers_view.dart';
 import 'package:flutter_hbb/common/widgets/peer_card.dart';
+import 'package:flutter_hbb/common/widgets/wedesign.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/widgets/popup_menu.dart';
 import 'package:flutter_hbb/desktop/widgets/material_mod_popup_menu.dart'
@@ -135,6 +136,11 @@ class _PeerTabPageState extends State<PeerTabPage>
   }
 
   Widget _createSwitchBar(BuildContext context) {
+    // Desktop gets a labelled, ToDesk like tab bar; mobile keeps the compact
+    // icon bar because there is no room for labels there.
+    if (isDesktop || isWebDesktop) {
+      return _createDesktopSwitchBar(context);
+    }
     final model = Provider.of<PeerTabModel>(context);
     var counter = -1;
     return ReorderableListView(
@@ -182,6 +188,36 @@ class _PeerTabPageState extends State<PeerTabPage>
                       onHover: (value) => hover.value = value,
                     ),
                   )));
+        }).toList());
+  }
+
+  /// Labelled tab bar for the desktop client (ToDesk style pills).
+  Widget _createDesktopSwitchBar(BuildContext context) {
+    final model = Provider.of<PeerTabModel>(context);
+    var counter = -1;
+    return ReorderableListView(
+        buildDefaultDragHandles: false,
+        onReorder: model.reorder,
+        scrollDirection: Axis.horizontal,
+        physics: const NeverScrollableScrollPhysics(),
+        children: model.visibleEnabledOrderedIndexs.map((t) {
+          final selected = model.currentTab == t;
+          counter += 1;
+          return ReorderableDragStartListener(
+              key: ValueKey(t),
+              index: counter,
+              child: _DesktopTabChip(
+                label: model.tabTooltip(t),
+                icon: model.tabIcon(t),
+                selected: selected,
+                onTap: isOptionFixed(kOptionPeerTabIndex)
+                    ? null
+                    : () async {
+                        await handleTabSelection(t);
+                        await bind.setLocalFlutterOption(
+                            k: kOptionPeerTabIndex, v: t.toString());
+                      },
+              ));
         }).toList());
   }
 
@@ -1035,5 +1071,78 @@ class PullDownMenuEntryImpl extends StatelessWidget
   @override
   Widget build(BuildContext context) {
     return child;
+  }
+}
+
+/// One pill of the desktop tab bar: icon + label, brand gradient when selected.
+class _DesktopTabChip extends StatefulWidget {
+  const _DesktopTabChip({
+    Key? key,
+    required this.label,
+    required this.icon,
+    required this.selected,
+    this.onTap,
+  }) : super(key: key);
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  State<_DesktopTabChip> createState() => _DesktopTabChipState();
+}
+
+class _DesktopTabChipState extends State<_DesktopTabChip> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = WeColors.of(context);
+    final fg = widget.selected
+        ? Colors.white
+        : (_hover ? colors.brand : colors.textSecondary);
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: Tooltip(
+        message: widget.label,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(15),
+          onTap: widget.onTap,
+          onHover: (value) {
+            if (_hover != value) {
+              setState(() => _hover = value);
+            }
+          },
+          child: Container(
+            height: 30,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(15),
+              gradient:
+                  widget.selected ? WeColors.brandGradient(context) : null,
+              color: widget.selected
+                  ? null
+                  : (_hover ? colors.brandSoft : colors.surfaceAlt),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(widget.icon, size: 15, color: fg),
+                const SizedBox(width: 5),
+                Text(
+                  widget.label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: fg,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

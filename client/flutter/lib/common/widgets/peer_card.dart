@@ -2,6 +2,7 @@ import 'package:bot_toast/bot_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/widgets/dialog.dart';
+import 'package:flutter_hbb/common/widgets/wedesign.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/peer_tab_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
@@ -48,7 +49,8 @@ class _PeerCardState extends State<_PeerCard>
     with AutomaticKeepAliveClientMixin {
   var _menuPos = RelativeRect.fill;
   final double _cardRadius = 16;
-  final double _tileRadius = 5;
+  // Softer, ToDesk like corners on the tile (list) view.
+  final double _tileRadius = 10;
   final double _borderWidth = 2;
 
   @override
@@ -105,8 +107,7 @@ class _PeerCardState extends State<_PeerCard>
       onEnter: (evt) {
         deco.value = BoxDecoration(
           border: Border.all(
-              color: Theme.of(context).colorScheme.primary,
-              width: _borderWidth),
+              color: WeColors.of(context).brand, width: _borderWidth),
           borderRadius: BorderRadius.circular(
             peerCardUiType.value == PeerUiType.grid ? _cardRadius : _tileRadius,
           ),

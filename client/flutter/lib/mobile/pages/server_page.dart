@@ -56,10 +56,6 @@ class _DropDownAction extends StatelessWidget {
           final verificationMethod = gFFI.serverModel.verificationMethod;
           final showPasswordOption = approveMode != 'click';
           final isApproveModeFixed = isOptionFixed(kOptionApproveMode);
-          final isNumericOneTimePasswordFixed =
-              isOptionFixed(kOptionAllowNumericOneTimePassword);
-          final isAllowNumericOneTimePassword =
-              gFFI.serverModel.allowNumericOneTimePassword;
           return [
             if (!isChangeIdDisabled())
               PopupMenuItem(
@@ -94,21 +90,6 @@ class _DropDownAction extends StatelessWidget {
                 value: "setPermanentPassword",
                 child: Text(translate("Set permanent password")),
               ),
-            if (showPasswordOption &&
-                verificationMethod != kUsePermanentPassword)
-              PopupMenuItem(
-                value: "setTemporaryPasswordLength",
-                child: Text(translate("One-time password length")),
-              ),
-            if (showPasswordOption &&
-                verificationMethod != kUsePermanentPassword)
-              PopupMenuItem(
-                value: "allowNumericOneTimePassword",
-                child: listTile(translate("Numeric one-time password"),
-                    isAllowNumericOneTimePassword),
-                enabled: !isNumericOneTimePasswordFixed,
-              ),
-            if (showPasswordOption) const PopupMenuDivider(),
             if (showPasswordOption)
               PopupMenuItem(
                 value: kUseTemporaryPassword,
@@ -136,11 +117,6 @@ class _DropDownAction extends StatelessWidget {
             changeIdDialog();
           } else if (value == "setPermanentPassword") {
             setPasswordDialog();
-          } else if (value == "setTemporaryPasswordLength") {
-            setTemporaryPasswordLengthDialog(gFFI.dialogManager);
-          } else if (value == "allowNumericOneTimePassword") {
-            gFFI.serverModel.switchAllowNumericOneTimePassword();
-            gFFI.serverModel.updatePasswordModel();
           } else if (value == kUsePermanentPassword ||
               value == kUseTemporaryPassword ||
               value == kUseBothPasswords) {

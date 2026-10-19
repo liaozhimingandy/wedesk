@@ -2564,6 +2564,35 @@ connectMainDesktop(String id,
   }
 }
 
+/// 剥离 ID 上可能挂着的附加部分，只留纯 ID。
+///
+/// 实际会遇到的几种形态：
+///   `123456789012`         纯 ID
+///   `1234 5678 9012`       UI 上分组展示过、还没去掉空格
+///   `123456789012?key=xxx` 深链接里带的强制 key
+///   `123456789012@server`  指定另一套注册/中继服务器
+String pureIdOf(String id) {
+  var pure = trimID(id);
+  for (final sep in ['?', '@']) {
+    final idx = pure.indexOf(sep);
+    if (idx >= 0) {
+      pure = pure.substring(0, idx);
+    }
+  }
+  return pure.trim();
+}
+
+/// [id] 是否指向本机自己。
+///
+/// 连自己没有任何意义：hbbs 会把打洞请求回给同一个连接，表现出来就是一直转圈，
+/// 或者干脆进到自己屏幕的"画中画"，排查起来很费劲，不如直接挡掉。
+/// Rust 侧 `Client::start` 另有一道兜底，覆盖命令行 / IPC 这些不走 UI 的入口。
+Future<bool> isSelfPeerId(String id) async {
+  final pure = pureIdOf(id);
+  if (pure.isEmpty) return false;
+  return pure == await bind.mainGetMyId();
+}
+
 /// Connect to a peer with [id].
 /// If [isFileTransfer], starts a session only for file transfer.
 /// If [isViewCamera], starts a session only for view camera.
@@ -2593,6 +2622,10 @@ connect(BuildContext context, String id,
     } catch (_) {}
   }
   id = id.replaceAll(' ', '');
+  if (await isSelfPeerId(id)) {
+    showToast(translate('Cannot connect to yourself'));
+    return;
+  }
   final oldId = id;
   id = await bind.mainHandleRelayId(id: id);
   forceRelay = id != oldId || forceRelay;

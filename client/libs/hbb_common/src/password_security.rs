@@ -20,13 +20,17 @@ pub enum ApproveMode {
     Click,
 }
 
+/// 一次性密码固定为 6 位纯数字。
+///
+/// 上游把它拆成了两个可选项：`temporary-password-length`（6 / 8 / 10）与
+/// `allow-numeric-one-time-password`（数字 or 含字母）。前者让不同设备的密码位数
+/// 不一致，后者让默认密码混进大小写字母 —— 口头报密码时极易听错，
+/// 也和"密码就是 6 位数字"这一心智模型冲突。这里钉死成 6 位数字，
+/// 两个选项都不再生效（对应的 UI 入口已一并移除）。
+pub const TEMPORARY_PASSWORD_LENGTH: usize = 6;
+
 fn get_auto_password() -> String {
-    let len = temporary_password_length();
-    if Config::get_bool_option(crate::config::keys::OPTION_ALLOW_NUMERNIC_ONE_TIME_PASSWORD) {
-        Config::get_auto_numeric_password(len)
-    } else {
-        Config::get_auto_password(len)
-    }
+    Config::get_auto_numeric_password(TEMPORARY_PASSWORD_LENGTH)
 }
 
 // Should only be called in server
@@ -50,15 +54,11 @@ fn verification_method() -> VerificationMethod {
     }
 }
 
+/// 保留这个函数是为了让仍引用它的地方拿到同一个值：
+/// 长度已固定为 [`TEMPORARY_PASSWORD_LENGTH`]，不再读 `temporary-password-length` 选项，
+/// 否则 UI 上显示的位数和实际生成的位数会各说各话。
 pub fn temporary_password_length() -> usize {
-    let length = Config::get_option("temporary-password-length");
-    if length == "8" {
-        8
-    } else if length == "10" {
-        10
-    } else {
-        6 // default
-    }
+    TEMPORARY_PASSWORD_LENGTH
 }
 
 pub fn temporary_enabled() -> bool {
@@ -392,6 +392,25 @@ mod test {
         test_speed(1024 * 1024, "1M");
         test_speed(10 * 1024 * 1024, "10M");
         test_speed(100 * 1024 * 1024, "100M");
+    }
+
+    #[test]
+    fn test_temporary_password_is_six_numeric_digits() {
+        use super::*;
+
+        assert_eq!(temporary_password_length(), TEMPORARY_PASSWORD_LENGTH);
+        assert_eq!(TEMPORARY_PASSWORD_LENGTH, 6);
+
+        // 无论 temporary-password-length / allow-numeric-one-time-password 怎么配，
+        // 生成结果都必须是 6 位纯数字。改回可配置会让这里的断言先红。
+        for _ in 0..100 {
+            let p = get_auto_password();
+            assert_eq!(p.len(), 6, "密码长度必须是 6 位: {p}");
+            assert!(
+                p.bytes().all(|b| b.is_ascii_digit()),
+                "密码必须是纯数字: {p}"
+            );
+        }
     }
 
     #[test]

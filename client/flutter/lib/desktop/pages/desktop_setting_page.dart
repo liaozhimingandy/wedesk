@@ -1324,64 +1324,6 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                   ))
               .toList();
 
-          var onChanged = tmpEnabled && !locked
-              ? (value) {
-                  if (value != null) {
-                    () async {
-                      await model.setTemporaryPasswordLength(value.toString());
-                      await model.updatePasswordModel();
-                    }();
-                  }
-                }
-              : null;
-          List<Widget> lengthRadios = ['6', '8', '10']
-              .map((value) => GestureDetector(
-                    child: Row(
-                      children: [
-                        Radio(
-                            value: value,
-                            groupValue: model.temporaryPasswordLength,
-                            onChanged: onChanged),
-                        Text(
-                          value,
-                          style: TextStyle(
-                              color: disabledTextColor(
-                                  context, onChanged != null)),
-                        ),
-                      ],
-                    ).paddingOnly(right: 10),
-                    onTap: () => onChanged?.call(value),
-                  ))
-              .toList();
-
-          final isOptFixedNumOTP =
-              isOptionFixed(kOptionAllowNumericOneTimePassword);
-          final isNumOPTChangable = !isOptFixedNumOTP && tmpEnabled && !locked;
-          final numericOneTimePassword = GestureDetector(
-            child: InkWell(
-                child: Row(
-              children: [
-                Checkbox(
-                        value: model.allowNumericOneTimePassword,
-                        onChanged: isNumOPTChangable
-                            ? (bool? v) {
-                                model.switchAllowNumericOneTimePassword();
-                              }
-                            : null)
-                    .marginOnly(right: 5),
-                Expanded(
-                    child: Text(
-                  translate('Numeric one-time password'),
-                  style: TextStyle(
-                      color: disabledTextColor(context, isNumOPTChangable)),
-                ))
-              ],
-            )),
-            onTap: isNumOPTChangable
-                ? () => model.switchAllowNumericOneTimePassword()
-                : null,
-          ).marginOnly(left: _kContentHSubMargin - 5);
-
           final modeKeys = <String>[
             'password',
             'click',
@@ -1408,17 +1350,18 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
               onChanged: (key) => model.setApproveMode(key),
             ).marginOnly(left: _kContentHMargin),
             if (usePassword) radios[0],
+            // 一次性密码长度已固定为 6 位数字（见 Rust 侧
+            // `password_security::TEMPORARY_PASSWORD_LENGTH`）。这里保留一行说明，
+            // 但不再给可选项 —— 否则设置里改了位数、实际生成的没变，
+            // 是最难排查的那种不一致。
             if (usePassword)
               _SubLabeledWidget(
                   context,
                   'One-time password length',
-                  Row(
-                    children: [
-                      ...lengthRadios,
-                    ],
-                  ),
-                  enabled: tmpEnabled && !locked),
-            if (usePassword) numericOneTimePassword,
+                  Text('6',
+                      style: TextStyle(
+                          color: disabledTextColor(context, false))),
+                  enabled: false),
             if (usePassword) radios[1],
             if (usePassword && !isChangePermanentPasswordDisabled())
               _SubButton('Set permanent password', setPasswordDialog,

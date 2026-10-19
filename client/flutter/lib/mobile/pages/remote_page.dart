@@ -18,6 +18,7 @@ import '../../common.dart';
 import '../../common/widgets/overlay.dart';
 import '../../common/widgets/dialog.dart';
 import '../../common/widgets/remote_input.dart';
+import '../../common/widgets/connection_type_badge.dart';
 import '../../models/input_model.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
@@ -714,6 +715,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               right: 10,
               child: QualityMonitor(gFFI.qualityMonitorModel),
             ),
+            // 右上角已经是 QualityMonitor，这里放左上角，两边不打架
+            ConnectionTypeBadge(id: widget.id),
             Obx(() {
               final chatKeyboardRequested =
                   gFFI.chatModel.softKeyboardRequested.value;

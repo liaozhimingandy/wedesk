@@ -11,6 +11,7 @@ import 'package:flutter_hbb/models/state_model.dart';
 import '../../consts.dart';
 import '../../common/widgets/overlay.dart';
 import '../../common/widgets/remote_input.dart';
+import '../../common/widgets/connection_type_badge.dart';
 import '../../common.dart';
 import '../../common/widgets/dialog.dart';
 import '../../common/widgets/toolbar.dart';
@@ -790,6 +791,13 @@ class _RemotePageState extends State<RemotePage>
                         ])
                       : remoteToolbar(context)),
               _ffi.ffiModel.pi.isSet.isFalse ? emptyOverlay() : Offstage(),
+              // 放左下角：工具栏默认吸附在顶部，左边也常被拖过去，
+              // 左下基本是空的，不会互相遮挡。
+              ConnectionTypeBadge(
+                id: widget.id,
+                alignment: Alignment.bottomLeft,
+                margin: const EdgeInsets.only(left: 10, bottom: 10),
+              ),
             ],
           ),
         ],

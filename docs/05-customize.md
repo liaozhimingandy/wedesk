@@ -231,6 +231,8 @@ fn get_api_server_(...) -> String {
 | **去掉文件传输（防泄密）** | `client/src/server/` 文件服务模块 **+ Flutter 侧对应 UI**，两端都要改 |
 | 加连接审计 | **已内置**：默认记在 PostgreSQL 的 `connection_log` 表（异步批量落库），`AUDIT_LOG=N` 可关；详见 [12](12-postgres-backend.md) |
 | 禁止连接外部 ID | **服务端层面限制更彻底**，比改客户端可靠 |
+| 禁止连自己 | **已内置**：`common.dart` 的 `connect()` 先比对本机 ID 弹 toast，Rust 侧 `Client::start` 再兜底一次（覆盖命令行 / 深链接 / IPC）。提示文案 `Cannot connect to yourself` |
+| 显示 P2P / 中继 | **已内置**：`common/widgets/connection_type_badge.dart`，桌面端在远程画面左下角、移动端在左上角，数据来自 `connection_ready` 事件 |
 | 禁用剪贴板同步 | `client/src/server/clipboard_service.rs` + 设置项 |
 
 > ⚠️ **只隐藏 UI 是假禁用。** 协议还在，对面用别的客户端照样能触发。

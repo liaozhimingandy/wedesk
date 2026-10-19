@@ -33,6 +33,12 @@ class IDTextInputFormatter extends TextInputFormatter {
   }
 }
 
+/// ID 每组的位数。
+///
+/// ID 已统一为 12 位纯数字（见 Rust 侧 `Config::ID_LENGTH`），按 4 位一组展示成
+/// `1234 5678 9012`。此前按 3 位分组是为了适配上游那种 9/10 位不定长 ID。
+const int kIdGroupSize = 4;
+
 String formatID(String id) {
   String id2 = id.replaceAll(' ', '');
   String suffix = '';
@@ -42,14 +48,14 @@ String formatID(String id) {
   }
   if (int.tryParse(id2) == null) return id;
   String newID = '';
-  if (id2.length <= 3) {
+  if (id2.length <= kIdGroupSize) {
     newID = id2;
   } else {
     var n = id2.length;
-    var a = n % 3 != 0 ? n % 3 : 3;
+    var a = n % kIdGroupSize != 0 ? n % kIdGroupSize : kIdGroupSize;
     newID = id2.substring(0, a);
-    for (var i = a; i < n; i += 3) {
-      newID += " ${id2.substring(i, i + 3)}";
+    for (var i = a; i < n; i += kIdGroupSize) {
+      newID += " ${id2.substring(i, i + kIdGroupSize)}";
     }
   }
   return newID + suffix;

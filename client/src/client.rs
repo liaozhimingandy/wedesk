@@ -343,6 +343,18 @@ fn request_allows_tcp_punch(webrtc_sdp_offer: &str) -> bool {
     webrtc_sdp_offer.is_empty()
 }
 
+/// 剥掉 ID 上的附加部分，只留纯 ID。
+///
+/// 可识别的形态：`123456789012`（纯 ID）、`123456789012?key=xxx`（深链接里指定的
+/// 强制 key）、`123456789012@server`（指定另一套注册/中继服务器）、以及前后空白。
+/// 单独抽成纯函数是为了能直接单测 —— 这几种写法全靠人肉记，很容易漏判。
+fn pure_peer_id(id: &str) -> &str {
+    id.split(|c| c == '?' || c == '@')
+        .next()
+        .unwrap_or(id)
+        .trim()
+}
+
 /// TCP punch is a user option like the other direct transports, but it is also the backstop:
 /// with every direct transport switched off there would be nothing left to punch with, so it
 /// runs regardless. Only the switches decide that — a transport that is enabled but fails to
@@ -357,6 +369,16 @@ fn tcp_punch_allowed() -> bool {
 
 impl Client {
     const CLIENT_CLIPBOARD_NAME: &'static str = "client-clipboard";
+
+    /// [peer] 是否指向本机自己。
+    ///
+    /// `peer` 除了纯 ID，还可能带附加部分：`?key=xxx`（深链接里指定的强制 key）、
+    /// `@server`（指定另一套注册/中继服务器）。这些都不是 ID 的一部分，
+    /// 必须先剥掉再比，否则 `123456789012@other` 就漏过去了。
+    fn is_self_peer(peer: &str) -> bool {
+        let my_id = Config::get_id();
+        !my_id.is_empty() && pure_peer_id(peer) == my_id
+    }
 
     /// Start a new connection.
     pub async fn start(
@@ -376,6 +398,13 @@ impl Client {
         (i32, String),
     )> {
         debug_assert!(peer == interface.get_id());
+        // 兜底拦截"连自己"。UI 入口（Flutter 的 connect()）已经挡了一道，
+        // 但命令行 `--connect <自己的ID>`、深链接、IPC 这些路径不走 UI ——
+        // 与其让它们在 hbbs 那边空转到超时（表现是转圈，日志里什么都看不出来），
+        // 不如在这里直接失败并给出明确原因。
+        if Self::is_self_peer(peer) {
+            bail!("Cannot connect to yourself");
+        }
         interface.update_direct(None);
         interface.update_received(false);
         match Self::_start(peer, key, token, conn_type, interface.clone()).await {
@@ -5991,5 +6020,26 @@ mod kx_tests {
         let (seen, decrypted) = handshake(KX_VERSION_LATEST, Some(0)).await;
         assert_eq!(seen.picked, 1);
         assert!(!seen.decrypted && !decrypted);
+    }
+}
+
+#[cfg(test)]
+mod self_connect_tests {
+    use super::pure_peer_id;
+
+    #[test]
+    fn test_pure_peer_id_keeps_plain_id() {
+        assert_eq!(pure_peer_id("123456789012"), "123456789012");
+        assert_eq!(pure_peer_id("  123456789012  "), "123456789012");
+        assert_eq!(pure_peer_id(""), "");
+    }
+
+    #[test]
+    fn test_pure_peer_id_strips_attachments() {
+        // 深链接里指定的强制 key
+        assert_eq!(pure_peer_id("123456789012?key=abc"), "123456789012");
+        // 指定另一套注册/中继服务器
+        assert_eq!(pure_peer_id("123456789012@server"), "123456789012");
+        assert_eq!(pure_peer_id("123456789012@server?key=abc"), "123456789012");
     }
 }

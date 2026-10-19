@@ -1017,56 +1017,51 @@ impl Config {
         std::cmp::max(CONFIG2.read().unwrap().serial, SERIAL)
     }
 
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    fn gen_id() -> Option<String> {
-        Self::get_auto_id()
+    /// 统一 ID 的位数。
+    ///
+    /// 上游的 ID 长度是**按平台分叉**的：桌面端取 MAC 地址后四字节再 `& 0x1FFFFFFF`，
+    /// 最多 9 位（还常常更短，因为高位被截掉）；手机端是
+    /// `gen_range(1_000_000_000..2_000_000_000)`，恒为 10 位。同一个服务端上两种位数
+    /// 并存，通讯录、白名单、审计都得按平台分别处理。这里统一成 12 位纯数字。
+    pub const ID_LENGTH: usize = 12;
+
+    /// 12 位 ID 的取值区间 `[10^11, 10^12)`：下界保证位数固定（不会出现前导 0 导致的
+    /// “看起来少一位”），上界保证不超过 [`ID_LENGTH`] 位。
+    const ID_MIN: u64 = 100_000_000_000;
+    const ID_MAX: u64 = 1_000_000_000_000;
+
+    /// 生成一个符合统一规范的 12 位纯数字 ID。
+    fn gen_auto_id() -> String {
+        rand::thread_rng().gen_range(ID_MIN..ID_MAX).to_string()
     }
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    /// 是否符合统一 ID 规范：正好 [`ID_LENGTH`] 位纯数字。
+    ///
+    /// 这是“这个 ID 需要升级吗”的唯一判据：`get_id()` 用它决定是否重新生成，
+    /// 排查时也照它判断某个 ID 是旧格式还是统一格式 —— 只有一个定义，
+    /// 就不会出现“代码说升级了、日志看不出来”的半通状态。
+    pub fn is_unified_id(id: &str) -> bool {
+        id.len() == ID_LENGTH && id.bytes().all(|b| b.is_ascii_digit())
+    }
+
     fn gen_id() -> Option<String> {
-        let hostname_as_id = BUILTIN_SETTINGS
+        // `allow-hostname-as-id` 会拿主机名当 ID，与“统一 12 位数字”直接冲突。
+        // 仍然读一次这个开关，是为了让已经下发过的内置配置不再**静默**生效：
+        // 明确打一条 WARN，再照常生成数字 ID。
+        if BUILTIN_SETTINGS
             .read()
             .unwrap()
             .get(keys::OPTION_ALLOW_HOSTNAME_AS_ID)
             .map(|v| option2bool(keys::OPTION_ALLOW_HOSTNAME_AS_ID, v))
-            .unwrap_or(false);
-        if hostname_as_id {
-            match whoami::fallible::hostname() {
-                Ok(h) => Some(h.replace(" ", "-")),
-                Err(e) => {
-                    log::warn!("Failed to get hostname, \"{}\", fallback to auto id", e);
-                    Self::get_auto_id()
-                }
-            }
-        } else {
-            Self::get_auto_id()
-        }
-    }
-
-    fn get_auto_id() -> Option<String> {
-        #[cfg(any(target_os = "android", target_os = "ios"))]
+            .unwrap_or(false)
         {
-            return Some(
-                rand::thread_rng()
-                    .gen_range(1_000_000_000..2_000_000_000)
-                    .to_string(),
+            log::warn!(
+                "\"{}\" 已启用，但与统一 {} 位数字 ID 冲突，本次忽略，仍生成数字 ID",
+                keys::OPTION_ALLOW_HOSTNAME_AS_ID,
+                ID_LENGTH
             );
         }
-
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        {
-            let mut id = 0u32;
-            if let Ok(Some(ma)) = mac_address::get_mac_address() {
-                for x in &ma.bytes()[2..] {
-                    id = (id << 8) | (*x as u32);
-                }
-                id &= 0x1FFFFFFF;
-                log::info!("Generated id {}", id);
-                Some(id.to_string())
-            } else {
-                None
-            }
-        }
+        Some(Self::gen_auto_id())
     }
 
     pub fn get_auto_password(length: usize) -> String {
@@ -1197,15 +1192,33 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// 本机 ID。**这是 ID 规范的唯一收敛点**：
+    /// 首次启动（空 ID）与旧格式 ID（桌面 9 位 / 手机 10 位 / 主机名）都在这里
+    /// 被替换成统一的 12 位数字 ID，并立即落盘。
+    ///
+    /// 之所以放在这里而不是某个“启动流程”里：ID 的读写入口散落在
+    /// 主进程 / 安装的服务 / Android 后台服务三处，只有挂在这个所有人都调用的
+    /// 函数上，才能保证没有一路能拿到不合规范的 ID。
     pub fn get_id() -> String {
-        let mut id = CONFIG.read().unwrap().id.clone();
-        if id.is_empty() {
-            if let Some(tmp) = Config::gen_id() {
-                id = tmp;
-                Config::set_id(&id);
-            }
+        let id = CONFIG.read().unwrap().id.clone();
+        if Self::is_unified_id(&id) {
+            return id;
         }
-        id
+        let Some(new_id) = Config::gen_id() else {
+            return id;
+        };
+        if id.is_empty() {
+            log::info!("Generated id {}", new_id);
+        } else {
+            log::info!(
+                "本机 id \"{}\" 不是 {} 位纯数字，已统一升级为 {}",
+                id,
+                ID_LENGTH,
+                new_id
+            );
+        }
+        Config::set_id(&new_id);
+        new_id
     }
 
     pub fn get_id_or(b: String) -> String {
@@ -1273,11 +1286,11 @@ impl Config {
         }
     }
 
+    /// 换一个新 ID。仅在 ID 与服务端上已有的 ID 冲突时调用（见 rendezvous_mediator）。
     pub fn update_id() {
         // to-do: how about if one ip register a lot of ids?
         let id = Self::get_id();
-        let mut rng = rand::thread_rng();
-        let new_id = rng.gen_range(1_000_000_000..2_000_000_000).to_string();
+        let new_id = Self::gen_auto_id();
         Config::set_id(&new_id);
         log::info!("id updated from {} to {}", id, new_id);
     }
@@ -3676,5 +3689,64 @@ mod tests {
         let non_service_root = Config::ipc_path_for_uid(ROOT_UID, "");
         let non_service_user = Config::ipc_path_for_uid(USER_UID, "");
         assert_ne!(non_service_root, non_service_user);
+    }
+
+    #[test]
+    fn test_is_unified_id() {
+        // 合规：正好 12 位纯数字
+        assert!(Config::is_unified_id("123456789012"));
+        assert!(Config::is_unified_id("100000000000"));
+        assert!(Config::is_unified_id("999999999999"));
+
+        // 位数不对：上游桌面端（MAC 推导，最多 9 位）与手机端（恒 10 位）的典型值
+        assert!(!Config::is_unified_id("123456789"));
+        assert!(!Config::is_unified_id("1234567890"));
+        assert!(!Config::is_unified_id("1234567890123"));
+
+        // 非纯数字：主机名 ID / 带分隔符 / 空串
+        assert!(!Config::is_unified_id("my-hostname"));
+        assert!(!Config::is_unified_id("1234 5678 9012"));
+        assert!(!Config::is_unified_id(""));
+
+        // 12 位纯数字即便带前导 0 也算合规（展示与比对都按 12 位走）；
+        // 生成器用 10^11 作下界，所以实际不会产生这种值。
+        assert!(Config::is_unified_id("000012345678"));
+    }
+
+    #[test]
+    fn test_gen_auto_id_is_unified() {
+        // 生成 200 次，全部必须落在统一规范内。
+        // 区间下界 10^11 保证位数；若哪天改成 gen_range(0..10^12) 这里会立刻红。
+        for _ in 0..200 {
+            let id = Config::gen_auto_id();
+            assert!(
+                Config::is_unified_id(&id),
+                "生成的 ID 不符合统一规范: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_get_id_upgrades_legacy_id() {
+        let _guard = CONFIG_STATE_TEST_LOCK.lock().unwrap();
+        // get_id() 内部会 set_id() 落盘，用文件守卫保证测试后配置原样还原
+        let _file_guard = ConfigFileRestoreGuard::new(Config::file_(""));
+
+        // 桌上端历史 ID：MAC 推导，9 位
+        let legacy = "123456789".to_owned();
+        let mut config = Config::get();
+        config.id = legacy.clone();
+        let guard = ConfigStateTestGuard::new(config, HashMap::new());
+
+        let got = Config::get_id();
+        assert!(
+            Config::is_unified_id(&got),
+            "旧 ID 应被升级为 {} 位数字，实际: {got}",
+            Config::ID_LENGTH
+        );
+        assert_ne!(got, legacy, "旧 ID 必须被替换，而不是原样返回");
+        assert_eq!(Config::get().id, got, "升级后的 ID 必须落盘");
+
+        drop(guard);
     }
 }

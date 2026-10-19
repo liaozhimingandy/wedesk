@@ -183,6 +183,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Relayed and encrypted connection", "加密中繼連線"),
         ("Direct and unencrypted connection", "直接且未加密的連線"),
         ("Relayed and unencrypted connection", "中繼且未加密的連線"),
+        // 遠端工作階段左下/左上角的連線方式標記（見 connection_type_badge.dart）
+        ("P2P direct connection", "P2P 直連"),
+        ("Relayed connection", "中繼轉發"),
+        // 連到自己時的攔截提示（Flutter connect() 與 Rust Client::start 各有一處）
+        ("Cannot connect to yourself", "不能連線到自己"),
         ("Enter Remote ID", "輸入遠端 ID"),
         ("Enter your password", "輸入您的密碼"),
         ("Logging in...", "正在登入..."),

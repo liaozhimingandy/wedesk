@@ -95,12 +95,16 @@ hbbr 是**完全无状态**的：不读数据库、不读密钥、不认客户�
 server/data/
 ├── id_ed25519        # 私钥
 ├── id_ed25519.pub    # 公钥（rdctl.py key 打印的就是它）
-├── db_v2.sqlite3     # peer 注册表
+├── db_v2.sqlite3     # peer 注册表（仅 SQLite 后端时，默认是 PostgreSQL）
 ├── blacklist.txt     # hbbr 的黑名单（可选，没有就不创建）
 └── blocklist.txt     # hbbr 的封禁名单（可选）
 ```
 
 `WORKDIR /root` 且 `HOME=/root`，所以容器内所有相对路径都落在这一卷上。
+
+> 默认后端是 PostgreSQL，数据实际落在 `server/deploy/pgdata/` 这个卷里，
+> 所以**两个卷都要备份**：`rdctl.py backup` 会同时处理（密钥文件 + `pg_dump`）。
+> 详见 [12 · 服务端数据统一存 PostgreSQL](12-postgres-backend.md)。
 
 **这一卷就是服务端的全部状态。** 删了它 = 换一台新服务器。
 
@@ -167,11 +171,17 @@ INFO [src/rendezvous_server.rs:1292] Key: bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisz
 用 `python rdctl.py key` 可以随时再打印一次。
 
 ```
-INFO [src/peer.rs:87] DB_URL=/root/db_v2.sqlite3
+INFO [src/peer.rs:75] DB_URL=postgres://rustdesk:******@postgres:5432/rustdesk
+INFO [src/database.rs:xxx] Database backend = postgres (DB_URL=postgres://rustdesk:******@postgres:5432/rustdesk)
+INFO [src/rendezvous_server.rs:xxx] 服务端密钥来源: 数据库 server_config
 INFO [src/rendezvous_server.rs:137] serial=0
 ```
 
-数据库路径；`serial` 是给已废弃的配置更新机制用的，恒为 0，忽略即可。
+数据库连接串 —— **密码位已脱敏成 `******`**，用户名/主机/库名保留，够排障用
+（服务端刻意这样做：连接串含明文口令，直接打日志等于把密码写进日志文件）。
+紧接着一行会告诉你**钥匙这次是从哪来的**，这条最值钱：
+出现 `本次新生成` 就意味着数据目录被换掉、或密钥托管没生效，客户端 ID 会漂。
+`serial` 是给已废弃的配置更新机制用的，恒为 0，忽略即可。
 
 ```
 INFO [src/common.rs:105] rendezvous-servers=[]
@@ -483,15 +493,32 @@ blocklist.txt    # 命中即拒绝
 | `created_at` | 注册时间 |
 | `status` | 在线状态 |
 
-可以直接查：
+可以直接查（PostgreSQL 是默认后端）：
+
+```bash
+cd server/deploy
+docker compose exec -T postgres psql -U rustdesk -d rustdesk \
+  -c "select id, created_at, status from peer order by created_at desc limit 20;"
+```
+
+SQLite 后端下则查本地文件：
 
 ```bash
 sqlite3 server/data/db_v2.sqlite3 "select id, created_at, status from peer order by created_at desc limit 20;"
 ```
 
-> ⚠️ **没有连接日志、没有审计日志、没有流量统计。** 谁连了谁、连了多久、
-> 走 P2P 还是中继，服务端一概不记，也没有任何自动清理逻辑。
-> 要做合规审计必须自己在前面加反向代理或流量镜像。
+**连接审计**记在 `connection_log` 表里（仅 PostgreSQL 后端）：
+
+```bash
+docker compose exec -T postgres psql -U rustdesk -d rustdesk \
+  -c "select ts, event, from_ip, to_id, via_relay, detail
+      from connection_log order by ts desc limit 50;"
+```
+
+> 审计只覆盖"注册"与"打洞撮合"两个环节，**不记录会话时长**：
+> 真正的连接建立后数据不经过 hbbs，服务端无从得知连了多久，
+> 要精确时长得在 hbbr 侧统计。另外 `connection_log` 会持续增长，
+> 请自行按 `ts` 定期归档清理。
 
 ### 6.4 想加功能时的落点
 

@@ -55,23 +55,35 @@ services:
       # 允许中继到非本机地址（relay host 与 hbbs 不同机器时需要）
       - ENFORCED_RELAY=${ENFORCED_RELAY:-N}
       # ---- 数据库后端 ---------------------------------------------------
-      # sqlite（默认，与官方行为一致）| postgres
+      # postgres（默认）| sqlite
       #
       # ⚠️ 官方 rustdesk/rustdesk-server 镜像【不认识 DB_TYPE】，配了也不会报错，
       #    只是静默继续写 SQLite —— 等你发现 ID 没进 PostgreSQL 已经攒了一堆数据。
       #    只有本仓库 server/src 编出来的镜像（默认 RD_IMAGE 就是它）才支持。
       #    拿不准就跑 `rdctl.py doctor`，它会直接告诉你数据实际落在哪。
-      - DB_TYPE=${DB_TYPE:-sqlite}
+      - DB_TYPE=${DB_TYPE:-postgres}
       #
       # DB_URL 的含义随 DB_TYPE 变化：
       #   sqlite   → 容器内文件路径，默认 /root/db_v2.sqlite3（即挂载的 ./data）
       #   postgres → 连接串 postgres://<user>:<password>@<host>:5432/<db>
       #
-      # 里面只有一张 peer 表 —— ID → uuid / 公钥 / 备注 / 注册信息。
-      # hbbs【不记录任何连接与审计日志】：谁连了谁、连了多久、走了中继还是 P2P，
-      # 服务端一概不落库，只能从容器日志看零星几行。要做合规审计，
-      # 得自己在前面加反向代理或流量镜像，别指望这个数据库。
-      - DB_URL=${DB_URL:-/root/db_v2.sqlite3}
+      # 默认用下面 PG_* 拼出内置容器的连接串，与 postgres 服务一一对应。
+      # 想接外部 / 托管 Postgres，直接把这一行整个替换成你的连接串即可
+      # （此时 compose 里的 postgres 服务仍在跑，若不需要可加
+      #   `docker compose up -d --scale postgres=0` 停掉）。
+      #
+      # 主机名必须是 postgres（compose 服务名，compose 网络里有 DNS 记录）；
+      # 不要写成 rd-postgres 或 127.0.0.1 —— 那是容器名/回环，两个都不通。
+      - DB_URL=${DB_URL:-postgres://${PG_USER:-rustdesk}:${PG_PASSWORD:-changeme}@postgres:5432/${PG_DB:-rustdesk}}
+      #
+      # 库内共三张表，启动时自动建（幂等），无需手工初始化：
+      #   peer           ID / 设备台账（ID、uuid、公钥、备注、注册信息、状态）
+      #   server_config  服务端自身状态 —— 托管 id_ed25519 密钥对
+      #   connection_log 连接审计 —— 谁连了谁、时间、走中继还是 P2P
+      - DB_STORE_KEY=${DB_STORE_KEY:-Y}
+      - AUDIT_LOG=${AUDIT_LOG:-Y}
+      - AUDIT_FLUSH_SECS=${AUDIT_FLUSH_SECS:-5}
+      - AUDIT_MAX_BUFFER=${AUDIT_MAX_BUFFER:-20000}
       # 连接池大小。**刻意留空**：留空则两个后端各用自己的合理默认值
       #   sqlite → 1（写操作串行，连接多了只会更容易撞 database is locked）
       #   postgres → 8
@@ -106,12 +118,10 @@ services:
     depends_on:
       hbbr:
         condition: service_started
-      # postgres 默认不启用（见文件末尾的 pg profile），所以用 required: false：
-      # profile 没开时这一项被忽略，不会报"服务不存在"。
-      # 开了之后 hbbs 会等它 healthy 再启动，避免首次连库失败。
+      # Postgres 现在是默认后端，所以这里必须等它 healthy 再启动 hbbs，
+      # 否则首次编排时 hbbs 会先连库失败（即便有重试也会在日志里留下一串错误）。
       postgres:
         condition: service_healthy
-        required: false
     restart: unless-stopped
     networks:
       - rd-net
@@ -166,23 +176,25 @@ services:
         max-file: "${LOG_MAX_FILE:-3}"
 
   # ---------------------------------------------------------------------------
-  # postgres : 可选的 ID/设备存储后端（默认【不启用】）
+  # postgres : 服务端默认存储后端
   # ---------------------------------------------------------------------------
-  # 启用方法：
-  #   1) 在 .env 里设 DB_TYPE=postgres 与对应的 DB_URL，并设一个够强的 PG_PASSWORD
-  #   2) docker compose --profile pg up -d
+  # 与 hbbs 同一份 .env，三张表由 hbbs 启动时自动建（幂等），无需手工初始化。
   #
-  # 不带 --profile pg 时这个服务根本不会被创建，默认部署不会多背一个容器。
+  # 想接外部 / 托管 Postgres（RDS 等）：把 .env 里的 DB_URL 改成你的连接串即可。
+  # 本地这个容器就多余了，用下面任一条把它停掉（数据卷 ./pgdata 不会丢）：
+  #   docker compose stop postgres
+  #   docker compose up -d --scale postgres=0
+  # 注意：hbbs 的 depends_on 要求 postgres 处于 healthy，所以【不要】用
+  # profiles 把它摘掉 —— 那会让 hbbs 启动时等一个不存在的服务而卡住。
   #
-  # hbbs 首次连接会自动建 peer 表与索引；若需要预先受管的 schema，
-  # 把 ./postgres-init.sql 挂到 /docker-entrypoint-initdb.d/ 即可。
+  # 需要预先受管的 schema（比如要自定义分区、权限、扩展），把下面 volumes 里
+  # 那行挂载打开即可 —— 注意它【只在首次初始化时】执行，已有数据卷不会重跑。
   #
-  # 数据落在 ./pgdata，务必纳入备份；rdctl.py backup 会同时处理两种后端。
+  # 数据落在 ./pgdata，务必纳入备份：
+  #   rdctl.py backup 会同时处理 SQLite 与 PostgreSQL 两种后端。
   # ---------------------------------------------------------------------------
   postgres:
     image: ${PG_IMAGE:-postgres:16-alpine}
-    profiles:
-      - pg
     container_name: rd-postgres
     environment:
       - POSTGRES_DB=${PG_DB:-rustdesk}

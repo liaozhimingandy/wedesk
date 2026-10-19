@@ -70,20 +70,9 @@ pub(crate) struct PeerMap {
 
 impl PeerMap {
     pub(crate) async fn new() -> ResultType<Self> {
-        let db = get_arg_opt("DB_URL").unwrap_or_else(|| {
-            let mut db = "db_v2.sqlite3".to_owned();
-            #[cfg(all(windows, not(debug_assertions)))]
-            {
-                if let Some(path) = hbb_common::config::Config::icon_path().parent() {
-                    db = format!("{}\\{}", path.to_str().unwrap_or("."), db);
-                }
-            }
-            #[cfg(not(windows))]
-            {
-                db = format!("./{db}");
-            }
-            db
-        });
+        // 地址解析统一交给 database 模块：它同时看 DB_TYPE 与 DB_URL，
+        // 保证"类型"与"地址"永远自洽（详情见 resolve_db_url 的注释）。
+        let db = database::resolve_db_url();
         // 脱敏后再打：Postgres 连接串里带明文口令，直接 log 等于写进日志文件
         log::info!("DB_URL={}", database::mask_password(&db));
         let pm = Self {
@@ -110,7 +99,7 @@ impl PeerMap {
             w.uuid = uuid.clone();
             w.pk = pk.clone();
             w.last_reg_time = Instant::now();
-            w.info.ip = ip;
+            w.info.ip = ip.clone();
             (
                 serde_json::to_string(&w.info).unwrap_or_default(),
                 w.guid.clone(),
@@ -133,6 +122,19 @@ impl PeerMap {
             }
             log::info!("pk updated instead of insert");
         }
+        crate::audit::log(
+            crate::audit::ev::REGISTER_PK,
+            Some(&id),
+            Some(&ip),
+            None,
+            None,
+            false,
+            Some(if guid.is_empty() {
+                "insert".to_owned()
+            } else {
+                "update".to_owned()
+            }),
+        );
         register_pk_response::Result::OK
     }
 

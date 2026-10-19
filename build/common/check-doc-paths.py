@@ -48,8 +48,8 @@ ALLOW_MISSING = {
     # iOS 构建输出目录：CI 里 --no-codesign 只产出 .xcarchive，IPA 是手动 zip
     # 出来的（见 docs/03b-ci.md 设计点 17），仓库里本来就没有。
     "build/ios/ipa",
-    # PostgreSQL 数据目录：只有 docker compose --profile pg 首次启动后才创建，
-    # 默认 SQLite 部署下不存在才是正常状态（docs/13 场景 D 会提到它）。
+    # PostgreSQL 数据目录：首次 docker compose up 后才创建（PG 已是默认后端），
+    # 纯本地克隆、没起过服务的状态下不存在才是正常的（docs/13 场景 D 会提到它）。
     "server/deploy/pgdata",
 }
 

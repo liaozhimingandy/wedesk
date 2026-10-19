@@ -319,16 +319,24 @@ def cmd_ports(args):
 
 
 # --- 数据库后端 ------------------------------------------------------------
-# ID/设备数据默认落在 SQLite；改成 PostgreSQL 后可以统一管理与出报表。
+# 默认 PostgreSQL：服务端的持久化数据（ID 台账 / 密钥 / 连接审计）全在这一个库里。
 # 后端由 DB_TYPE 决定，但**配置写了不等于生效** —— 官方镜像不认这个变量，
 # 会静默继续写 SQLite，不报错、日志也看不出来。所以下面既有"看配置"的
 # db_type()，也有"看数据实际落在哪"的 probe_*()，doctor 会把两者交叉比对。
 PG_TYPES = ("postgres", "postgresql", "pg")
 
+# 服务端在库里维护的三张表。doctor 会逐张核对，缺一张就说明
+# 「镜像没带新代码」或「连的根本不是预期的那个库」—— 这两种都极难从日志看出来。
+PG_TABLES = {
+    "peer": "ID / 设备台账",
+    "server_config": "密钥托管（id_ed25519）",
+    "connection_log": "连接审计",
+}
+
 
 def db_type():
-    """配置的后端：sqlite（默认）或 postgres"""
-    return read_env().get("DB_TYPE", os.environ.get("DB_TYPE", "sqlite")).strip().lower()
+    """配置的后端：postgres（默认）或 sqlite"""
+    return read_env().get("DB_TYPE", os.environ.get("DB_TYPE", "postgres")).strip().lower()
 
 
 def is_pg():
@@ -337,6 +345,22 @@ def is_pg():
 
 def pg_conf(key, default):
     return read_env().get(key, os.environ.get(key, default))
+
+
+def _enabled(name, default=True):
+    """Y/N 型开关。与服务端 Rust 侧的判断保持一致（N/NO/0/FALSE 视为关）。"""
+    raw = pg_conf(name, "Y" if default else "N").strip().upper()
+    return raw not in ("N", "NO", "0", "FALSE")
+
+
+def key_hosting_enabled():
+    """密钥托管开关。SQLite 后端下恒为 False（服务端也是这个语义）。"""
+    return is_pg() and _enabled("DB_STORE_KEY")
+
+
+def audit_enabled():
+    """连接审计开关。"""
+    return _enabled("AUDIT_LOG")
 
 
 def probe_sqlite_rows():
@@ -358,12 +382,40 @@ def probe_sqlite_rows():
 def probe_pg_rows():
     """PostgreSQL 里 peer 表的行数；不可用返回 None。
     借容器内的 psql 查询，宿主机无需安装 PostgreSQL 客户端。"""
+    return probe_pg_scalar("select count(*) from peer;")
+
+
+def probe_pg_tables():
+    """PostgreSQL 里实际存在的表集合；连不上返回 None。
+
+    只看"配置写了 DB_TYPE=postgres"是不够的：官方镜像不认这个变量，会静默
+    继续写 SQLite，既不报错日志也看不出来。真正可信的依据是库里到底有没有表。
+    """
+    sql = (
+        "select table_name from information_schema.tables "
+        "where table_schema='public';"
+    )
+    rc, out, _ = run(COMPOSE + ["exec", "-T", "postgres", "psql", "-U",
+                                pg_conf("PG_USER", "rustdesk"), "-d",
+                                pg_conf("PG_DB", "rustdesk"), "-tAc", sql])
+    if rc != 0:
+        return None
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def probe_pg_key_hosted():
+    """密钥是否已托管进 server_config；查不到返回 None"""
+    return probe_pg_scalar(
+        "select count(*) from server_config where key = 'server.private_key';"
+    )
+
+
+def probe_pg_scalar(sql):
+    """在容器内 psql 上跑一条返回标量的查询；失败返回 None。"""
     user = pg_conf("PG_USER", "rustdesk")
     db = pg_conf("PG_DB", "rustdesk")
-    rc, out, _ = run(
-        COMPOSE + ["exec", "-T", "postgres", "psql", "-U", user, "-d", db, "-tAc",
-                   "select count(*) from peer;"]
-    )
+    rc, out, _ = run(COMPOSE + ["exec", "-T", "postgres", "psql", "-U", user,
+                                "-d", db, "-tAc", sql])
     if rc != 0:
         return None
     try:
@@ -712,7 +764,8 @@ def cmd_backup(args):
         )
         if rc != 0:
             err(f"pg_dump 失败: {errout}")
-            print(f"    确认已执行: {' '.join(COMPOSE)} --profile pg up -d")
+            print(f"    确认 postgres 容器在跑: {' '.join(COMPOSE)} ps postgres")
+            print("    （用外部 Postgres 时，DB_URL 指向的库必须可连）")
         else:
             (dest / "postgres_dump.sql").write_text(out + "\n", encoding="utf-8")
             n += 1
@@ -911,17 +964,20 @@ def cmd_doctor(args):
     print()
     print("=== 数据库后端 ===")
     if is_pg():
-        # 只设 DB_TYPE 不设 DB_URL 是最常见的错法：hbbs 会拿着默认的
-        # /root/db_v2.sqlite3 去连 Postgres，日志里只有一句跟 Postgres
-        # 毫不相干的 URL 解析错误。与其等容器 CrashLoop，不如在这里挡掉。
+        # 后端选择以 DB_TYPE 为权威，DB_URL 可以省略（省了就由 PG_* 推导）。
+        # 所以这里只检查【填了但填错】的情况 —— 那意味着运维的意图
+        # 和实际生效的配置不一致，必须报出来。
         db_url = pg_conf("DB_URL", "").strip()
-        if not db_url.lower().startswith(("postgres://", "postgresql://")):
-            errors += _check(
-                False,
-                f"DB_TYPE=postgres，但 DB_URL 不是 Postgres 连接串"
-                f"（当前：{db_url or '未设置'}）",
-                "在 .env 里补一行: DB_URL=postgres://<user>:<password>@<host>:5432/<db>"
-                "；或把 DB_TYPE 改回 sqlite")
+        if db_url and not db_url.lower().startswith(("postgres://", "postgresql://")):
+            w(f"DB_URL=\"{db_url}\" 不是 Postgres 连接串，服务端会忽略它、"
+              f"改用 PG_* 推导地址",
+              "要么填成 postgres://<user>:<password>@<host>:5432/<db>，"
+              "要么把 DB_TYPE 改成 sqlite 并把 DB_URL 留成文件路径")
+        elif not db_url:
+            print("    DB_URL 留空 —— 服务端将按 PG_* 推导：postgres://"
+                  f"{pg_conf('PG_USER', 'rustdesk')}:******@"
+                  f"{pg_conf('PG_HOST', 'postgres')}:{pg_conf('PG_PORT', '5432')}/"
+                  f"{pg_conf('PG_DB', 'rustdesk')}")
         # 最关键的一条：官方镜像不认 DB_TYPE，会静默退回 SQLite。
         if image.startswith("rustdesk/rustdesk-server"):
             w("镜像是官方 rustdesk/rustdesk-server，它不认识 DB_TYPE，"
@@ -932,8 +988,8 @@ def cmd_doctor(args):
         sq_rows = probe_sqlite_rows()
         if pg_rows is None and sq_rows is not None:
             w(f"PostgreSQL 查不到 peer 表，但本地 SQLite 有 {sq_rows} 行 —— 实际仍在用 SQLite",
-              "确认已执行 " + " ".join(COMPOSE) + " --profile pg up -d，"
-              "且 DB_URL 是 postgres:// 连接串而非文件路径")
+              "确认镜像是本仓库编的（官方镜像不认 DB_TYPE，会静默退回 SQLite）、"
+              "DB_URL 是 postgres:// 连接串而非文件路径，且 hbbs 已启动过至少一次")
         elif pg_rows is None:
             w("PostgreSQL 暂时查不到（容器可能没起，或还没建表）")
         else:
@@ -941,8 +997,45 @@ def cmd_doctor(args):
             if sq_rows:
                 print(f"    注：本地 SQLite 还有 {sq_rows} 行历史数据，"
                       f"需合并请运行 migrate-sqlite-to-pg.py")
+
+            # --- 三张表是否齐全 -------------------------------------------
+            # 缺表意味着两件事之一：镜像是旧的（没有后两张表的代码），
+            # 或者 DB_URL 指到了另一个库（建的表在别处）。
+            tables = probe_pg_tables()
+            if tables is not None:
+                for name, desc in PG_TABLES.items():
+                    if name in tables:
+                        info(f"表 {name} 存在（{desc}）")
+                    else:
+                        w(f"缺少表 {name}（{desc}）",
+                          "镜像是旧版本？重新 build；或 DB_URL 指向的库不对")
+
+            # --- 密钥托管与审计是否真的在工作 ----------------------------
+            if tables and "server_config" in tables:
+                if key_hosting_enabled():
+                    n = probe_pg_key_hosted()
+                    if n is None:
+                        w("密钥托管已开启，但查不到 server_config 的内容")
+                    elif n == 0:
+                        w("密钥托管已开启，但库里还没有私钥 —— 多实例下每台会各生成一把，"
+                          "客户端 ID 会来回变",
+                          "启动一次 hbbs 让它写库；确认 DB_STORE_KEY 没被设成 N")
+                    else:
+                        info("密钥已托管在数据库（多实例共享同一套 ID）")
+                else:
+                    print("    密钥托管已关闭（DB_STORE_KEY=N）：钥匙只用本地文件，"
+                          "多实例无法共享")
+
+            if tables and "connection_log" in tables:
+                if audit_enabled():
+                    info("连接审计已开启")
+                else:
+                    print("    连接审计已关闭（AUDIT_LOG=N）")
     else:
-        info("DB_TYPE=sqlite（默认，与官方行为一致）")
+        info("DB_TYPE=sqlite —— 已退出默认的 PostgreSQL 后端")
+        w("SQLite 模式下只有 peer 一张表，密钥不托管、连接不落审计，"
+          "多实例部署时每台 hbbs 会各生成一把钥匙",
+          "单机场景可以不管；需要统一管理/多实例请把 DB_TYPE 改回 postgres")
         sq_rows = probe_sqlite_rows()
         if sq_rows is None:
             w("还没查到 SQLite 数据（服务可能尚未启动过）")

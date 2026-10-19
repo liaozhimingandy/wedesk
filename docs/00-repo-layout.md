@@ -44,7 +44,7 @@ wedesk/
 │   ├── .dockerignore              # 把 data/ 私钥挡在镜像外（必须在 context 根）
 │   └── data/                      # 运行时数据（gitignore，切勿提交）
 │       ├── id_ed25519             #   服务器私钥 —— 丢了所有客户端要重配
-│       └── db_v2.sqlite3          #   只有 peer 一张表，无连接/审计日志
+│       └── db_v2.sqlite3          #   仅 SQLite 后端时使用，只有 peer 一张表
 │
 ├── build/                         # ★ 构建与定制脚本（按服务对象分三段）
 │   ├── client/                    # 只服务客户端

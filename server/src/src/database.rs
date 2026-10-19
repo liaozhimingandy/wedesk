@@ -13,6 +13,11 @@
 //    所以这里把"存储能力"抽象成 `DbBackend` trait，两个实现各自持有自己的连接池：
 //      - SqliteBackend：沿用原来的 `query!` 宏（编译期仍连 db_v2.sqlite3 校验）
 //      - PgBackend    ：只用运行时 `query()` / `query_as()`，构建期不需要 Postgres
+//
+//    同理，**本文件里 2026-10 新增的两张表（server_config / connection_log）
+//    一律不用 `query!` 宏**：宏会在编译期拿构建机上的模板库（`server/src/db_v2.sqlite3`，
+//    里面只有 peer 表）去校验表名与列，新增表一旦写进宏就必然编译失败。
+//    跨后端共享的 SQL 统一走运行时 `query()`。
 //    `Database` 作为不变的外壳（facade），保持对外 API 与上游一致，
 //    因此 `peer.rs` 无需任何改动。
 //
@@ -55,6 +60,83 @@ pub struct Peer {
 }
 
 // ---------------------------------------------------------------------------
+// server_config：服务端自身的键值状态（目前托管的是 id_ed25519 密钥对）
+// ---------------------------------------------------------------------------
+/// 私钥在 `server_config` 表里的键名（值是 base64 后的 64 字节 ed25519 私钥）
+pub const CFG_PRIVATE_KEY: &str = "server.private_key";
+/// 公钥在 `server_config` 表里的键名（值可由私钥推导，存一份是为了便于检索与核对）
+pub const CFG_PUBLIC_KEY: &str = "server.public_key";
+/// 记录这把密钥最初是哪台实例写进去的（仅用于排障，格式 `hostname@unix秒`）
+pub const CFG_KEY_ORIGIN: &str = "server.key_origin";
+
+/// 是否允许把密钥写进数据库。默认开；关掉则退回"只用文件"的上游行为。
+/// 生产上若接受不了"私钥进库"，把它设成 N，并务必把 ./data 纳入备份。
+pub fn key_hosting_enabled() -> bool {
+    !matches!(
+        crate::common::get_arg_or("DB_STORE_KEY", "Y".to_owned())
+            .trim()
+            .to_uppercase()
+            .as_str(),
+        "N" | "NO" | "0" | "FALSE"
+    )
+}
+
+// ---------------------------------------------------------------------------
+// connection_log：连接审计
+//
+// 上游 hbbs **完全不落任何连接记录**——谁连了谁、连了多久、走中继还是 P2P，
+// 服务端一概不写库，只能从容器日志里翻到零星几行。要做合规审计就得自己在
+// 前面加反向代理或流量镜像。这里补上落库，用开关控制（默认开），
+// 高频场景下可关掉或改批处理。
+// ---------------------------------------------------------------------------
+#[derive(Clone, Debug)]
+pub struct AuditEvent {
+    /// 事件发生时刻（UTC）。落库时统一转成 UTC。
+    pub ts: chrono::DateTime<chrono::Utc>,
+    /// 事件类型：register_peer / register_pk / punch_hole / punch_hole_failed
+    pub event: String,
+    /// 发起方 ID（若可知）
+    pub from_id: Option<String>,
+    /// 发起方 IP
+    pub from_ip: Option<String>,
+    /// 被连接方 ID
+    pub to_id: Option<String>,
+    /// 被连接方 IP（若已知）
+    pub to_ip: Option<String>,
+    /// 本次连接是否被强制走中继
+    pub via_relay: bool,
+    /// 附加信息（如失败原因、NAT 类型）
+    pub detail: Option<String>,
+}
+
+impl AuditEvent {
+    /// 构造一个事件，ts 取当前时间。
+    pub fn new(event: &str) -> Self {
+        Self {
+            ts: chrono::Utc::now(),
+            event: event.to_owned(),
+            from_id: None,
+            from_ip: None,
+            to_id: None,
+            to_ip: None,
+            via_relay: false,
+            detail: None,
+        }
+    }
+}
+
+/// 审计落库开关：AUDIT_LOG=N 时完全不写（连缓冲都不进）。默认开。
+pub fn audit_enabled() -> bool {
+    !matches!(
+        crate::common::get_arg_or("AUDIT_LOG", "Y".to_owned())
+            .trim()
+            .to_uppercase()
+            .as_str(),
+        "N" | "NO" | "0" | "FALSE"
+    )
+}
+
+// ---------------------------------------------------------------------------
 // 存储后端抽象
 // ---------------------------------------------------------------------------
 #[async_trait]
@@ -77,6 +159,21 @@ pub trait DbBackend: Send + Sync {
         pk: &[u8],
         info: &str,
     ) -> ResultType<()>;
+
+    // --- server_config：键值对状态（密钥托管） ----------------------------
+    /// 读一个配置项；不存在返回 Ok(None)。
+    async fn get_config(&self, key: &str) -> ResultType<Option<String>>;
+    /// 写（upsert）一个配置项，已存在则覆盖。
+    async fn set_config(&self, key: &str, value: &str) -> ResultType<()>;
+    /// 仅当不存在时写入；返回是否真的写入（已存在返回 false）。
+    ///
+    /// 密钥托管用它保证"先启动者为准" —— 若允许覆盖，后启动的实例会把
+    /// 正在被客户端使用的钥匙换掉，表现为大面积"密钥不匹配"。
+    async fn put_config_if_absent(&self, key: &str, value: &str) -> ResultType<bool>;
+
+    // --- connection_log：连接审计 ----------------------------------------
+    /// 批量写入审计事件。
+    async fn insert_audit(&self, events: &[AuditEvent]) -> ResultType<()>;
 }
 
 // =============================================================================
@@ -157,6 +254,11 @@ impl DbBackend for SqliteBackend {
         )
         .execute(self.pool.get().await?.deref_mut())
         .await?;
+        // 新增表走运行时 SQL（理由见文件头第 1 节）
+        for sql in SQLITE_EXTRA_DDL {
+            let mut conn = self.pool.get().await?;
+            sqlx::query(sql).execute(&mut *conn).await?;
+        }
         Ok(())
     }
 
@@ -203,7 +305,88 @@ impl DbBackend for SqliteBackend {
         .await?;
         Ok(())
     }
+
+    async fn get_config(&self, key: &str) -> ResultType<Option<String>> {
+        let mut conn = self.pool.get().await?;
+        let row = sqlx::query("select value from server_config where key = ?")
+            .bind(key)
+            .fetch_optional(&mut *conn)
+            .await?;
+        Ok(row.map(|r| r.get::<String, _>("value")))
+    }
+
+    async fn set_config(&self, key: &str, value: &str) -> ResultType<()> {
+        let mut conn = self.pool.get().await?;
+        sqlx::query(
+            "insert into server_config(key, value, updated_at)
+             values(?, ?, current_timestamp)
+             on conflict(key) do update set value = excluded.value, updated_at = current_timestamp",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    async fn put_config_if_absent(&self, key: &str, value: &str) -> ResultType<bool> {
+        let mut conn = self.pool.get().await?;
+        let res = sqlx::query(
+            "insert into server_config(key, value, updated_at)
+             values(?, ?, current_timestamp)
+             on conflict(key) do nothing",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&mut *conn)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn insert_audit(&self, events: &[AuditEvent]) -> ResultType<()> {
+        let mut conn = self.pool.get().await?;
+        for e in events {
+            sqlx::query(
+                "insert into connection_log(ts, event, from_id, from_ip, to_id, to_ip, via_relay, detail)
+                 values(?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(e.ts)
+            .bind(&e.event)
+            .bind(&e.from_id)
+            .bind(&e.from_ip)
+            .bind(&e.to_id)
+            .bind(&e.to_ip)
+            .bind(e.via_relay as i32)
+            .bind(&e.detail)
+            .execute(&mut *conn)
+            .await?;
+        }
+        Ok(())
+    }
 }
+
+/// SQLite 侧的 server_config / connection_log DDL。
+/// 与 PG 版一一对应，只是类型与自增写法不同。
+const SQLITE_EXTRA_DDL: &[&str] = &[
+    r#"create table if not exists server_config (
+           key        varchar(100) primary key not null,
+           value      text not null,
+           updated_at datetime not null default(current_timestamp)
+       )"#,
+    r#"create table if not exists connection_log (
+           id         integer primary key autoincrement,
+           ts         datetime not null default(current_timestamp),
+           event      varchar(32) not null,
+           from_id    varchar(253),
+           from_ip    varchar(64),
+           to_id      varchar(253),
+           to_ip      varchar(64),
+           via_relay  tinyint,
+           detail     text
+       )"#,
+    r#"create index if not exists index_connection_log_ts    on connection_log (ts)"#,
+    r#"create index if not exists index_connection_log_event on connection_log (event)"#,
+];
 
 // =============================================================================
 // PostgreSQL 后端（可选，DB_TYPE=postgres 时启用）
@@ -331,7 +514,7 @@ impl DbBackend for PgBackend {
 
     async fn create_tables(&self) -> ResultType<()> {
         // 注意：PostgreSQL 的 PREPARE 不允许一次多条语句，必须逐条执行
-        for sql in PG_DDL_STATEMENTS {
+        for sql in PG_DDL_STATEMENTS.iter().chain(PG_EXTRA_DDL.iter()) {
             sqlx::query(sql).execute(&self.pool).await?;
         }
         Ok(())
@@ -390,6 +573,64 @@ impl DbBackend for PgBackend {
             .await?;
         Ok(())
     }
+
+    async fn get_config(&self, key: &str) -> ResultType<Option<String>> {
+        let row = sqlx::query(r#"select value from server_config where key = $1"#)
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get::<String, _>("value")))
+    }
+
+    async fn set_config(&self, key: &str, value: &str) -> ResultType<()> {
+        sqlx::query(
+            r#"insert into server_config(key, value, updated_at)
+               values($1, $2, now())
+               on conflict (key) do update set value = excluded.value, updated_at = now()"#,
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn put_config_if_absent(&self, key: &str, value: &str) -> ResultType<bool> {
+        let res = sqlx::query(
+            r#"insert into server_config(key, value, updated_at)
+               values($1, $2, now())
+               on conflict (key) do nothing"#,
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn insert_audit(&self, events: &[AuditEvent]) -> ResultType<()> {
+        // 批量写入放在一个事务里：要么整批进去，要么整批回滚，
+        // 避免"刷盘到一半断连"留下半截记录。
+        let mut tx = self.pool.begin().await?;
+        for e in events {
+            sqlx::query(
+                r#"insert into connection_log(ts, event, from_id, from_ip, to_id, to_ip, via_relay, detail)
+                   values($1, $2, $3, $4, $5, $6, $7, $8)"#,
+            )
+            .bind(e.ts)
+            .bind(&e.event)
+            .bind(&e.from_id)
+            .bind(&e.from_ip)
+            .bind(&e.to_id)
+            .bind(&e.to_ip)
+            .bind(e.via_relay)
+            .bind(&e.detail)
+            .execute(&mut tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 /// PostgreSQL 的 peer 表结构。类型承接 SQLite 版：
@@ -413,20 +654,183 @@ const PG_DDL_STATEMENTS: &[&str] = &[
     r#"create index if not exists index_peer_status on peer (status)"#,
 ];
 
+/// PG 侧的 server_config / connection_log DDL（与 SQLITE_EXTRA_DDL 一一对应）。
+/// 同样必须逐条执行 —— PG 的 PREPARE 不接受多语句。
+const PG_EXTRA_DDL: &[&str] = &[
+    r#"create table if not exists server_config (
+           key        varchar(100) primary key not null,
+           value      text not null,
+           updated_at timestamptz not null default now()
+       )"#,
+    r#"create table if not exists connection_log (
+           id         bigserial primary key,
+           ts         timestamptz not null default now(),
+           event      varchar(32) not null,
+           from_id    varchar(253),
+           from_ip    varchar(64),
+           to_id      varchar(253),
+           to_ip      varchar(64),
+           via_relay  boolean,
+           detail     text
+       )"#,
+    r#"create index if not exists index_connection_log_ts    on connection_log (ts)"#,
+    r#"create index if not exists index_connection_log_event on connection_log (event)"#,
+];
+
 // =============================================================================
 // Database：对外门面
 // =============================================================================
-/// 判断是否使用 PostgreSQL。
-/// 优先级：环境变量 DB_TYPE（sqlite / postgres）> DB_URL 连接串本身的前缀。
-fn want_postgres(url: &str) -> bool {
-    let explicit = crate::common::get_arg_or("DB_TYPE", String::new())
-        .trim()
-        .to_lowercase();
-    match explicit.as_str() {
-        "postgres" | "postgresql" | "pg" => true,
-        "sqlite" | "sqlite3" => false,
-        _ => is_pg_url(url),
+/// 内置 Postgres 的连接参数（`DB_URL` 省略时用它推导地址）。
+struct PgSettings {
+    user: String,
+    password: String,
+    host: String,
+    port: String,
+    db: String,
+}
+
+fn pg_settings() -> PgSettings {
+    PgSettings {
+        user: crate::common::get_arg_or("PG_USER", "rustdesk".to_owned()),
+        password: crate::common::get_arg_or("PG_PASSWORD", "changeme".to_owned()),
+        host: crate::common::get_arg_or("PG_HOST", "postgres".to_owned()),
+        port: crate::common::get_arg_or("PG_PORT", "5432".to_owned()),
+        db: crate::common::get_arg_or("PG_DB", "rustdesk".to_owned()),
     }
+}
+
+fn pg_url(s: &PgSettings) -> String {
+    format!(
+        "postgres://{}:{}@{}:{}/{}",
+        s.user, s.password, s.host, s.port, s.db
+    )
+}
+
+/// 后端选择 + 地址解析的**唯一决策点**（纯函数，不读环境变量）。
+///
+/// 返回 `(后端名, 地址)`。把两件事合在一个函数里是刻意的：
+/// "用哪个后端" 和 "连哪个地址" 必须同时决定，分开判断迟早会出现
+/// 「类型是 Postgres、地址却指向 SQLite 文件」这种半通配置。
+///
+/// 规则（`DB_TYPE` 为权威，默认 postgres）：
+///   - `postgres` / `pg`：DB_URL 是连接串就用它；否则由 PG_* 推导
+///   - `sqlite`         ：DB_URL 是文件路径就用它；否则用默认路径
+///   - 未设置           ：默认 postgres；但 DB_URL 明显是 SQLite 文件时
+///                        判定为旧部署，回退 SQLite（由调用方 WARN）
+fn plan_db(db_type: &str, url: &str, pg: &PgSettings) -> (&'static str, String) {
+    let url = url.trim();
+    match db_type.trim().to_lowercase().as_str() {
+        "postgres" | "postgresql" | "pg" => (
+            "postgres",
+            if is_pg_url(url) {
+                url.to_owned()
+            } else {
+                pg_url(pg)
+            },
+        ),
+        "sqlite" | "sqlite3" => (
+            "sqlite",
+            if !url.is_empty() && !is_pg_url(url) {
+                url.to_owned()
+            } else {
+                default_sqlite_path()
+            },
+        ),
+        _ => {
+            if is_pg_url(url) {
+                ("postgres", url.to_owned())
+            } else if !url.is_empty() {
+                // 按旧默认部署的环境：DB_TYPE 没写、DB_URL 给的是文件路径
+                ("sqlite", url.to_owned())
+            } else {
+                ("postgres", pg_url(pg))
+            }
+        }
+    }
+}
+
+/// 判断是否使用 PostgreSQL。走 `plan_db()`，保证与地址解析同源。
+fn want_postgres(url: &str) -> bool {
+    let db_type = crate::common::get_arg_or("DB_TYPE", String::new());
+    plan_db(&db_type, url, &pg_settings()).0 == "postgres"
+}
+
+/// 运行期数据库地址的唯一解析入口。
+///
+/// 规则：先由 `want_postgres()` 定下后端类型（DB_TYPE 为权威，默认 postgres），
+/// 再按这个类型挑地址 ——
+///   - 选了 postgres：DB_URL 是连接串就用它；否则由 PG_* 拼一个
+///   - 选了 sqlite  ：DB_URL 是文件路径就用它；否则用默认的 ./db_v2.sqlite3
+///
+/// 为什么要这样兜底，而不是"缺了就报错"：
+/// 部署层有三处会分别写 DB_TYPE 与 DB_URL（.env / compose / rdrun.sh），
+/// 只要漏改一处，就会出现"DB_TYPE 说 Postgres、DB_URL 却指向 SQLite 文件"
+/// 这种**半通配置** —— 服务起得来，但数据落错了地方，日志里看不出来。
+/// 让 DB_TYPE 成为唯一权威、DB_URL 可省，等于把这类错误直接消掉。
+pub fn resolve_db_url() -> String {
+    let db_type = crate::common::get_arg_or("DB_TYPE", String::new());
+    let raw = crate::common::get_arg_or("DB_URL", String::new());
+    let pg = pg_settings();
+
+    let (backend, addr) = plan_db(&db_type, &raw, &pg);
+
+    // 只在"类型和地址不自洽"时出声，正常路径保持安静。
+    // 这些提示集中在这里，避免两个入口各打一遍日志。
+    if backend == "postgres" && !is_pg_url(&raw) {
+        if raw.trim().is_empty() {
+            log::info!("DB_URL 未设置，按 PG_* 推导为 {}", mask_password(&addr));
+        } else {
+            log::warn!(
+                "DB_TYPE=postgres，但 DB_URL=\"{}\" 不是连接串，已按 PG_* 推导为 {}。\
+                 若要继续使用这个文件，请把 DB_TYPE 改成 sqlite。",
+                raw.trim(),
+                mask_password(&addr)
+            );
+        }
+    } else if backend == "sqlite" && is_pg_url(&raw) {
+        // 类型和地址互相打架，先吼一嗓子再退回默认路径。
+        // 之所以不让它带着这个错误地址去连（那样必然 crash-loop）：
+        // 崩溃循环下容器会反复重启、日志被刷爆，真正的配置错误反而更难读。
+        log::error!(
+            "DB_TYPE=sqlite，但 DB_URL 是 Postgres 连接串（{}）—— 两者必须自洽。\
+             本次已改用默认的 {addr}。\
+             要么把 DB_TYPE 改成 postgres，要么把 DB_URL 改成容器内文件路径。",
+            mask_password(&raw)
+        );
+    } else if db_type.trim().is_empty() && !raw.trim().is_empty() {
+        // 旧按默认部署的环境：DB_TYPE 没写、DB_URL 给的是 SQLite 文件路径。
+        // 这里回退到 SQLite 以兼容既有部署，但要明确告知 —— 否则就会出现
+        // "以为在用 PostgreSQL，其实还在写 SQLite" 的静默不一致。
+        log::warn!(
+            "DB_TYPE 未设置，但 DB_URL=\"{addr}\" 看起来是 SQLite 文件：\
+             已回退到 SQLite 以兼容既有部署。\n\
+             当前默认后端是 PostgreSQL。若要切过去，请同时设置 \
+             DB_TYPE=postgres 与 DB_URL=postgres://<user>:<pwd>@<host>:5432/<db>；\
+             若确实要继续使用 SQLite，请显式设置 DB_TYPE=sqlite 消除本告警。"
+        );
+    }
+
+    addr
+}
+
+/// 与上游一致的 SQLite 默认路径。
+///
+/// `mut` 只在 Windows 分支里用得到，Linux/macOS 下会触发 unused_mut ——
+/// 加 allow 而不是拆两个 cfg 分支，是为了让各平台的默认路径始终只有这一处定义。
+fn default_sqlite_path() -> String {
+    #[allow(unused_mut)]
+    let mut db = "db_v2.sqlite3".to_owned();
+    #[cfg(all(windows, not(debug_assertions)))]
+    {
+        if let Some(path) = hbb_common::config::Config::icon_path().parent() {
+            db = format!("{}\\{}", path.to_str().unwrap_or("."), db);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        db = format!("./{db}");
+    }
+    db
 }
 
 pub struct Database {
@@ -496,6 +900,28 @@ impl Database {
     ) -> ResultType<()> {
         self.backend.update_pk(guid, id, pk, info).await
     }
+
+    /// 当前是否运行在 PostgreSQL 后端上。
+    /// 密钥托管、审计落库都以它为开关 —— SQLite 模式下保持上游的纯文件行为。
+    pub fn is_postgres(&self) -> bool {
+        self.backend.name() == "postgres"
+    }
+
+    pub async fn get_config(&self, key: &str) -> ResultType<Option<String>> {
+        self.backend.get_config(key).await
+    }
+
+    pub async fn set_config(&self, key: &str, value: &str) -> ResultType<()> {
+        self.backend.set_config(key, value).await
+    }
+
+    pub async fn put_config_if_absent(&self, key: &str, value: &str) -> ResultType<bool> {
+        self.backend.put_config_if_absent(key, value).await
+    }
+
+    pub async fn insert_audit(&self, events: &[AuditEvent]) -> ResultType<()> {
+        self.backend.insert_audit(events).await
+    }
 }
 
 #[cfg(test)]
@@ -526,6 +952,85 @@ mod tests {
         assert_eq!(super::mask_password("./db_v2.sqlite3"), "./db_v2.sqlite3");
         // 有用户名但无密码（trust / peer 认证）不该被拼出多余的 ******
         assert_eq!(super::mask_password("postgres://u@h:5432/d"), "postgres://u@h:5432/d");
+    }
+
+    // -----------------------------------------------------------------------
+    // 后端选择 + 地址解析的一致性
+    //
+    // 这组用例锁的是"类型与地址必须自洽"这条规则 —— 它是本次把 PostgreSQL
+    // 设为默认后端后最容易出事的地方：DB_TYPE 与 DB_URL 在 .env / compose /
+    // rdrun.sh 三处分别配置，漏改一处就会出现"说用 PG、实际写 SQLite"。
+    // plan_db 是纯函数，所以这里可以断言，不需要任何数据库。
+    // -----------------------------------------------------------------------
+    fn pg() -> super::PgSettings {
+        super::PgSettings {
+            user: "rustdesk".to_owned(),
+            password: "changeme".to_owned(),
+            host: "postgres".to_owned(),
+            port: "5432".to_owned(),
+            db: "rustdesk".to_owned(),
+        }
+    }
+
+    fn plan(db_type: &str, url: &str) -> (&'static str, String) {
+        super::plan_db(db_type, url, &pg())
+    }
+
+    #[test]
+    fn test_plan_db_default_is_postgres() {
+        // 什么都不给 → 默认 PostgreSQL，地址由 PG_* 推导
+        assert_eq!(
+            plan("", ""),
+            (
+                "postgres",
+                "postgres://rustdesk:changeme@postgres:5432/rustdesk".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn test_plan_db_pg_url_wins() {
+        // DB_URL 是连接串 → 原样使用（不覆盖）
+        let u = "postgres://u:p@db.example.com:5432/other";
+        assert_eq!(plan("postgres", u), ("postgres", u.to_owned()));
+        // 未设 DB_TYPE 但 DB_URL 是连接串 → 也应识别为 postgres
+        assert_eq!(plan("", u), ("postgres", u.to_owned()));
+    }
+
+    #[test]
+    fn test_plan_db_pg_type_derives_when_url_missing_or_wrong() {
+        let derived = "postgres://rustdesk:changeme@postgres:5432/rustdesk".to_owned();
+        // 显式 postgres 但忘了给 DB_URL
+        assert_eq!(plan("postgres", ""), ("postgres", derived.clone()));
+        // 显式 postgres 但 DB_URL 还是旧的文件路径（三处配置漏改的典型）
+        assert_eq!(plan("postgres", "/root/db_v2.sqlite3"), ("postgres", derived.clone()));
+        // 大小写不敏感
+        assert_eq!(plan("PG", ""), ("postgres", derived));
+    }
+
+    #[test]
+    fn test_plan_db_sqlite_keeps_file_path() {
+        assert_eq!(plan("sqlite", "/root/db_v2.sqlite3"), ("sqlite", "/root/db_v2.sqlite3".to_owned()));
+    }
+
+    #[test]
+    fn test_plan_db_sqlite_rejects_pg_url() {
+        // 类型与地址打架 → 必须退回 SQLite 默认路径，绝不能拿连接串去当文件名
+        let (backend, addr) = plan("sqlite", "postgres://u:p@h:5432/d");
+        assert_eq!(backend, "sqlite", "类型是 sqlite 时后端必须是 sqlite");
+        assert!(
+            !addr.starts_with("postgres://"),
+            "地址不应仍是连接串，实际是 {addr}"
+        );
+        assert!(addr.ends_with("db_v2.sqlite3"), "应退回 SQLite 默认路径，实际是 {addr}");
+    }
+
+    #[test]
+    fn test_plan_db_legacy_env_falls_back_to_sqlite() {
+        // 旧部署：DB_TYPE 没写、DB_URL 是文件路径 → 回退 SQLite（并 WARN）
+        let (backend, addr) = plan("", "./db_v2.sqlite3");
+        assert_eq!(backend, "sqlite");
+        assert_eq!(addr, "./db_v2.sqlite3");
     }
 
     #[test]

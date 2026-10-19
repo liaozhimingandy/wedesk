@@ -229,7 +229,7 @@ fn get_api_server_(...) -> String {
 | 隐藏"设置服务器"入口，防员工误改 | `client/flutter/lib/desktop/pages/desktop_setting_page.dart` 的网络设置区块 |
 | 预设固定密码做无人值守 | 搜索 `permanent password` / `approve-mode` |
 | **去掉文件传输（防泄密）** | `client/src/server/` 文件服务模块 **+ Flutter 侧对应 UI**，两端都要改 |
-| 加连接审计 | 服务端 SQLite（`server/data/db_v2.sqlite3`），配合 `rdctl.py backup` 归档 |
+| 加连接审计 | **已内置**：默认记在 PostgreSQL 的 `connection_log` 表（异步批量落库），`AUDIT_LOG=N` 可关；详见 [12](12-postgres-backend.md) |
 | 禁止连接外部 ID | **服务端层面限制更彻底**，比改客户端可靠 |
 | 禁用剪贴板同步 | `client/src/server/clipboard_service.rs` + 设置项 |
 

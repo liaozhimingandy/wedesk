@@ -16,6 +16,10 @@
 #   ./rdrun.sh hbbr        # 只跑中继服务器
 #   ./rdrun.sh status | key | stop | restart | rm
 #
+# 数据库：默认 PostgreSQL（内置 rd-postgres 容器，自动创建）。
+#   - 想接外部库：填 DB_URL=postgres://user:pwd@host:5432/db 即可，脚本不会拉起本地 PG。
+#   - 想退回 SQLite：--db-type sqlite（此时不托管密钥、不落审计，与官方行为一致）。
+#
 # 典型分机部署：
 #   # A 机（ID 注册）：
 #   ./rdrun.sh hbbs --relay-host 203.0.113.10
@@ -37,8 +41,17 @@ HBBR_PORT="5188"
 DATA_DIR="$PWD/data"
 NET_MODE="bridge"          # bridge（端口映射）| host（仅 Linux 生效）
 NET_NAME="rd-net"
-DB_TYPE="sqlite"
-DB_URL="/root/db_v2.sqlite3"
+DB_TYPE="postgres"
+# 留空且 DB_TYPE=postgres 时，自动用下面的 PG_* 拼出连接串，并由本脚本顺带拉起
+# rd-postgres 容器 —— 这样默认部署依然是"一条命令跑起来"，不用先学 compose。
+# 想接外部/托管 Postgres（RDS 等），直接填完整连接串即可，脚本检测到 host 不是
+# 内置容器名就【不会】再拉起本地 Postgres。
+DB_URL=""
+PG_IMAGE="postgres:16-alpine"
+PG_DB="rustdesk"
+PG_USER="rustdesk"
+PG_PASSWORD="changeme"     # 生产务必改成强口令：私钥也托管在这个库里
+PG_MEM="512m"; PG_CPUS="1.00"
 ALWAYS_USE_RELAY="N"
 ENFORCED_RELAY="N"
 RUST_LOG="warn"
@@ -74,9 +87,12 @@ $SELF —— 用 docker run 启动 wedesk 服务端（hbbs / hbbr），不依赖
   --data-dir <路径>         密钥与 SQLite 落盘目录，默认 ./data
   --net <bridge|host>       bridge=端口映射（跨平台）；host=宿主网络（仅 Linux，需防火
                             墙 DROP 5189/5190）
-  --db-type <sqlite|postgres>
-  --db-url  <路径|连接串>   sqlite 用容器内路径 /root/db_v2.sqlite3；
-                            postgres 用 postgres://user:pwd@host:5432/db
+  --db-type <sqlite|postgres>   默认 postgres
+  --db-url  <路径|连接串>   postgres 留空 = 用内置 Postgres 容器（自动创建 rd-postgres）；
+                            填 postgres://user:pwd@host:5432/db 指向外部库时，
+                            本脚本检测到主机不是本机就不再拉起本地 Postgres
+                            sqlite 用容器内路径 /root/db_v2.sqlite3
+  --pg-password <口令>      内置 Postgres 的口令（默认 changeme，生产必须改）
   --always-relay <Y|N>      Y=强制所有连接走中继（跨公网提高连通率，吃服务器带宽）
   --rust-log <warn|info|debug|...>
   --pull                    启动前先 docker pull 镜像
@@ -126,6 +142,10 @@ load_env() {
       RUST_LOG)                 RUST_LOG="$v" ;;
       DB_CONNECT_RETRIES)       DB_CONNECT_RETRIES="$v" ;;
       MAX_DATABASE_CONNECTIONS) MAX_DATABASE_CONNECTIONS="$v" ;;
+      PG_IMAGE)                 PG_IMAGE="$v" ;;
+      PG_DB)                    PG_DB="$v" ;;
+      PG_USER)                  PG_USER="$v" ;;
+      PG_PASSWORD)              PG_PASSWORD="$v" ;;
     esac
   done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=' "$f" || true)
 }
@@ -209,6 +229,106 @@ run_or_print() {
   fi
 }
 
+# --- 数据库：默认走 PostgreSQL ----------------------------------------------
+# 判断 DB_URL 指向的主机是不是【本脚本自己拉起】的内置 Postgres 容器。
+# 只有这种情况下才需要自动创建容器 —— 用户填了外部数据库（RDS / 另一台机器）
+# 时不能多此一举地拉一个本地 Postgres 起来。
+pg_url_points_local() {
+  case "$DB_TYPE" in
+    postgres) ;;
+    *) return 1 ;;
+  esac
+  local host
+  # 从 postgres://user:pwd@host:port/db 里抠出 host 段
+  host="$(printf '%s' "$DB_URL" | sed -E 's|^postgres(ql)?://[^@]*@([^:/?]+).*|\2|')"
+  case "$host" in
+    postgres|rd-postgres|localhost|127.0.0.1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 若 DB_URL 为空而 DB_TYPE=postgres，则用 PG_* 拼一个内置容器的连接串。
+#
+# 主机名为什么是 rd-postgres 而不是 postgres：
+#   `postgres` 是 compose 的【服务名】，只在 docker compose 创建的网络里有 DNS 记录；
+#   这里是 docker run，容器之间靠【容器名】互访，所以必须写成 rd-postgres。
+#   写错的表现非常隐蔽 —— hbbs 起得来、日志只有一行解析失败，然后直接退出。
+# host 网络模式下没有这个 DNS，直接用 127.0.0.1。
+derive_db() {
+  [ "$DB_TYPE" = "postgres" ] || return 0
+  if [ -z "$DB_URL" ]; then
+    local host="rd-postgres"
+    [ "$NET_MODE" = "host" ] && host="127.0.0.1"
+    DB_URL="postgres://${PG_USER}:${PG_PASSWORD}@${host}:5432/${PG_DB}"
+    info "DB_URL 未设置，按内置 Postgres 自动拼出：$(
+      printf '%s' "$DB_URL" | sed -E 's|(://[^:]*:)[^@]*(@)|\1******\2|'
+    )"
+  fi
+  case "$PG_PASSWORD" in
+    ""|changeme|postgres|rustdesk|password|123456)
+      warn "PG_PASSWORD 还是弱口令（'$PG_PASSWORD'）。密钥也托管在这个库里，等于把服务端私钥的访问权限交了出去 —— 生产环境必须改掉。"
+      ;;
+  esac
+}
+
+# 需要时拉起内置 Postgres 容器（幂等：已存在就复用，停了就 start）。
+ensure_postgres() {
+  pg_url_points_local || return 0
+  local pgdata="$PWD/pgdata"
+
+  if docker ps -a --format '{{.Names}}' | grep -qx rd-postgres; then
+    if ! docker ps --format '{{.Names}}' | grep -qx rd-postgres; then
+      info "启动已存在但已停止的 Postgres 容器 rd-postgres"
+      [ "$DRY_RUN" = 1 ] || docker start rd-postgres >/dev/null
+    else
+      info "Postgres 容器 rd-postgres 已在运行，复用"
+    fi
+    return 0
+  fi
+
+  [ "$DRY_RUN" = 1 ] || mkdir -p "$pgdata"
+  if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
+    info "拉取镜像 $PG_IMAGE"
+    [ "$DRY_RUN" = 1 ] || docker pull "$PG_IMAGE"
+  fi
+
+  info "创建 Postgres 容器 rd-postgres（数据目录 $pgdata）"
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "  docker run -d --name rd-postgres ... $PG_IMAGE"
+    return 0
+  fi
+
+  local cmd=(docker run -d --name rd-postgres --restart unless-stopped)
+  if [ "$NET_MODE" = "host" ]; then
+    # host 模式下 Postgres 直接占用宿主的 5432，必须确认它没被别的实例占用
+    cmd+=(--network host)
+  else
+    ensure_net
+    cmd+=(--network "$NET_NAME")
+  fi
+  cmd+=(-v "$pgdata:/var/lib/postgresql/data")
+  cmd+=(-e "POSTGRES_DB=$PG_DB")
+  cmd+=(-e "POSTGRES_USER=$PG_USER")
+  cmd+=(-e "POSTGRES_PASSWORD=$PG_PASSWORD")
+  cmd+=(-e "PGDATA=/var/lib/postgresql/data/pgdata")
+  cmd+=(--memory "$PG_MEM" --cpus "$PG_CPUS")
+  cmd+=("$PG_IMAGE")
+  "${cmd[@]}" >/dev/null
+
+  # 用 pg_isready 轮询而不是看容器的 healthcheck 状态：
+  # 官方 postgres 镜像不保证自带 HEALTHCHECK，读 State.Health 会拿到空串，
+  # 这里就会白等 30 秒。直接问数据库本身更可靠。
+  local i
+  for i in $(seq 1 30); do
+    if docker exec rd-postgres pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1; then
+      info "Postgres 已就绪"
+      return 0
+    fi
+    sleep 1
+  done
+  warn "Postgres 30 秒内未进入 healthy 状态（可能是首次初始化）。hbbs 会自行重试连接，可用 '$SELF status' 观察。"
+}
+
 # --- 组装并启动 hbbs ---------------------------------------------------------
 start_hbbs() {
   check_ports
@@ -281,6 +401,9 @@ do_start() {
   require_docker
   ensure_image
   mkdir -p "$DATA_DIR"
+  # 默认后端是 PostgreSQL：DB_URL 没填就自动拼内置容器，并顺带把它拉起来
+  derive_db
+  ensure_postgres
   case "$ACTION" in
     both) start_hbbs; start_hbbr ;;
     hbbs) start_hbbs ;;
@@ -329,6 +452,15 @@ do_status() {
   echo
   echo "数据目录: $DATA_DIR"
   echo "镜像:     $IMAGE"
+  echo "数据库:   $DB_TYPE"
+  if [ "$DB_TYPE" = "postgres" ]; then
+    # 脱敏后再打印：连接串里含明文口令，而排障真正需要的（主机 / 库名）依然可见
+    echo "          连接: $(printf '%s' "$DB_URL" | sed -E 's|(://[^:]*:)[^@]*(@)|\1******\2|')"
+    echo "          库内共 3 张表：peer（ID 台账）、server_config（密钥托管）、connection_log（连接审计）"
+  else
+    echo "          连接: $DB_URL"
+    echo "          ⚠️ SQLite 模式下不托管密钥、不落审计，仅 peer 表生效"
+  fi
   echo "端口规划: hbbs TCP $HBBS_NAT_PORT / TCP+UDP $HBBS_PORT   hbbr TCP $HBBR_PORT"
   echo "          容器内还监听 5189(hbbs WS) / 5190(hbbr WS)，刻意不 publish"
 }
@@ -352,6 +484,7 @@ while [ $# -gt 0 ]; do
     --net)                     NET_MODE="${2:?--net 需要一个值}"; shift 2 ;;
     --db-type)                 DB_TYPE="${2:?--db-type 需要一个值}"; shift 2 ;;
     --db-url)                  DB_URL="${2:?--db-url 需要一个值}"; shift 2 ;;
+    --pg-password)             PG_PASSWORD="${2:?--pg-password 需要一个值}"; shift 2 ;;
     --always-relay)            ALWAYS_USE_RELAY="${2:?--always-relay 需要一个值}"; shift 2 ;;
     --rust-log)                RUST_LOG="${2:?--rust-log 需要一个值}"; shift 2 ;;
     --pull)                    DO_PULL=1; shift ;;

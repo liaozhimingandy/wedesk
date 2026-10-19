@@ -45,7 +45,7 @@ server/deploy/
 └── ../data/             # 全部运行状态（gitignore）
     ├── id_ed25519       # 服务端私钥 —— 丢了 = 全部客户端重配
     ├── id_ed25519.pub   # 公钥（rdctl.py key / rdrun.sh key 打印的就是它）
-    └── db_v2.sqlite3    # peer 注册表（默认 SQLite 时）
+    └── db_v2.sqlite3    # peer 注册表（仅 SQLite 后端时，默认是 PostgreSQL）
 ```
 
 > **容器里的二进制是本仓库源码编译的**，不是 `rustdesk/rustdesk-server` 官方镜像。
@@ -76,13 +76,13 @@ flowchart TB
     subgraph SERVER["你的服务器（内网或云主机）"]
         HBBS["rd-hbbs 容器<br/>TCP 5186 · TCP+UDP 5187<br/>ID 注册 · 心跳 · 打洞协调"]
         HBBR["rd-hbbr 容器<br/>TCP 5188<br/>中继转发"]
-        DATA[("server/data/<br/>id_ed25519 密钥对<br/>db_v2.sqlite3")]
+        DATA[("server/data/<br/>id_ed25519 密钥对 + 黑/封名单")]
         HBBS --- DATA
         HBBR -.->|"黑/封名单"| DATA
     end
 
-    subgraph OPT["可选：PostgreSQL 后端（--profile pg）"]
-        PG[("rd-postgres<br/>peer 表")]
+    subgraph DEF["默认：PostgreSQL 后端"]
+        PG[("rd-postgres<br/>peer / server_config / connection_log")]
     end
 
     C1 -->|"① 注册/心跳（UDP 5187）"| HBBS
@@ -91,7 +91,7 @@ flowchart TB
     C1 <-.->|"② P2P 直连（优先，不经过服务器）"| C2
     C1 <-.->|"② P2P 直连"| C3
     C1 -.->|"③ 打洞失败时走中继"| HBBR
-    HBBS -.->|"DB_TYPE=postgres 时"| PG
+    HBBS -->|"DB_TYPE=postgres（默认）"| PG
 ```
 
 **三条最重要的结论**：
@@ -136,7 +136,7 @@ flowchart LR
 server/data/
 ├── id_ed25519        # 私钥 —— 重启不重新生成；丢了 = 重新生成 + 重新注入 RS_PUB_KEY + 重新分发所有客户端
 ├── id_ed25519.pub    # 公钥 —— rdctl.py key 打印的值，对应客户端 custom.toml 的 RS_PUB_KEY
-├── db_v2.sqlite3     # peer 注册表（SQLite 后端时）：只有一张 peer 表
+├── db_v2.sqlite3     # peer 注册表（仅 SQLite 后端时）：只有一张 peer 表
 ├── blacklist.txt     # hbbr 黑名单（可选，每行一个 IP，命中即断开）
 └── blocklist.txt     # hbbr 封禁名单（可选，命中即拒绝）
 ```
@@ -158,19 +158,25 @@ flowchart TB
     subgraph HBBS_P["hbbs 进程"]
         FACADE["Database 门面<br/>Arc&lt;dyn DbBackend&gt;"]
     end
-    FACADE -->|"DB_TYPE=sqlite（默认）"| SQLITE[("db_v2.sqlite3<br/>保留 sqlx query! 宏<br/>编译期校验 SQL")]
-    FACADE -->|"DB_TYPE=postgres"| PG[("PostgreSQL<br/>运行时 query()<br/>编译期不连库")]
+    FACADE -->|"DB_TYPE=postgres（默认）"| PG[("PostgreSQL<br/>运行时 query()<br/>编译期不连库")]
+    FACADE -->|"DB_TYPE=sqlite"| SQLITE[("db_v2.sqlite3<br/>保留 sqlx query! 宏<br/>编译期校验 SQL")]
     SQLITE --> DATA[("./data:/root 卷")]
-    PG --> PGDATA[("./pgdata 卷<br/>--profile pg）")]
+    PG --> PGDATA[("./pgdata 卷<br/>默认启用）")]
 ```
 
-| | SQLite（默认） | PostgreSQL |
+| | PostgreSQL（**默认**） | SQLite |
 |---|---|---|
-| 启用方式 | 什么都不用改 | `.env` 三处一起改：`DB_TYPE=postgres` + `DB_URL=postgres://...` + `PG_PASSWORD`，然后 `docker compose --profile pg up -d` |
-| 数据位置 | `server/data/db_v2.sqlite3` | `server/deploy/pgdata/` |
-| 存量迁移 | — | `python migrate-sqlite-to-pg.py ../data/db_v2.sqlite3 --out migration.sql` |
-| 编译期约束 | `DATABASE_URL` 必须指向 sqlite 模板库 | 运行时 `DB_URL` 才是 PG 连接串，**两套变量不要混** |
-| 常见静默失败 | — | 改了 `DB_TYPE` 但 `RD_IMAGE` 还是官方镜像 → 官方镜像不认这个变量，**不报错，继续写 SQLite**。跑 `rdctl.py doctor` 可实证数据落在哪 |
+| 启用方式 | 什么都不用改 | `DB_TYPE=sqlite` + `DB_URL=/root/db_v2.sqlite3` 两行一起改 |
+| 数据位置 | `server/deploy/pgdata/` | `server/data/db_v2.sqlite3` |
+| 库内表 | `peer` + `server_config` + `connection_log` | 仅 `peer` |
+| 密钥托管 | ✅ 多实例共享同一把钥匙 | ❌ 只用本地文件 |
+| 连接审计 | ✅ 异步批量落库 | ❌ 完全不记录 |
+| 存量迁移 | 从 SQLite 迁过来：`migrate-sqlite-to-pg.py` | — |
+| 编译期约束 | 运行时 `DB_URL` 才是 PG 连接串 | 构建期 `DATABASE_URL` 必须指向 sqlite 模板库，**两套变量不要混** |
+| 常见静默失败 | 改了 `DB_TYPE` 但 `RD_IMAGE` 还是官方镜像 → 官方镜像不认这个变量，**不报错，继续写 SQLite**。跑 `rdctl.py doctor` 可实证数据落在哪 | — |
+
+后端选择由 `DB_TYPE` 唯一决定，`DB_URL` 可以省略（省了就由 `PG_*` 推导）。
+类型与地址不一致时的兜底规则见 [12 · 第三节](12-postgres-backend.md#三db_type-是唯一权威db_url-可以省)。
 
 设计动机（sqlx `query!` 宏编译期绑定单一数据库类型，同一个二进制不能用宏同时支持两种库）
 与完整说明见 [12 PostgreSQL 后端](12-postgres-backend.md)。
@@ -264,7 +270,7 @@ flowchart LR
 docker compose ps                              # 容器状态
 docker compose logs -f --tail 200 rd-hbbs      # 看日志
 docker stats rd-hbbs rd-hbbr                   # 真实资源占用
-docker compose --profile pg up -d              # 带 PG 启动
+docker compose up -d                           # 启动（含 PostgreSQL，默认后端）
 ```
 
 > 上面都是 compose 玩法。**脱离 compose**（只有 docker、或 hbbs/hbbr 分机部署）
@@ -285,10 +291,12 @@ docker compose --profile pg up -d              # 带 PG 启动
 | `HBBS_MEM` / `HBBS_CPUS` | `256m` / `0.50` | hbbs 实测常驻 10-40 MB，上限是"异常时快速重启"用的，不是性能预估 |
 | `HBBR_MEM` / `HBBR_CPUS` | `512m` / `1.00` | hbbr 内存随并发路数增长，但**瓶颈是出网带宽不是内存**，加到 1 GB 不会更快 |
 | `LOG_MAX_SIZE` / `LOG_MAX_FILE` | `10m` / `3` | 每容器日志约 30 MB 封顶，不会写满磁盘 |
-| `DB_TYPE` / `DB_URL` | `sqlite` / `/root/db_v2.sqlite3` | 见 2.4 节。`DB_URL` 的含义随后端变化：sqlite 是容器内文件路径，postgres 是连接串 |
+| `DB_TYPE` / `DB_URL` | `postgres` / 留空（由 `PG_*` 推导） | 见 2.4 节。`DB_URL` 的含义随后端变化：sqlite 是容器内文件路径，postgres 是连接串 |
 | `MAX_DATABASE_CONNECTIONS` | 留空 | **刻意留空**：留空则 sqlite→1、postgres→8 各用合理默认；写死会迫使 SQLite 路径也用它，更容易撞 `database is locked` |
 | `DB_CONNECT_RETRIES` | 留空（=10） | 仅 postgres 生效。容器并发启动时 hbbs 常先于 PG 可用，不重试会 CrashLoop。设 1 恢复"立刻失败" |
-| `PG_IMAGE` / `PG_DB` / `PG_USER` / `PG_PASSWORD` | `postgres:16-alpine` / `rustdesk` / `rustdesk` / `changeme` | 仅 `--profile pg` 生效。**`PG_PASSWORD` 生产必须改**，留 changeme 等于把设备台账敞开 |
+| `PG_IMAGE` / `PG_DB` / `PG_USER` / `PG_PASSWORD` | `postgres:16-alpine` / `rustdesk` / `rustdesk` / `changeme` | 默认生效（Postgres 容器随服务一起起）。**`PG_PASSWORD` 生产必须改** —— 私钥也托管在这个库里，留 changeme 等于把服务器私钥敞开 |
+| `DB_STORE_KEY` | `Y` | 密钥托管开关。设 `N` 退回"只用本地文件"的上游行为 |
+| `AUDIT_LOG` / `AUDIT_FLUSH_SECS` / `AUDIT_MAX_BUFFER` | `Y` / `5` / `20000` | 连接审计开关 / 刷盘间隔（秒）/ 缓冲上限 |
 | `PG_MEM` / `PG_CPUS` | `512m` / `1.00` | PG 容器资源上限 |
 
 完整带注释的模板见 `server/deploy/.env.example`（每个值该不该改都写了）。
@@ -334,21 +342,27 @@ iptables -I INPUT -p tcp --dport 5190 -j DROP
 > 见 [3.5 用 docker run 启动](#35-用-docker-run-启动hbbs--hbbr-可分离部署)。
 > 中继要横向扩容（加多台 hbbr）也只能走那条路。
 
-#### 场景 D：PostgreSQL 后端
+#### 场景 D：接外部 / 托管 PostgreSQL
+
+默认已经自带 Postgres 容器，只有想把数据放到外部数据库（RDS 等）才需要这一步：
 
 ```bash
-# .env 三处一起改（缺一个静默不生效）
+# .env 只改 DB_URL 一行（DB_TYPE 保持 postgres）
 DB_TYPE=postgres
-DB_URL=postgres://rustdesk:<密码>@postgres:5432/rustdesk
-PG_PASSWORD=<一个够强的口令>
+DB_URL=postgres://user:pwd@your-db-host:5432/rustdesk
 
-# 带 profile 启动（不带 pg 的话 postgres 服务根本不会被创建）
-cd server/deploy && docker compose --profile pg up -d
+cd server/deploy && docker compose up -d
 
-# 切完务必体检：它会实证数据实际落在哪
-python rdctl.py doctor
+# 本地那个 Postgres 容器就多余了，停掉即可（./pgdata 数据卷不会丢）
+docker compose stop postgres
+```
 
-# 存量 SQLite 数据搬过去（迁移前先 backup）
+> 切完务必体检：`python rdctl.py doctor` —— 它会实证数据落在哪，
+> 而不是只看写了什么配置。
+
+存量 SQLite 数据搬进 PG：
+
+```bash
 python migrate-sqlite-to-pg.py ../data/db_v2.sqlite3 --out migration.sql
 docker compose exec -T postgres psql -U rustdesk -d rustdesk < migration.sql
 ```
@@ -427,7 +441,7 @@ docker run -d --name rd-hbbs --restart unless-stopped \
   --memory 256m --cpus 0.50 --pids-limit 128 \
   --log-opt max-size=10m --log-opt max-file=3 \
   -e ALWAYS_USE_RELAY=N -e ENFORCED_RELAY=N \
-  -e DB_TYPE=sqlite -e DB_URL=/root/db_v2.sqlite3 \
+  -e DB_TYPE=postgres -e DB_URL=postgres://rustdesk:changeme@postgres:5432/rustdesk \
   -e RUST_LOG=warn \
   wedesk-server:latest \
   hbbs -p 5187 -r <这台机器的IP>:5188
@@ -460,7 +474,7 @@ docker run -d --name rd-hbbs --restart unless-stopped \
   -v /srv/wedesk/data:/root \
   --memory 256m --cpus 0.50 \
   -e ENFORCED_RELAY=N \
-  -e DB_TYPE=sqlite -e DB_URL=/root/db_v2.sqlite3 \
+  -e DB_TYPE=postgres -e DB_URL=postgres://rustdesk:changeme@postgres:5432/rustdesk \
   -e RUST_LOG=warn \
   wedesk-server:latest \
   hbbs -p 5187 -r 203.0.113.10:5188     # ← B 机（hbbr）的地址
@@ -471,8 +485,9 @@ docker run -d --name rd-hbbs --restart unless-stopped \
 - 只放行 **5186（TCP）+ 5187（TCP 和 UDP 两条）**；**UDP 那条最容易漏**，
   漏了的表现是客户端 ID 一直出不来；
 - `ENFORCED_RELAY=N` 允许中继指向非本机地址（分机必需）；
-- 用 PG 后端时把 `DB_TYPE=postgres`、`DB_URL=postgres://user:pwd@host:5432/db`
-  换上即可（见 3.4 场景 D），并建议带 `-e DB_CONNECT_RETRIES=10`；
+- 默认就是 PG 后端，hbbs 会自动连内置容器；接外部库时才需要显式指定
+  `DB_URL=postgres://user:pwd@host:5432/db`（见 3.4 场景 D）；
+  并建议带 `-e DB_CONNECT_RETRIES=10`（hbbs 可能先于 PG 就绪）；
 - 想接多台中继：`-r` 支持逗号分隔，`-r 1.1.1.1:5188,2.2.2.2:5188`
   （源码里 `relay-servers` 的解析就是按逗号切的）。
 
@@ -576,7 +591,7 @@ docker rm -f rd-hbbs rd-hbbr                   # 只删容器，数据目录不�
 |---|---|
 | **服务端二进制**（改了 `server/src` 或 Dockerfile） | `python rdctl.py build && python rdctl.py restart` |
 | **拉 CI 镜像**（`RD_IMAGE` 指向远端） | `python rdctl.py upgrade`（自动先备份再拉取重启；`--check` 只看不升） |
-| **数据库引擎小版本** | 改 `PG_IMAGE` → `--profile pg up -d` 重建 PG 容器；先 `backup` |
+| **数据库引擎小版本** | 改 `PG_IMAGE` → `up -d` 重建 PG 容器；先 `backup` |
 | **`docker run` 部署的服务端** | 拉/编新镜像 → `docker rm -f rd-hbbs rd-hbbr` → 用**完全相同的命令**重新 `docker run`（或 `rdrun.sh restart`）。**只 `docker restart` 没用**：容器用的还是启动时那层镜像，见 3.5.6 |
 
 升级顺序永远是：**先 `backup` → 停/换 → 起 → 用一台客户端验证**。
@@ -811,13 +826,14 @@ sqlite3 server/data/db_v2.sqlite3 "select id, created_at, status from peer order
 
 **Q：配了 `DB_TYPE=postgres`，数据却没进 PG**
 
-三种静默不生效，`rdctl.py doctor` 都能实证分辨：
+几种静默不生效，`rdctl.py doctor` 都能实证分辨：
 
 | 现象 | 原因 |
 |---|---|
-| `RD_IMAGE` 还是官方镜像 | 官方镜像不认 `DB_TYPE`，继续写 SQLite，不报错 |
-| 启动时没带 `--profile pg` | postgres 服务根本没被创建 |
-| `DB_URL` 不是 `postgres://` 连接串 | 会退回文件路径，sqlx 报的错误跟 PG 毫无关系（新版本已改成**启动即硬失败**并指明该填什么） |
+| `RD_IMAGE` 还是官方镜像 | 官方镜像不认 `DB_TYPE`，也不建后两张表，继续写 SQLite，不报错 |
+| 服务还没启动过 | 三张表由 hbbs 首次启动时自动创建 |
+| `DB_URL` 指向了另一个库 | 表建在别处了。`rdctl.py doctor` 会逐张报「缺少表 X」 |
+| `DB_TYPE=sqlite` 但 `DB_URL` 是连接串 | 类型与地址打架，`rdctl.py doctor` 会报；两者必须自洽 |
 
 **Q：容器并发启动 CrashLoop，日志只有一行连接错误**
 
@@ -826,6 +842,24 @@ hbbs 先于 PG 可用。默认 10 次 × 3 秒自动重试（`DB_CONNECT_RETRIES
 **Q：PG 连接串的密码会进日志吗**
 
 不会。启动日志里密码位已脱敏成 `******`（用户名/主机/库名保留）。
+
+**Q：多台 hbbs 怎么共享同一套 ID**
+
+默认就行。密钥托管在 `server_config` 表里，所有实例读同一行，
+因此客户端拿到的服务端公钥始终一致。关键是**别**设 `DB_STORE_KEY=N`，
+也别给每台实例挂不同的数据目录去各自生成钥匙。
+
+**Q：`connection_log` 会一直涨吗**
+
+会。审计表没有任何自动清理逻辑，请自行按 `ts` 定期归档清理。
+不想落审计就设 `AUDIT_LOG=N`（热路径零开销，连缓冲都不进）。
+
+**Q：能查到"谁连了谁"吗**
+
+能，但要关联一次：协议里 `PunchHoleRequest` 只带被连接方的 id，
+发起方此刻只有一个 IP，所以 `from_id` 在打洞事件里是空的。
+用 `postgres-init.sql` 里那段把 IP 反查成 ID 的查询即可还原。
+注意"连了多久"查不到 —— 见上一条限制。
 
 ### 5.5 升级与 CI 类
 

@@ -62,8 +62,10 @@ flowchart TB
     subgraph SERVER["自建服务端（Docker）"]
         HBBS["hbbs :5186/:5187<br/>ID 注册 · 心跳 · 打洞协调"]
         HBBR["hbbr :5188<br/>中继转发"]
-        DB[("data/<br/>id_ed25519 + db_v2.sqlite3")]
+        DB[("data/<br/>id_ed25519 + 黑/封名单")]
+        PG[("PostgreSQL<br/>peer · server_config · connection_log")]
         HBBS --- DB
+        HBBS --- PG
     end
 
     REN <-->|"TCP 5187 注册/打洞<br/>UDP 5187 心跳"| HBBS

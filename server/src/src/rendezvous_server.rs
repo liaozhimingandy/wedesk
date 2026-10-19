@@ -130,10 +130,14 @@ impl RendezvousServer {
         key: &str,
         rmem: usize,
     ) -> ResultType<()> {
-        let (key, sk) = Self::get_server_sk(key)?;
+        // 先连库、再取密钥：密钥可能托管在数据库里（多实例共享同一套 ID）。
+        // 顺序反了就只能退回本地文件，扩容场景下每台实例会各生成一把钥匙。
+        let pm = PeerMap::new().await?;
+        // 审计后台任务要持有自己的数据库句柄，必须在 pm 被 move 进 rs 之前注入
+        crate::audit::start(pm.db.clone());
+        let (key, sk) = Self::get_server_sk(key, &pm.db).await?;
         let nat_port = port - 1;
         let ws_port = port + 2;
-        let pm = PeerMap::new().await?;
         log::info!("serial={}", serial);
         let rendezvous_servers = get_servers(&get_arg("rendezvous-servers"), "rendezvous-servers");
         let mut socket = create_udp_listener(bind_addr, port, rmem).await?;
@@ -729,6 +733,15 @@ impl RendezvousServer {
         let mut ph = ph;
         if !key.is_empty() && ph.licence_key != key {
             log::warn!("Authentication failed from {} for peer {} - invalid key", addr, ph.id);
+            crate::audit::log(
+                crate::audit::ev::PUNCH_HOLE_FAILED,
+                None,
+                Some(&addr.ip().to_string()),
+                Some(&ph.id),
+                None,
+                false,
+                Some("license_mismatch".to_owned()),
+            );
             let mut msg_out = RendezvousMessage::new();
             msg_out.set_punch_hole_response(PunchHoleResponse {
                 failure: punch_hole_response::Failure::LICENSE_MISMATCH.into(),
@@ -748,6 +761,15 @@ impl RendezvousServer {
                 (r.last_reg_time.elapsed().as_millis() as i64, r.socket_addr)
             };
             if elapsed >= REG_TIMEOUT {
+                crate::audit::log(
+                    crate::audit::ev::PUNCH_HOLE_FAILED,
+                    None,
+                    Some(&addr.ip().to_string()),
+                    Some(&id),
+                    Some(&peer_addr.ip().to_string()),
+                    false,
+                    Some("offline".to_owned()),
+                );
                 let mut msg_out = RendezvousMessage::new();
                 msg_out.set_punch_hole_response(PunchHoleResponse {
                     failure: punch_hole_response::Failure::OFFLINE.into(),
@@ -768,7 +790,10 @@ impl RendezvousServer {
             let peer_is_lan = self.is_lan(peer_addr);
             let is_lan = self.is_lan(addr);
             let mut relay_server = self.get_relay_server(addr.ip(), peer_addr.ip());
-            if ALWAYS_USE_RELAY.load(Ordering::SeqCst) || (peer_is_lan ^ is_lan) {
+            // 是否强制走中继。客户端自己并不知道服务端的裁决结果，
+            // 所以这条记录是事后判断"到底走没走 P2P"的唯一可靠依据。
+            let via_relay = ALWAYS_USE_RELAY.load(Ordering::SeqCst) || (peer_is_lan ^ is_lan);
+            if via_relay {
                 if peer_is_lan {
                     // https://github.com/rustdesk/rustdesk-server/issues/24
                     relay_server = self.inner.local_ip.clone()
@@ -810,8 +835,26 @@ impl RendezvousServer {
                     ..Default::default()
                 });
             }
+            crate::audit::log(
+                crate::audit::ev::PUNCH_HOLE,
+                None,
+                Some(&addr.ip().to_string()),
+                Some(&id),
+                Some(&peer_addr.ip().to_string()),
+                via_relay,
+                Some(format!("nat_type={:?}", ph.nat_type)),
+            );
             Ok((msg_out, Some(peer_addr)))
         } else {
+            crate::audit::log(
+                crate::audit::ev::PUNCH_HOLE_FAILED,
+                None,
+                Some(&addr.ip().to_string()),
+                Some(&id),
+                None,
+                false,
+                Some("id_not_exist".to_owned()),
+            );
             let mut msg_out = RendezvousMessage::new();
             msg_out.set_punch_hole_response(PunchHoleResponse {
                 failure: punch_hole_response::Failure::ID_NOT_EXIST.into(),
@@ -1266,32 +1309,24 @@ impl RendezvousServer {
         }
     }
 
+    /// 解析服务端密钥。
+    ///
+    /// 具体策略（命令行 / 数据库 / 文件 / 生成的优先级，以及密钥托管带来的
+    /// 多实例共享能力）都收在 `server_key` 模块里，这里只负责取用。
     #[inline]
-    fn get_server_sk(key: &str) -> ResultType<(String, Option<sign::SecretKey>)> {
-        let mut out_sk = None;
-        let mut key = key.to_owned();
-        if let Ok(sk) = base64::decode(&key) {
-            if sk.len() == sign::SECRETKEYBYTES {
-                log::info!("The key is a crypto private key");
-                key = base64::encode(&sk[(sign::SECRETKEYBYTES / 2)..]);
-                let mut tmp = [0u8; sign::SECRETKEYBYTES];
-                tmp[..].copy_from_slice(&sk);
-                out_sk = Some(sign::SecretKey(tmp));
-            }
+    async fn get_server_sk(
+        key: &str,
+        db: &crate::database::Database,
+    ) -> ResultType<(String, Option<sign::SecretKey>)> {
+        let server_key = crate::server_key::resolve(key, db).await?;
+        // 这行日志是排障主力："ID 突然全变了 / 客户端报密钥不匹配" 时，
+        // 第一件事就是看钥匙这次是从哪来的 —— file 变成 generated 就意味着
+        // 数据目录被换掉或密钥托管没生效。
+        log::info!("服务端密钥来源: {}", server_key.source.as_str());
+        if !server_key.pk.is_empty() {
+            log::info!("Key: {}", server_key.pk);
         }
-
-        if key.is_empty() || key == "-" || key == "_" {
-            let (pk, sk) = crate::common::gen_sk(0)?;
-            out_sk = sk;
-            if !key.is_empty() {
-                key = pk;
-            }
-        }
-
-        if !key.is_empty() {
-            log::info!("Key: {}", key);
-        }
-        Ok((key, out_sk))
+        Ok((server_key.pk, server_key.sk))
     }
 
     #[inline]

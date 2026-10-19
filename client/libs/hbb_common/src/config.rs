@@ -1027,12 +1027,16 @@ impl Config {
 
     /// 12 位 ID 的取值区间 `[10^11, 10^12)`：下界保证位数固定（不会出现前导 0 导致的
     /// “看起来少一位”），上界保证不超过 [`ID_LENGTH`] 位。
+    ///
+    /// 注意：这三个都是 `Config` 的**关联常量**，方法体内必须写 `Self::` 前缀，
+    /// 裸写 `ID_MIN` 会报 E0425 —— 关联项不会自动进入词法作用域。
     const ID_MIN: u64 = 100_000_000_000;
     const ID_MAX: u64 = 1_000_000_000_000;
 
     /// 生成一个符合统一规范的 12 位纯数字 ID。
     fn gen_auto_id() -> String {
-        rand::thread_rng().gen_range(ID_MIN..ID_MAX).to_string()
+        let id: u64 = rand::thread_rng().gen_range(Self::ID_MIN..Self::ID_MAX);
+        id.to_string()
     }
 
     /// 是否符合统一 ID 规范：正好 [`ID_LENGTH`] 位纯数字。
@@ -1041,7 +1045,7 @@ impl Config {
     /// 排查时也照它判断某个 ID 是旧格式还是统一格式 —— 只有一个定义，
     /// 就不会出现“代码说升级了、日志看不出来”的半通状态。
     pub fn is_unified_id(id: &str) -> bool {
-        id.len() == ID_LENGTH && id.bytes().all(|b| b.is_ascii_digit())
+        id.len() == Self::ID_LENGTH && id.bytes().all(|b| b.is_ascii_digit())
     }
 
     fn gen_id() -> Option<String> {
@@ -1058,7 +1062,7 @@ impl Config {
             log::warn!(
                 "\"{}\" 已启用，但与统一 {} 位数字 ID 冲突，本次忽略，仍生成数字 ID",
                 keys::OPTION_ALLOW_HOSTNAME_AS_ID,
-                ID_LENGTH
+                Self::ID_LENGTH
             );
         }
         Some(Self::gen_auto_id())
@@ -1213,7 +1217,7 @@ impl Config {
             log::info!(
                 "本机 id \"{}\" 不是 {} 位纯数字，已统一升级为 {}",
                 id,
-                ID_LENGTH,
+                Self::ID_LENGTH,
                 new_id
             );
         }

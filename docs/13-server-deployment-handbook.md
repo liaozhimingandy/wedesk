@@ -39,16 +39,25 @@ python rdctl.py doctor
 ```
 server/deploy/
 ├── .env                 # 配置（gitignore，不进仓库）
-├── docker-compose.yml   # 编排定义
-├── rdctl.py             # 管理工具（零依赖，标准库）
+├── docker-compose.yml   # 编排定义（compose 路线）
+├── rdctl.py             # compose 路线管理工具（零依赖，标准库）
+├── rdrun.sh             # docker run 路线一键脚本（分机/无 compose 时用）
 └── ../data/             # 全部运行状态（gitignore）
     ├── id_ed25519       # 服务端私钥 —— 丢了 = 全部客户端重配
-    ├── id_ed25519.pub   # 公钥（rdctl.py key 打印的就是它）
+    ├── id_ed25519.pub   # 公钥（rdctl.py key / rdrun.sh key 打印的就是它）
     └── db_v2.sqlite3    # peer 注册表（默认 SQLite 时）
 ```
 
 > **容器里的二进制是本仓库源码编译的**，不是 `rustdesk/rustdesk-server` 官方镜像。
 > 这一点决定了：服务端定制补丁（关闭版本检查、PG 后端）只在本地镜像上生效。
+
+**另一条路：`docker run` 直接起**。下面这套 compose + `rdctl.py` 是"两台服务
+一起管"的默认路线；如果你的情况是下面任一一种，直接跳到
+[3.5 用 docker run 启动](#35-用-docker-run-启动hbbs--hbbr-可分离部署)：
+
+- hbbs（ID 注册）与 hbbr（中继）要**分机部署**，或中继要**横向扩容**；
+- 服务器上**只有 docker，没有 compose 插件**；
+- 要把启动命令落到 systemd unit / k8s 里。
 
 ---
 
@@ -258,6 +267,10 @@ docker stats rd-hbbs rd-hbbr                   # 真实资源占用
 docker compose --profile pg up -d              # 带 PG 启动
 ```
 
+> 上面都是 compose 玩法。**脱离 compose**（只有 docker、或 hbbs/hbbr 分机部署）
+> 的场景用 `server/deploy/rdrun.sh` 或裸 `docker run` 命令，见
+> [3.5 用 docker run 启动](#35-用-docker-run-启动hbbs--hbbr-可分离部署)。
+
 ### 3.3 `.env` 完整参数参考
 
 按部署频率排序。**改任何值之后都要 `python rdctl.py restart`**。
@@ -317,6 +330,10 @@ iptables -I INPUT -p tcp --dport 5190 -j DROP
 3. hbbs 侧设 `ENFORCED_RELAY=N`（允许中继到非本机地址）；
 4. 防火墙：A 机放行 5186/5187（TCP+UDP），B 机放行 5188。
 
+> 更彻底的做法是**两台机器各跑一条独立的 `docker run`**，不用 compose 互相屏蔽，
+> 见 [3.5 用 docker run 启动](#35-用-docker-run-启动hbbs--hbbr-可分离部署)。
+> 中继要横向扩容（加多台 hbbr）也只能走那条路。
+
 #### 场景 D：PostgreSQL 后端
 
 ```bash
@@ -339,18 +356,233 @@ docker compose exec -T postgres psql -U rustdesk -d rustdesk < migration.sql
 已知限制：hbbr 不碰数据库；换 PG 解决的是"ID 台账统一管理"，
 **不是**"谁连了谁"的审计；PG 后端仍是单实例设计，不等于高可用。
 
-### 3.5 升级
+### 3.5 用 `docker run` 启动（hbbs / hbbr 可分离部署）
+
+Compose 文件是"两台服务一起起"的写法。实际要用 `docker run` 的场景有三个：
+
+1. **分机部署**——中继带宽吃紧，要把 hbbr 单独搬到带宽更好的机器（或加多台中继）；
+2. **机器上只有 docker**，没有 compose 插件（精简版 Docker Engine、部分国产化系统）；
+3. 要落到 **systemd unit / k8s** 里——它们最终执行的也是这里的两条 `docker run`。
+
+**先建立正确的心智模型**：hbbs 与 hbbr 是**彼此独立的两个进程，它们之间没有任何内部通信**。
+
+```mermaid
+flowchart LR
+    subgraph LAN["客户端所在网络"]
+        C1["被控端 A"]
+        C2["控制端 B"]
+    end
+    subgraph S1["A 机 · ID 注册服务器"]
+        H["hbbs<br/>TCP 5186 / TCP+UDP 5187<br/>容器内 5189 不 publish"]
+    end
+    subgraph S2["B 机 · 中继服务器（可多台）"]
+        R["hbbr<br/>TCP 5188<br/>容器内 5190 不 publish"]
+    end
+
+    C1 -- "① 注册 / 心跳 / 打洞协调<br/>UDP 5187 + TCP 5186" --> H
+    C2 -- "① 注册 / 心跳 / 打洞协调" --> H
+    H -. "② 用 -r 把中继地址告诉客户端<br/>只告知，不转发数据" .-> C1
+    H -. "② 同上" .-> C2
+    C1 -- "③ 打洞失败时走中继<br/>TCP 5188" --> R
+    C2 -- "③ 中继数据" --> R
+    C1 <-. "P2P 直连：优先，不经过任何服务器" .-> C2
+```
+
+由此得到三条部署规则（分机方案全靠它们）：
+
+| 规则 | 含义 |
+|---|---|
+| hbbr **不需要知道** hbbs 在哪 | 它只转发数据，不查 ID、不鉴权，配置里没有任何 hbbs 的地址 |
+| hbbs **必须知道** hbbr 的对外地址 | 就是 `hbbs -r <IP>:<端口>`；客户端靠这一句才知道去哪中继 |
+| 客户端必须**同时能访问**两台机器 | hbbs 的 5186/5187（TCP+UDP）**和** hbbr 的 5188，缺一个就"能注册但连不上桌面" |
+
+#### 3.5.1 准备镜像（两种来源，二选一）
+
+```bash
+# ① 从本仓库源码构建（在 server/ 目录下执行，首次 15-25 分钟）
+cd server
+docker build --platform linux/amd64 -t wedesk-server:latest -f deploy/Dockerfile .
+
+# ② 直接拉 CI 推的远端镜像（不用装 Rust 工具链）
+docker pull liaozhiming/wedesk-server:latest
+```
+
+> 给 Linux 服务器用务必带 `--platform linux/amd64`——在 Apple Silicon / ARM
+> 机器上默认会编出 arm64 镜像，x86 服务器跑不起来。
+> 镜像里同时有 `hbbs` 和 `hbbr` 两个二进制，靠 `docker run` 末尾的
+> 命令参数决定这次当哪个用（Dockerfile 刻意没设 ENTRYPOINT）。
+
+#### 3.5.2 同一台机器：hbbs + hbbr 一起起
+
+```bash
+# 0) 准备工作（只需一次）
+docker network create rd-net
+mkdir -p /srv/wedesk/data          # 密钥与 SQLite 落盘处，务必纳入备份
+
+# 1) ID 注册服务器
+docker run -d --name rd-hbbs --restart unless-stopped \
+  --network rd-net \
+  -p 5186:5186/tcp -p 5187:5187/tcp -p 5187:5187/udp \
+  -v /srv/wedesk/data:/root \
+  --memory 256m --cpus 0.50 --pids-limit 128 \
+  --log-opt max-size=10m --log-opt max-file=3 \
+  -e ALWAYS_USE_RELAY=N -e ENFORCED_RELAY=N \
+  -e DB_TYPE=sqlite -e DB_URL=/root/db_v2.sqlite3 \
+  -e RUST_LOG=warn \
+  wedesk-server:latest \
+  hbbs -p 5187 -r <这台机器的IP>:5188
+
+# 2) 中继服务器
+docker run -d --name rd-hbbr --restart unless-stopped \
+  --network rd-net \
+  -p 5188:5188/tcp \
+  -v /srv/wedesk/data:/root \
+  --memory 512m --cpus 1.00 --pids-limit 256 \
+  --log-opt max-size=10m --log-opt max-file=3 \
+  -e RUST_LOG=warn \
+  wedesk-server:latest \
+  hbbr -p 5188
+
+# 3) 取公钥（客户端定制的 RS_PUB_KEY 要填它）
+docker exec rd-hbbs cat /root/id_ed25519.pub
+```
+
+`<这台机器的IP>` 必须换成客户端能访问到的地址。填 `127.0.0.1` 的话，
+客户端会把"它自己的 127.0.0.1"当中继——只有服务器本机自测能连，别的一律失败。
+
+#### 3.5.3 只跑 ID 注册服务器（hbbs）
+
+分机时 A 机只跑这一条，中继地址填 **B 机的 IP**：
+
+```bash
+docker run -d --name rd-hbbs --restart unless-stopped \
+  -p 5186:5186/tcp -p 5187:5187/tcp -p 5187:5187/udp \
+  -v /srv/wedesk/data:/root \
+  --memory 256m --cpus 0.50 \
+  -e ENFORCED_RELAY=N \
+  -e DB_TYPE=sqlite -e DB_URL=/root/db_v2.sqlite3 \
+  -e RUST_LOG=warn \
+  wedesk-server:latest \
+  hbbs -p 5187 -r 203.0.113.10:5188     # ← B 机（hbbr）的地址
+```
+
+要点：
+
+- 只放行 **5186（TCP）+ 5187（TCP 和 UDP 两条）**；**UDP 那条最容易漏**，
+  漏了的表现是客户端 ID 一直出不来；
+- `ENFORCED_RELAY=N` 允许中继指向非本机地址（分机必需）；
+- 用 PG 后端时把 `DB_TYPE=postgres`、`DB_URL=postgres://user:pwd@host:5432/db`
+  换上即可（见 3.4 场景 D），并建议带 `-e DB_CONNECT_RETRIES=10`；
+- 想接多台中继：`-r` 支持逗号分隔，`-r 1.1.1.1:5188,2.2.2.2:5188`
+  （源码里 `relay-servers` 的解析就是按逗号切的）。
+
+#### 3.5.4 只跑中继服务器（hbbr）
+
+分机时 B 机只跑这一条，**不需要任何关于 hbbs 的配置**：
+
+```bash
+docker run -d --name rd-hbbr --restart unless-stopped \
+  -p 5188:5188/tcp \
+  -v /srv/wedesk/data:/root \
+  --memory 512m --cpus 1.00 \
+  -e RUST_LOG=warn \
+  wedesk-server:latest \
+  hbbr -p 5188
+```
+
+要点：
+
+- 只放行 **5188（TCP）**；hbbr 不碰数据库，那个 `-v` 只为与 compose 行为一致
+  （密钥目录同源），它自己不写任何状态；
+- 端口用**命令行 `-p`**，不要用环境变量 `PORT`——源码里环境变量 `PORT`
+  会被 +1 之后再使用，写 `PORT=5188` 它去监听 5189，正好撞上 hbbs 的 WebSocket 端口；
+- 中继压力大的时候就**再加一台跑同样的命令**，然后把新 IP 追加进 hbbs 的 `-r`
+  列表（逗号分隔）。客户端会按顺序尝试，这是本方案最简单的横向扩容方式；
+- hbbr 的瓶颈是**出网带宽**不是内存，加内存不会更快，该盯的是带宽与并发路数。
+
+#### 3.5.5 一键脚本 `rdrun.sh`
+
+上面每条命令都能复制就用；如果嫌参数长，`server/deploy/rdrun.sh`
+把端口关系校验、数据目录创建、网络创建、公钥打印都包了进去（只依赖 docker + bash）：
+
+```bash
+cd server/deploy
+./rdrun.sh both --relay-host 10.0.0.5          # 单机：注册 + 中继
+./rdrun.sh hbbs --relay-host 203.0.113.10      # 分机 A：只做 ID 注册
+./rdrun.sh hbbr                                # 分机 B：只做中继
+./rdrun.sh hbbr --net host                     # 中继机走宿主网络（仅 Linux）
+./rdrun.sh status                              # 容器状态 + 端口规划
+./rdrun.sh key                                 # 打印公钥
+./rdrun.sh restart                             # 改了参数后重建容器
+./rdrun.sh stop                                # 停容器（数据保留）
+```
+
+常用选项：`--image`（默认取 `.env` 的 `RD_IMAGE`）、`--data-dir`、`--hbbs-port`
+/`--nat-port`/`--hbbr-port`、`--net bridge|host`、`--db-type`/`--db-url`、
+`--always-relay Y|N`、`--pull`（拉远端最新镜像）、`--force`（同名容器已存在时重建）、
+`--dry-run`（只打印将要执行的命令）。
+
+它替你守着三个容易错的约束：
+
+1. `HBBS_NAT_PORT == HBBS_PORT - 1`（不满足直接拒绝启动）；
+2. 没给 `--relay-host` 时自动探测本机 IP 并要求确认，填了 `127.0.0.1`/`localhost`
+   会明确告警；
+3. 同名容器默认拒绝覆盖（防止误删生产容器），改参数要重建须显式 `--force`。
+
+#### 3.5.6 运维命令对照
+
+| 你要做什么 | Compose 方式 | `docker run` 方式 |
+|---|---|---|
+| 看状态 | `docker compose ps` | `docker ps -a --filter name=rd-hb` |
+| 看日志 | `rdctl.py logs` / `docker compose logs -f rd-hbbs` | `docker logs -f --tail 200 rd-hbbs` |
+| 停（保留数据） | `rdctl.py stop` | `docker rm -f rd-hbbs rd-hbbr` |
+| 改参数后重建 | `rdctl.py restart` | `docker rm -f rd-hbbs && 重新 docker run` 或 `rdrun.sh restart` |
+| 备份 | `rdctl.py backup` | 直接打包 `-v` 那个数据目录（密钥 + SQLite） |
+| 升级 | `rdctl.py build` / `upgrade` | 见下 |
+
+**升级（重点，与 compose 最大的行为差异）**：`docker run` 启动的容器
+**不会因为镜像更新而自动换二进制**。`docker restart rd-hbbs` 用的还是启动时那层镜像。
+必须：
+
+```bash
+docker pull liaozhiming/wedesk-server:latest   # 或重新 docker build
+docker rm -f rd-hbbs rd-hbbr                   # 只删容器，数据目录不动
+# 然后用完全相同的命令重新 docker run（或 rdrun.sh restart）
+```
+
+#### 3.5.7 网络模式与三个平台坑
+
+| 场景 | 选法 |
+|---|---|
+| 大多数部署 | 端口映射（上面的写法），跨平台都能跑，未 publish 的 5189/5190 天然对外不可达 |
+| Linux 生产要真实来源 IP / 更低延迟 | `--network host`，但**必须先**防火墙 DROP 5189/5190（见场景 B）；此时不用写 `-p` |
+| Windows / macOS Docker Desktop | 只能用端口映射，`--net=host` 不生效 |
+
+平台相关的三个坑：
+
+- **SELinux 系统**（RHEL / CentOS / Rocky）：`-v` 要写成
+  `-v /srv/wedesk/data:/root:z`，否则容器报 permission denied；
+- **Windows 的 Git Bash / MSYS**：会把 `/root` 这种参数偷偷改写成 Windows 路径
+  （实测变成 `C:/Program Files/.../PortableGit/root/db_v2.sqlite3`），
+  hbbs 起来就崩 `unable to open database file`。用 `MSYS_NO_PATHCONV=1`
+  并把数据目录写成 Windows 风格（如 `C:/wedesk/data`），
+  `rdrun.sh` 已自动处理；生产请直接在 Linux 服务器或 WSL 里跑；
+- **端口映射左右必须一致**：改了 `hbbs -p 6000` 就要把 `-p` 映射也改成 6000，
+  写成 `-p 9000:5187` 只会得到"端口开着但连不上"（容器里根本没进程听 9000）。
+
+### 3.6 升级
 
 | 升级什么 | 做法 |
 |---|---|
 | **服务端二进制**（改了 `server/src` 或 Dockerfile） | `python rdctl.py build && python rdctl.py restart` |
 | **拉 CI 镜像**（`RD_IMAGE` 指向远端） | `python rdctl.py upgrade`（自动先备份再拉取重启；`--check` 只看不升） |
 | **数据库引擎小版本** | 改 `PG_IMAGE` → `--profile pg up -d` 重建 PG 容器；先 `backup` |
+| **`docker run` 部署的服务端** | 拉/编新镜像 → `docker rm -f rd-hbbs rd-hbbr` → 用**完全相同的命令**重新 `docker run`（或 `rdrun.sh restart`）。**只 `docker restart` 没用**：容器用的还是启动时那层镜像，见 3.5.6 |
 
 升级顺序永远是：**先 `backup` → 停/换 → 起 → 用一台客户端验证**。
 升级上游基线（改 `server/src` 对齐新 commit）的 SOP 见 [09 服务端自编译](09-server-build.md)。
 
-### 3.6 部署后验证清单
+### 3.7 部署后验证清单
 
 ```
 服务端
@@ -430,6 +662,16 @@ python rdctl.py backup                    # 进计划任务
 python rdctl.py doctor                    # 改完配置 / 升级后
 ```
 
+`docker run` 路线（分机 / 无 compose，见 3.5）：
+
+```bash
+docker ps -a --filter name=rd-hb                 # 容器状态
+docker logs -f --tail 200 rd-hbbs                # 排障
+docker exec rd-hbbs cat /root/id_ed25519.pub     # 公钥
+tar czf wedesk-backup.tgz -C /srv/wedesk data    # 备份：打包数据目录即可
+./rdrun.sh status | key | restart | stop         # 一键脚本
+```
+
 该盯的指标：容器是否 Up（反复重启 → 看日志找端口冲突/OOM）、
 hbbr 出网带宽（持续打满 → 大量走中继，查 `ALWAYS_USE_RELAY`）、
 5188 流量（几乎为 0 = 打洞成功率高，健康）、`data/` 大小（db 只增不减，无清理逻辑，长期不用管）。
@@ -459,10 +701,72 @@ python rdctl.py logs       # 容器日志
 
 | 原因 | 查法 |
 |---|---|
-| compose 映射左右两侧不一致（如 `9000:5187`） | `python rdctl.py ports` 对照 |
-| 少了 UDP 5187 那条映射 | compose 里是否两条 `${HBBS_PORT}`（一条带 `/udp`） |
+| 映射左右两侧不一致（如 `-p 9000:5187`） | `python rdctl.py ports` 对照；容器里根本没进程听 9000 |
+| 少了 UDP 5187 那条映射 | 必须写两条：一条 TCP、一条带 `/udp`。缺了 ID 就出不来 |
 | `-r` 漏了端口，客户端被指到默认 21117 | hbbs 日志 `relay-servers=[...]` 是否带 `:5188` |
+| 分机部署时客户端到 hbbr 的 5188 不通 | 在**客户端机器**上测：`Test-NetConnection <中继IP> -Port 5188` |
 | `server/data/.env` 陷阱：把 compose 的 `.env` 误拷进 data/，键被静默变成服务端参数（`PORT=5188` 会让 hbbr 改听 5189） | `ls server/data/`，两个 `.env` 永远分开 |
+
+**Q：hbbs 一起就崩，日志 `unable to open database file`**
+
+三种原因，都指向"容器内 `/root` 不可写或不是你以为的那个目录"：
+
+| 原因 | 查法 |
+|---|---|
+| 忘了 `-v <数据目录>:/root` | `docker inspect rd-hbbs --format '{{json .Mounts}}'` |
+| Windows Git Bash 把 `/root` 改写成 Windows 路径（日志里 `DB_URL=C:/...PortableGit/root/...`） | 见 3.5.7：`MSYS_NO_PATHCONV=1` + Windows 风格数据目录 |
+| SELinux 系统（RHEL/Rocky）没加 `:z` | 挂载写成 `-v /srv/wedesk/data:/root:z` |
+
+**Q：容器秒退，日志只有 `exec format error` / `exec: "hbbr": executable file not found`**
+
+前者是**镜像架构不对**（在 ARM 机器上编了镜像给 x86 服务器用）——
+构建时显式带 `--platform linux/amd64`。后者是镜像里没有真正可执行的二进制，
+见 [09 服务端自编译](09-server-build.md)（Dockerfile 的 cache mount 陷阱）。
+
+**Q：镜像更新了，服务端却还是旧版本**
+
+`docker restart` 不会换二进制——容器用的还是启动那一刻的镜像层。
+必须删容器重建（数据目录不动）：
+
+```bash
+docker pull liaozhiming/wedesk-server:latest    # 或重新 docker build
+docker rm -f rd-hbbs rd-hbbr                    # 只删容器
+# 用完全相同的命令重新 docker run，或：rdrun.sh restart
+```
+
+compose 路线同理：`rdctl.py build --no-cache && rdctl.py restart`。
+
+**Q：只有 docker、没有 compose，或者要把 hbbs 和 hbbr 分到两台机器**
+
+走 [3.5 用 docker run 启动](#35-用-docker-run-启动hbbs--hbbr-可分离部署)：
+两条 `docker run` 各自独立，或用 `rdrun.sh hbbs` / `rdrun.sh hbbr`。
+分机时记住：hbbr **不需要**知道 hbbs 在哪，hbbs **必须**用 `-r <中继IP>:5188`
+告诉客户端去哪中继，客户端**同时**要能访问两台机器。
+
+**Q：分机部署各要放行哪些端口**
+
+| 机器 | 放行 | 不放行 |
+|---|---|---|
+| hbbs（ID 注册） | TCP 5186、TCP 5187、**UDP 5187** | 5189（WS，别开） |
+| hbbr（中继） | TCP 5188 | 5190（WS，别开） |
+
+**Q：能加多台中继分担压力吗**
+
+能。再找台机器跑一条同样的 `hbbr` 命令，然后把新地址**追加**到 hbbs 的 `-r`
+列表里（逗号分隔）：`hbbs -p 5187 -r 1.1.1.1:5188,2.2.2.2:5188`。
+客户端会按顺序尝试。注意这不是负载均衡——没有健康检查与权重，
+纯靠客户端依次试；想更精细就得自己在前面放四层代理。
+
+**Q：端口都放行了，客户端还是连不上**
+
+按顺序查四层，每层都可能单独挡住：
+
+1. **云安全组**（阿里云/腾讯云/AWS 控制台）——最容易只配了 TCP 忘配 UDP；
+2. **系统防火墙** `iptables -L -n` / `firewall-cmd --list-ports`；
+3. **Docker 自己的链**：Docker 会在 `DOCKER-USER` 链里插规则，
+   外部访问容器端口要过它，`iptables -L DOCKER-USER -n` 看有没有被 DROP；
+4. **容器内真的在听吗**：`docker exec rd-hbbs sh -c 'netstat -lntup'`
+   （alpine 镜像里是 `netstat -lntup`，没有就 `apk add net-tools`）。
 
 **Q：审计日志里来源 IP 全是网关地址**
 

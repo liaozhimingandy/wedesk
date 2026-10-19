@@ -19,6 +19,10 @@ rdctl.py —— RustDesk 自建服务器跨平台管理工具
     python rdctl.py doctor    体检：查出"配置看着对、实际没生效"的问题
     python rdctl.py uninstall 停止并删除容器（保留 ./data）
 
+本工具管的是 docker-compose.yml 编排的那两个容器（hbbs + hbbr 同机）。
+若要把 hbbs 与 hbbr 分机部署、或机器上没有 compose 插件，改用同目录的
+rdrun.sh（裸 docker run 路线），见 docs/13-server-deployment-handbook.md 3.5 节。
+
 upgrade 参数:
     --tag=<tag>      升级到指定版本
     --check          只报告有无更新，不重启

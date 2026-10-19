@@ -1287,7 +1287,6 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
             translate('Use permanent password'),
             translate('Use both passwords'),
           ];
-          bool tmpEnabled = model.verificationMethod != kUsePermanentPassword;
           bool permEnabled = model.verificationMethod != kUseTemporaryPassword;
           String currentValue =
               passwordValues[passwordKeys.indexOf(model.verificationMethod)];

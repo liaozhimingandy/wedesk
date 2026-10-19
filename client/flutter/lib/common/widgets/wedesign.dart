@@ -14,7 +14,10 @@ import 'package:flutter_hbb/common/formatter/id_formatter.dart';
 
 /// Brand and semantic colors.
 class WeColors {
-  WeColors._();
+  // 注意：这里**不能**写 `WeColors._();` —— 类里有 final 实例字段时，
+  // 空的生成构造函数无法初始化它们，Dart 会报
+  // "Final field 'brand' is not initialized by this constructor"。
+  // 想禁止直接实例化就只留下面那个 const 构造。
 
   /// ToDesk-like blue. Used as the primary action color.
   static const Color brandLight = Color(0xFF1E71FF);

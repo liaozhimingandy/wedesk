@@ -646,16 +646,58 @@ impl RendezvousMediator {
 
     pub async fn start(server: ServerPtr, host: String) -> ResultType<()> {
         log::info!("start rendezvous mediator of {}", host);
-        //If the investment agent type is http or https, then tcp forwarding is enabled.
-        if (cfg!(debug_assertions) && option_env!("TEST_TCP").is_some())
+        // Reasons that force TCP no matter what the user's websocket switch says.
+        // `is_udp_disabled` is included on purpose: falling back to UDP below would
+        // contradict an explicit "TCP only" choice, so it must not be overridden.
+        let force_tcp = (cfg!(debug_assertions) && option_env!("TEST_TCP").is_some())
             || Config::is_proxy()
-            || use_ws()
-            || crate::is_udp_disabled()
-        {
-            Self::start_tcp(server, host).await
-        } else {
-            Self::start_udp(server, host).await
+            || crate::is_udp_disabled();
+        if force_tcp || use_ws() {
+            match Self::start_tcp(server.clone(), host.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    if !(use_ws() && !force_tcp) {
+                        // TCP-only path, no UDP fallback. Name the exact
+                        // endpoint here: the caller only reports
+                        // "rendezvous mediator error: deadline has elapsed",
+                        // which tells you nothing about the fact that a
+                        // *derived* port (rendezvous_port + 2) was involved.
+                        // That missing hint is what made a blocked 5189 look
+                        // like a generic "connecting forever" bug.
+                        log::error!(
+                            "rendezvous to {} failed: {err}; no UDP fallback \
+                             (force_tcp: proxy={}, udp-disabled={}). If the \
+                             endpoint is ws://..., check that the websocket \
+                             port (= rendezvous port + 2) is published and \
+                             reachable",
+                            hbb_common::websocket::check_ws(&host),
+                            Config::is_proxy(),
+                            crate::is_udp_disabled()
+                        );
+                        return Err(err);
+                    }
+                    // Only the user's "use websocket" switch sent us down the TCP
+                    // path, so a plain UDP rendezvous is still a legal option.
+                    //
+                    // This matters for self-hosted servers: the websocket port
+                    // is derived as rendezvous_port + 2 (5187 -> 5189). If it
+                    // is not published/reachable, a client whose only reason
+                    // for being here is the "use websocket" switch would sit in
+                    // "connecting" forever instead of registering over UDP.
+                    // (We now publish it by default — see docs/10-ports.md.)
+                    let ws_ep = hbb_common::websocket::check_ws(&host);
+                    log::warn!(
+                        "websocket rendezvous to {} failed: {err}; \
+                         falling back to UDP (hint: if you do not run a reverse \
+                         proxy in front of the server, turn off \"Use WebSocket\" \
+                         or publish the websocket port)",
+                        ws_ep
+                    );
+                    return Self::start_udp(server, host).await;
+                }
+            }
         }
+        Self::start_udp(server, host).await
     }
 
     async fn handle_request_relay(&self, rr: RequestRelay, server: ServerPtr) -> ResultType<()> {

@@ -14,9 +14,26 @@
 #   hbbs 主端口 P = 5187   →  UDP P(5187)   注册 / 心跳
 #                             TCP P(5187)   TCP 打洞与连接
 #                             TCP P-1(5186) NAT 类型探测
-#                             TCP P+2(5189) WebSocket ** 容器内始终监听，不 publish **
+#                             TCP P+2(5189) WebSocket（备用注册通道，见下）
 #   hbbr 主端口 R = 5188   →  TCP R(5188)   中继数据
-#                             TCP R+2(5190) WebSocket ** 容器内始终监听，不 publish **
+#                             TCP R+2(5190) WebSocket 中继
+#
+#   ★ 5189 / 5190 现在默认 publish。原因（2026-10-20 排障实证）：
+#     客户端在 UDP 不通或用户勾了"使用 WebSocket"时，会改用 P+2 这个 WS 端口
+#     去注册；而这个端口如果外部摸不到，客户端就会一直卡在
+#     "正在接入网络"，日志里反复出现
+#         start tcp: ws://<host>:5189
+#         rendezvous mediator error: deadline has elapsed
+#     —— 也就是说，不开这两个口子 = 一部分客户端永远注册不上。
+#     上游"不要开"的建议是针对**前面挂了反向代理**的场景：WS 分支会信任
+#     X-Real-IP / X-Forwarded-For 且不校验来源，有代理时客户端可借此伪造 IP。
+#     直连 publish 没有代理插手，风险等级远低于"注册不上"。若你在前面挂了
+#     nginx 之类，请让代理**覆写**这两个头，或注释掉下面两条映射。
+#
+#   5185 = 客户端按 P-2 推导出来的 api-server（心跳 / 设备台账 / 地址簿同步）。
+#   hbbs 本身【不监听】这个端口 —— 那是独立的 API 服务（官方 SaaS 才有）。
+#   自建部署没有它，客户端日志会有一条 Heartbeat failed 的 WARN，连续 3 次
+#   后自动停搏，属正常现象，不用管。想彻底消掉可在客户端关闭"注册设备"。
 #
 # 源码位置：hbbs 见 src/rendezvous_server.rs 的 nat_port = port - 1 / ws_port = port + 2；
 #          hbbr 见 src/relay_server.rs 的 port2 = port + 2。它们没有开关可关。
@@ -124,13 +141,13 @@ services:
       # 负载均衡探针）也从这里拿 JSON 状态。改 HBBS_PORT 时同步改 HBBS_HEALTH_PORT。
       - "${HBBS_HEALTH_PORT:-5191}:${HBBS_HEALTH_PORT:-5191}"
       #
-      # 5189 = hbbs 的 WebSocket 端口，【刻意没有 publish】。
-      # 注意它不是"没开"：容器内 hbbs 进程始终在 5189 上监听，只是外部摸不到。
-      # 不能开的原因：上游确认 WebSocket 分支会无条件信任 X-Real-IP /
-      # X-Forwarded-For 头，且不校验来源。任何人直连都能伪造 IP，绕过 IP
-      # 限流/封禁并污染审计日志。只有在前面挂了反向代理、由代理统一覆写该头
-      # 时才可 publish，且必须用防火墙限制仅反代 IP 可访问。
-      # 详见 docs/10-ports.md。
+      # 5189 = hbbs 的 WebSocket 端口（= P+2），客户端在 UDP 不通 / 勾选了
+      # "使用 WebSocket" 时用它注册。**默认 publish**：不开的话这类客户端会
+      # 永远卡在"正在接入网络"。
+      # 取值必须恒等于 HBBS_PORT + 2，改 HBBS_PORT 时同步改 HBBS_WS_PORT。
+      # ⚠️ 前置了反向代理时请让代理覆写 X-Real-IP / X-Forwarded-For，否则客户端
+      #    可以伪造来源 IP 绕过限流并污染审计日志；那种情况请注释掉下面这行。
+      - "${HBBS_WS_PORT:-5189}:${HBBS_WS_PORT:-5189}"
     # 这里用完整映射写法而不是列表，因为要给 postgres 加条件（列表形式不支持）。
     depends_on:
       hbbr:
@@ -188,8 +205,10 @@ services:
       - "${HBBR_PORT:-5188}:${HBBR_PORT:-5188}"      # 中继主端口 (TCP)
       - "${HBBR_HEALTH_PORT:-5192}:${HBBR_HEALTH_PORT:-5192}"  # 健康检查 HTTP
       #
-      # 5190 = hbbr 的 WebSocket 中继端口（= 5188+2），同样刻意不 publish，
-      # 原因与 hbbs 的 5189 相同 —— 信任 X-Real-IP / X-Forwarded-For 且不做校验。
+      # 5190 = hbbr 的 WebSocket 中继端口（= R+2）。与 hbbs 的 5189 同理默认
+      # publish：Web 客户端与"强制 WebSocket"的客户端要靠它走中继。
+      # 取值必须恒等于 HBBR_PORT + 2。前置反代时同上，注释掉本行。
+      - "${HBBR_WS_PORT:-5190}:${HBBR_WS_PORT:-5190}"
     restart: unless-stopped
     networks:
       - rd-net
@@ -266,14 +285,19 @@ networks:
 #
 #     network_mode: "host"      # 删掉上面的 ports: 与 networks: 段
 #
-# ⚠️ 一旦切 host，上面"只在容器内监听、没 publish"的保护就消失了：
-#    hbbs 的 5189、hbbr 的 5190 会直接暴露到宿主网络栈。
-#    所以切之前必须先在防火墙里显式拒绝这两个端口（只放行 5186/5187/5188）：
+# ⚠️ 一旦切 host，容器内外网络栈合一，5189/5190 直接对外。这两个口子现在是
+#    "按需开放"—— 客户端要拿它们做 WebSocket 注册/中继，因此建议放行，
+#    但只在确实需要 WebSocket 通道时才放行（多数内网客户端走 5187 UDP 即可）：
 #
 #       # 云安全组/iptables 都要做，按实际网卡与顺序调整
-#       iptables -I INPUT -p tcp --dport 5189 -j DROP
-#       iptables -I INPUT -p tcp --dport 5190 -j DROP
+#       iptables -I INPUT -p tcp --dport 5186 -j ACCEPT   # NAT 探测
+#       iptables -I INPUT -p tcp --dport 5187 -j ACCEPT   # 注册/TCP 打洞
+#       iptables -I INPUT -p udp --dport 5187 -j ACCEPT   # 注册/心跳
+#       iptables -I INPUT -p tcp --dport 5188 -j ACCEPT   # 中继
+#       iptables -I INPUT -p tcp --dport 5189 -j ACCEPT   # hbbs WebSocket（按需）
+#       iptables -I INPUT -p tcp --dport 5190 -j ACCEPT   # hbbr WebSocket（按需）
 #
+#    若确认所有客户端都能走 UDP 5187，就把 5189/5190 改成 DROP。
 #    端口全景与规划建议见 docs/10-ports.md。
 #    （--net=host 仅在 Linux 生效；Windows / macOS 请保持上面的端口映射写法）
 # =============================================================================

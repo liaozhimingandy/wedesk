@@ -201,7 +201,16 @@ def is_remote_image():
 #   hbbr 主端口 R → TCP R      / TCP R+2(WebSocket)
 # 所以 hbbs 一动就是三个端口跟着动。下面的默认值必须与 docker-compose.yml
 # 里的 ${...:-5187} 保持一致，任何一处改了，另一处也要跟着改。
-DEFAULT_PORTS = {"HBBS_PORT": 5187, "HBBS_NAT_PORT": 5186, "HBBR_PORT": 5188}
+DEFAULT_PORTS = {
+    "HBBS_PORT": 5187,
+    "HBBS_NAT_PORT": 5186,
+    "HBBR_PORT": 5188,
+    # WebSocket 端口由进程按 P+2 / R+2 派生。这里单独列出来，只为让
+    # docker-compose.yml 的 ports 段有一个可覆盖的变量 —— 它必须恒等于
+    # HBBS_PORT+2 / HBBR_PORT+2，check_ports() 会校验。
+    "HBBS_WS_PORT": 5189,
+    "HBBR_WS_PORT": 5190,
+}
 
 
 def resolve_ports():
@@ -225,12 +234,28 @@ def check_ports(ports, fatal=False):
     p = ports["HBBS_PORT"]
     nat = ports["HBBS_NAT_PORT"]
     r = ports["HBBR_PORT"]
+    ws = ports["HBBS_WS_PORT"]
+    wsr = ports["HBBR_WS_PORT"]
     problems = []
 
     if nat != p - 1:
         problems.append(
             f"HBBS_NAT_PORT({nat}) ≠ HBBS_PORT({p}) - 1。\n"
             f"        hbbs 会在 {p - 1} 上监听 NAT 探测端口，把 {nat} 映射出去等于指向空气。"
+        )
+
+    # WS 端口同样要映射对：compose 里 publish 的是 HBBS_WS_PORT，而进程监听
+    # 的是 HBBS_PORT+2。两者不等时端口"开着但连不上"，客户端表现为
+    # "ws://host:5189 → deadline has elapsed" 然后一直卡在正在接入网络。
+    if ws != p + 2:
+        problems.append(
+            f"HBBS_WS_PORT({ws}) ≠ HBBS_PORT({p}) + 2。\n"
+            f"        hbbs 实际监听 {p + 2}，映射 {ws} 等于指向空气。"
+        )
+    if wsr != r + 2:
+        problems.append(
+            f"HBBR_WS_PORT({wsr}) ≠ HBBR_PORT({r}) + 2。\n"
+            f"        hbbr 实际监听 {r + 2}，映射 {wsr} 等于指向空气。"
         )
 
     derived = [(p, "hbbs 主"), (nat, "hbbs NAT"), (p + 2, "hbbs WebSocket"),
@@ -259,11 +284,12 @@ def print_ports(ports):
       {p}  TCP    hbbs TCP 打洞与连接        = P
       {p}  UDP    hbbs ID 注册 + 心跳        = P
       {r}  TCP    hbbr 中继数据              = R
-      {p + 2}  TCP    hbbs WebSocket  容器内监听，未 publish
-      {r + 2}  TCP    hbbr WebSocket  容器内监听，未 publish
+      {p + 2}  TCP    hbbs WebSocket  已 publish（UDP 不通时的注册通道）
+      {r + 2}  TCP    hbbr WebSocket  已 publish（WebSocket 中继）
 """)
-    print("    防火墙只需放行：5186/tcp、5187/tcp、5187/udp、5188/tcp。")
-    print("    WebSocket 两个端口为什么不能对外开，见 docs/10-ports.md。")
+    print("    防火墙放行：5186/tcp、5187/tcp、5187/udp、5188/tcp")
+    print("              + 5189/tcp、5190/tcp（WebSocket，UDP 受限网络需要）")
+    print("    5189/5190 的安全前提与关闭方式，见 docs/10-ports.md。")
     print()
 
 

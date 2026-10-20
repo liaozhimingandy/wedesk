@@ -38,6 +38,11 @@ RELAY_HOST=""
 HBBS_PORT="5187"
 HBBS_NAT_PORT="5186"
 HBBR_PORT="5188"
+# WebSocket 端口由进程按 P+2 / R+2 派生，这里只是把它 publish 出来。
+# 客户端 UDP 不通或勾了"使用 WebSocket"时靠 P+2 注册，不 publish 就一直卡在
+# "正在接入网络"（日志：ws://host:5189 → deadline has elapsed）。
+HBBS_WS_PORT="5189"
+HBBR_WS_PORT="5190"
 DATA_DIR="$PWD/data"
 NET_MODE="bridge"          # bridge（端口映射）| host（仅 Linux 生效）
 NET_NAME="rd-net"
@@ -84,9 +89,11 @@ $SELF —— 用 docker run 启动 wedesk 服务端（hbbs / hbbr），不依赖
   --hbbs-port <P>           hbbs 主端口，默认 5187
   --nat-port  <P-1>         NAT 探测端口，默认 = 主端口-1（源码硬编码，改了会拒绝启动）
   --hbbr-port <R>           hbbr 中继端口，默认 5188
+  --hbbs-ws-port <P+2>      hbbs WebSocket 端口，默认 = 主端口+2（UDP 不通时的注册通道）
+  --hbbr-ws-port <R+2>      hbbr WebSocket 中继端口，默认 = 中继端口+2
   --data-dir <路径>         密钥与 SQLite 落盘目录，默认 ./data
   --net <bridge|host>       bridge=端口映射（跨平台）；host=宿主网络（仅 Linux，需防火
-                            墙 DROP 5189/5190）
+                            墙放行或 DROP 5189/5190）
   --db-type <sqlite|postgres>   默认 postgres
   --db-url  <路径|连接串>   postgres 留空 = 用内置 Postgres 容器（自动创建 rd-postgres）；
                             填 postgres://user:pwd@host:5432/db 指向外部库时，
@@ -135,6 +142,8 @@ load_env() {
       HBBS_PORT)                HBBS_PORT="$v" ;;
       HBBS_NAT_PORT)            HBBS_NAT_PORT="$v" ;;
       HBBR_PORT)                HBBR_PORT="$v" ;;
+      HBBS_WS_PORT)             HBBS_WS_PORT="$v" ;;
+      HBBR_WS_PORT)             HBBR_WS_PORT="$v" ;;
       DB_TYPE)                  DB_TYPE="$v" ;;
       DB_URL)                   DB_URL="$v" ;;
       ALWAYS_USE_RELAY)         ALWAYS_USE_RELAY="$v" ;;
@@ -166,6 +175,17 @@ check_ports() {
   local expect=$((HBBS_PORT - 1))
   if [ "$HBBS_NAT_PORT" != "$expect" ]; then
     die "HBBS_NAT_PORT($HBBS_NAT_PORT) 必须 = HBBS_PORT-1($expect)。源码硬编码 nat_port=port-1，改了不生效只会得到半通的配置。要平移就把 --hbbs-port 与 --nat-port 一起改。"
+  fi
+  # WS 端口同样要跟住主端口：compose/脚本 publish 的是 HBBS_WS_PORT，而进程监听
+  # 的是 HBBS_PORT+2，两者不等就是"端口开着但连不上"，客户端表现为一直卡在
+  # "正在接入网络"。
+  local expect_ws=$((HBBS_PORT + 2))
+  if [ "$HBBS_WS_PORT" != "$expect_ws" ]; then
+    die "HBBS_WS_PORT($HBBS_WS_PORT) 必须 = HBBS_PORT+2($expect_ws)。源码硬编码 ws_port=port+2。"
+  fi
+  local expect_wsr=$((HBBR_PORT + 2))
+  if [ "$HBBR_WS_PORT" != "$expect_wsr" ]; then
+    die "HBBR_WS_PORT($HBBR_WS_PORT) 必须 = HBBR_PORT+2($expect_wsr)。源码硬编码 port2=port+2。"
   fi
 }
 
@@ -337,7 +357,7 @@ start_hbbs() {
   local cmd=(docker run -d --name rd-hbbs --restart unless-stopped)
   if [ "$NET_MODE" = "host" ]; then
     cmd+=(--network host)
-    warn "已选 host 网络：容器内 5189（hbbs WS）会暴露到宿主网络栈。请确认防火墙已 DROP TCP 5189，且只放行 5186/5187/5188。"
+    warn "已选 host 网络：容器内 $HBBS_WS_PORT（hbbs WS）会暴露到宿主网络栈。请确认防火墙已放行或 DROP TCP $HBBS_WS_PORT。"
   else
     ensure_net
     cmd+=(--network "$NET_NAME")
@@ -346,6 +366,8 @@ start_hbbs() {
     cmd+=(-p "$HBBS_NAT_PORT:$HBBS_NAT_PORT/tcp")
     cmd+=(-p "$HBBS_PORT:$HBBS_PORT/tcp")
     cmd+=(-p "$HBBS_PORT:$HBBS_PORT/udp")
+    # 5189 = hbbs WebSocket（= P+2），UDP 不通 / 勾了 WS 的客户端靠它注册
+    cmd+=(-p "$HBBS_WS_PORT:$HBBS_WS_PORT/tcp")
   fi
   cmd+=(-v "$DATA_DIR:/root")
   cmd+=(--memory "$MEM_HBBS" --cpus "$CPUS_HBBS" --pids-limit 128)
@@ -378,11 +400,13 @@ start_hbbr() {
   local cmd=(docker run -d --name rd-hbbr --restart unless-stopped)
   if [ "$NET_MODE" = "host" ]; then
     cmd+=(--network host)
-    warn "已选 host 网络：容器内 5190（hbbr WS）会暴露到宿主网络栈。请确认防火墙已 DROP TCP 5190。"
+    warn "已选 host 网络：容器内 $HBBR_WS_PORT（hbbr WS）会暴露到宿主网络栈。请确认防火墙已放行或 DROP TCP $HBBR_WS_PORT。"
   else
     ensure_net
     cmd+=(--network "$NET_NAME")
     cmd+=(-p "$HBBR_PORT:$HBBR_PORT/tcp")
+    # 5190 = hbbr WebSocket 中继（= R+2）
+    cmd+=(-p "$HBBR_WS_PORT:$HBBR_WS_PORT/tcp")
   fi
   # 挂载 data 只为与 compose 行为一致（hbbr 自己不写库，但读同一份密钥目录）
   cmd+=(-v "$DATA_DIR:/root")
@@ -461,8 +485,9 @@ do_status() {
     echo "          连接: $DB_URL"
     echo "          ⚠️ SQLite 模式下不托管密钥、不落审计，仅 peer 表生效"
   fi
-  echo "端口规划: hbbs TCP $HBBS_NAT_PORT / TCP+UDP $HBBS_PORT   hbbr TCP $HBBR_PORT"
-  echo "          容器内还监听 5189(hbbs WS) / 5190(hbbr WS)，刻意不 publish"
+  echo "端口规划: hbbs TCP $HBBS_NAT_PORT / TCP+UDP $HBBS_PORT / TCP $HBBS_WS_PORT(WS)"
+  echo "          hbbr TCP $HBBR_PORT / TCP $HBBR_WS_PORT(WS)"
+  echo "          两个 WS 端口已 publish：UDP 受限的客户端要靠 P+2 注册"
 }
 
 # --- 参数解析 ---------------------------------------------------------------
@@ -480,6 +505,8 @@ while [ $# -gt 0 ]; do
     --hbbs-port)               HBBS_PORT="${2:?--hbbs-port 需要一个值}"; shift 2 ;;
     --nat-port)                HBBS_NAT_PORT="${2:?--nat-port 需要一个值}"; shift 2 ;;
     --hbbr-port)               HBBR_PORT="${2:?--hbbr-port 需要一个值}"; shift 2 ;;
+    --hbbs-ws-port)            HBBS_WS_PORT="${2:?--hbbs-ws-port 需要一个值}"; shift 2 ;;
+    --hbbr-ws-port)            HBBR_WS_PORT="${2:?--hbbr-ws-port 需要一个值}"; shift 2 ;;
     --data-dir)                DATA_DIR="${2:?--data-dir 需要一个值}"; shift 2 ;;
     --net)                     NET_MODE="${2:?--net 需要一个值}"; shift 2 ;;
     --db-type)                 DB_TYPE="${2:?--db-type 需要一个值}"; shift 2 ;;

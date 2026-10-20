@@ -17,7 +17,7 @@
 
 ```bash
 # 1. 准备一台 Linux 服务器（Docker + Compose 已装），放行
-#    TCP 5186 / 5187 / 5188 + UDP 5187
+#    TCP 5186 / 5187 / 5188 / 5189 / 5190 + UDP 5187
 git clone <你的仓库> && cd wedesk/server/deploy
 
 # 2. 配置
@@ -111,23 +111,26 @@ flowchart LR
     subgraph HBBS_D["hbbs 主端口 P = 5187"]
         P1["TCP 5186<br/>= P-1<br/>NAT 类型探测"]
         P2["TCP+UDP 5187<br/>= P<br/>注册/心跳/打洞"]
-        P3["TCP 5189<br/>= P+2<br/>WebSocket<br/>⚠️ 不对外开"]
+        P3["TCP 5189<br/>= P+2<br/>WebSocket 注册通道<br/>✅ 建议开"]
     end
     subgraph HBBR_D["hbbr 主端口 R = 5188"]
         R1["TCP 5188<br/>= R<br/>中继数据"]
-        R2["TCP 5190<br/>= R+2<br/>WebSocket<br/>⚠️ 不对外开"]
+        R2["TCP 5190<br/>= R+2<br/>WebSocket 中继<br/>✅ 建议开"]
     end
+    PS["（客户端还会按 P-2 推导一个<br/>api-server = TCP 5185，<br/>自建无此服务，日志噪音而已）"]
 ```
 
 | 规则 | 说明 |
 |---|---|
 | `HBBS_NAT_PORT = HBBS_PORT - 1` | **硬约束**（源码 `nat_port = port - 1`），`rdctl.py start` 会校验，不满足直接拒绝启动 |
+| `HBBS_WS_PORT = HBBS_PORT + 2`、`HBBR_WS_PORT = HBBR_PORT + 2` | 同样是硬约束（源码 `ws_port = port + 2` / `port2 = port + 2`），`rdctl.py` 一并校验 |
 | compose 映射左右两侧必须相等 | 容器内端口由 `command: hbbs -p P` 决定，宿主映射写成 `9000:5187` 只会得到"端口开着但连不上" |
 | 5187 的 TCP 与 UDP 是两条映射 | `"5187:5187"` 只发 TCP，UDP 必须单独写 `/udp`，少了它客户端注册永远超时 |
-| 5189 / 5190 刻意不 publish | 进程在容器内**始终监听**。上游 WebSocket 分支无条件信任 `X-Real-IP`/`X-Forwarded-For`，任何人直连都能伪造来源 IP，绕过限流封禁、污染审计。只有前面挂反向代理并由其统一覆写该头时才开放，且防火墙必须限制仅代理 IP 可达 |
+| **5189 / 5190 默认 publish** | 客户端 UDP 不通或勾选了"使用 WebSocket"时会用 `P+2` 注册；这个端口摸不到，客户端就**一直卡在"正在接入网络"**（日志：`start tcp: ws://host:5189` → `deadline has elapsed`）。上游"不要开"是针对**前面挂了反向代理**的场景（WS 分支无条件信任 `X-Real-IP`/`X-Forwarded-For`），有代理时务必让代理覆写该头，否则注释掉这两条映射 |
 
-**防火墙只需放行 4 条**：`TCP 5186`、`TCP 5187`、`UDP 5187`、`TCP 5188`。
-要改端口只能**整体平移**三个变量（`HBBS_PORT`/`HBBS_NAT_PORT`/`HBBR_PORT`），
+**防火墙放行 6 条**：`TCP 5186`、`TCP 5187`、`UDP 5187`、`TCP 5188`、`TCP 5189`、`TCP 5190`。
+若确认所有客户端都能走 UDP 5187，最后两条可以关掉。
+要改端口只能**整体平移**五个变量（`HBBS_PORT`/`HBBS_NAT_PORT`/`HBBR_PORT`/`HBBS_WS_PORT`/`HBBR_WS_PORT`），
 且客户端 `custom.toml` 的 `rendezvous_host` 必须同步改并**重新构建分发**。详见 [10 端口与网络规划](10-ports.md)。
 
 ### 2.3 数据与密钥：整个服务端的全部状态
@@ -356,7 +359,7 @@ curl http://<server>:5191/health
 | Docker | 20.10+，`docker info` 能跑 |
 | Docker Compose | v2（`docker compose version`） |
 | Python | 3.8+（rdctl.py 只用标准库，**零第三方依赖**） |
-| 网络 | 服务器能被所有客户端访问；防火墙放行 TCP 5186/5187/5188 + UDP 5187 |
+| 网络 | 服务器能被所有客户端访问；防火墙放行 TCP 5186/5187/5188/5189/5190 + UDP 5187 |
 | 磁盘 | 镜像构建约 2-3 GB，运行期 `data/` 通常 <100 MB |
 
 ### 3.2 `rdctl.py` 完整命令参考
@@ -413,6 +416,7 @@ docker compose up -d                           # 启动（含 PostgreSQL，默�
 | `RUST_LOG` | `warn` | `error`/`warn`/`info`/`debug`/`trace`。默认 `warn` 是刻意的：info 下每次注册/心跳都落一行，长期运行磁盘写入可观。排障临时调高，**调完记得调回** |
 | `RD_IMAGE` | 注释（= 本地构建） | 有值就直接用/拉那个镜像。`liaozhiming/wedesk-server:latest` = CI 推的远端镜像；`rustdesk/rustdesk-server:latest` = 官方镜像（**失去本地化补丁，且不认 `DB_TYPE`**） |
 | `HBBS_PORT` / `HBBS_NAT_PORT` / `HBBR_PORT` | `5187` / `5186` / `5188` | 整体平移时才改，必须满足 `HBBS_NAT_PORT = HBBS_PORT - 1` |
+| `HBBS_WS_PORT` / `HBBR_WS_PORT` | `5189` / `5190` | WebSocket 端口，必须满足 `HBBS_WS_PORT = HBBS_PORT + 2`、`HBBR_WS_PORT = HBBR_PORT + 2`。关掉 WS 通道请直接注释掉 compose 里那两条映射 |
 | `HBBS_MEM` / `HBBS_CPUS` | `256m` / `0.50` | hbbs 实测常驻 10-40 MB，上限是"异常时快速重启"用的，不是性能预估 |
 | `HBBR_MEM` / `HBBR_CPUS` | `512m` / `1.00` | hbbr 内存随并发路数增长，但**瓶颈是出网带宽不是内存**，加到 1 GB 不会更快 |
 | `LOG_MAX_SIZE` / `LOG_MAX_FILE` | `10m` / `3` | 每容器日志约 30 MB 封顶，不会写满磁盘 |
@@ -444,13 +448,18 @@ docker compose up -d                           # 启动（含 PostgreSQL，默�
 network_mode: "host"
 ```
 
-切之前**必须先在防火墙显式拒绝 5189 / 5190**——端口映射的隔离会一并消失，
-容器里那两个未被 publish 的 WebSocket 端口会原样暴露到宿主网络栈：
+切之前**先想清楚 5189 / 5190 放不放行**——端口映射的隔离会一并消失，
+容器里那两个 WebSocket 端口会原样暴露到宿主网络栈：
 
 ```bash
-iptables -I INPUT -p tcp --dport 5189 -j DROP
-iptables -I INPUT -p tcp --dport 5190 -j DROP
-# 云平台还要在安全组做同样的事（只放行 5186/5187/5188 + UDP 5187）
+# 放行（推荐：UDP 受限网络的客户端要靠 5189 注册）
+iptables -I INPUT -p tcp --dport 5189 -j ACCEPT
+iptables -I INPUT -p tcp --dport 5190 -j ACCEPT
+
+# 或：确认所有客户端都走 UDP 5187 时再拒绝
+# iptables -I INPUT -p tcp --dport 5189 -j DROP
+# iptables -I INPUT -p tcp --dport 5190 -j DROP
+# 云平台还要在安全组做同样的事（放行 5186/5187/5188 + UDP 5187）
 ```
 
 > `--net=host` **仅 Linux 生效**；Windows/macOS Docker Desktop 保持端口映射写法。
@@ -514,10 +523,10 @@ flowchart LR
         C2["控制端 B"]
     end
     subgraph S1["A 机 · ID 注册服务器"]
-        H["hbbs<br/>TCP 5186 / TCP+UDP 5187<br/>容器内 5189 不 publish"]
+        H["hbbs<br/>TCP 5186 / TCP+UDP 5187<br/>TCP 5189（WebSocket 注册）"]
     end
     subgraph S2["B 机 · 中继服务器（可多台）"]
-        R["hbbr<br/>TCP 5188<br/>容器内 5190 不 publish"]
+        R["hbbr<br/>TCP 5188<br/>TCP 5190（WebSocket 中继）"]
     end
 
     C1 -- "① 注册 / 心跳 / 打洞协调<br/>UDP 5187 + TCP 5186" --> H
@@ -563,7 +572,7 @@ mkdir -p /srv/wedesk/data          # 密钥与 SQLite 落盘处，务必纳入�
 # 1) ID 注册服务器
 docker run -d --name rd-hbbs --restart unless-stopped \
   --network rd-net \
-  -p 5186:5186/tcp -p 5187:5187/tcp -p 5187:5187/udp \
+  -p 5186:5186/tcp -p 5187:5187/tcp -p 5187:5187/udp -p 5189:5189/tcp \
   -v /srv/wedesk/data:/root \
   --memory 256m --cpus 0.50 --pids-limit 128 \
   --log-opt max-size=10m --log-opt max-file=3 \
@@ -576,7 +585,7 @@ docker run -d --name rd-hbbs --restart unless-stopped \
 # 2) 中继服务器
 docker run -d --name rd-hbbr --restart unless-stopped \
   --network rd-net \
-  -p 5188:5188/tcp \
+  -p 5188:5188/tcp -p 5190:5190/tcp \
   -v /srv/wedesk/data:/root \
   --memory 512m --cpus 1.00 --pids-limit 256 \
   --log-opt max-size=10m --log-opt max-file=3 \
@@ -597,7 +606,7 @@ docker exec rd-hbbs cat /root/id_ed25519.pub
 
 ```bash
 docker run -d --name rd-hbbs --restart unless-stopped \
-  -p 5186:5186/tcp -p 5187:5187/tcp -p 5187:5187/udp \
+  -p 5186:5186/tcp -p 5187:5187/tcp -p 5187:5187/udp -p 5189:5189/tcp \
   -v /srv/wedesk/data:/root \
   --memory 256m --cpus 0.50 \
   -e ENFORCED_RELAY=N \
@@ -609,8 +618,9 @@ docker run -d --name rd-hbbs --restart unless-stopped \
 
 要点：
 
-- 只放行 **5186（TCP）+ 5187（TCP 和 UDP 两条）**；**UDP 那条最容易漏**，
-  漏了的表现是客户端 ID 一直出不来；
+- 放行 **5186（TCP）+ 5187（TCP 和 UDP 两条）+ 5189（TCP，WebSocket 注册通道）**；
+  **5187 的 UDP 那条最容易漏**，漏了的表现是客户端 ID 一直出不来；
+  5189 漏了的表现是客户端卡在"正在接入网络"，日志刷 `ws://host:5189 → deadline has elapsed`；
 - `ENFORCED_RELAY=N` 允许中继指向非本机地址（分机必需）；
 - 默认就是 PG 后端，hbbs 会自动连内置容器；接外部库时才需要显式指定
   `DB_URL=postgres://user:pwd@host:5432/db`（见 3.4 场景 D）；
@@ -624,7 +634,7 @@ docker run -d --name rd-hbbs --restart unless-stopped \
 
 ```bash
 docker run -d --name rd-hbbr --restart unless-stopped \
-  -p 5188:5188/tcp \
+  -p 5188:5188/tcp -p 5190:5190/tcp \
   -v /srv/wedesk/data:/root \
   --memory 512m --cpus 1.00 \
   -e RUST_LOG=warn \
@@ -634,7 +644,8 @@ docker run -d --name rd-hbbr --restart unless-stopped \
 
 要点：
 
-- 只放行 **5188（TCP）**；hbbr 不碰数据库，那个 `-v` 只为与 compose 行为一致
+- 放行 **5188（TCP）**，需要 WebSocket 中继再加 **5190（TCP）**；hbbr 不碰数据库，
+  那个 `-v` 只为与 compose 行为一致
   （密钥目录同源），它自己不写任何状态；
 - 端口用**命令行 `-p`**，不要用环境变量 `PORT`——源码里环境变量 `PORT`
   会被 +1 之后再使用，写 `PORT=5188` 它去监听 5189，正好撞上 hbbs 的 WebSocket 端口；

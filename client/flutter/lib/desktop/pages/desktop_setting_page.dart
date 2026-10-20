@@ -2588,21 +2588,29 @@ class _LogDirEntry extends StatefulWidget {
 }
 
 class _LogDirEntryState extends State<_LogDirEntry> {
-  late final String _dir;
+  // flutter_rust_bridge v1 里没有标 `SyncReturn` 的函数一律生成 async 版本，
+  // 所以这两个都是 Future —— 不能在 initState 里同步取值（G44692867）。
+  // 空串表示"还没取到"，界面上按 '-' 显示。
+  String _dir = '';
   List<String> _files = const [];
 
   @override
   void initState() {
     super.initState();
-    _dir = bind.mainGetLogDir();
-    _refresh();
+    _load();
   }
 
-  void _refresh() {
+  Future<void> _load() async {
+    final dir = await bind.mainGetLogDir();
     if (!mounted) return;
-    setState(() {
-      _files = bind.mainGetLogFiles();
-    });
+    setState(() => _dir = dir);
+    await _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final files = await bind.mainGetLogFiles();
+    if (!mounted) return;
+    setState(() => _files = files);
   }
 
   @override
@@ -2644,8 +2652,8 @@ class _LogDirEntryState extends State<_LogDirEntry> {
               tooltip: translate('Open'),
               size: 28,
               iconSize: 16,
-              onTap: () {
-                _refresh();
+              onTap: () async {
+                await _refresh();
                 if (_dir.isNotEmpty) launchUrl(Uri.file(_dir));
               },
             ),

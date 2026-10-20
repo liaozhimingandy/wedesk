@@ -272,7 +272,7 @@ Test-NetConnection -ComputerName <服务器IP> -Port 5188
 或启动时用命令行指定：
 
 ```bat
-nethelper.exe --custom-rendezvous-server 192.168.1.10:5187
+wedesk.exe --custom-rendezvous-server 192.168.1.10:5187
 ```
 
 **第三步：验证连的是自家服务器**
@@ -313,7 +313,7 @@ python rdctl.py key     # 服务端公钥
 要让"员工不在电脑前 / 没登录时也能被连"，必须装系统服务：
 
 ```bat
-nethelper.exe --silent-install        :: 静默安装服务
+wedesk.exe --silent-install        :: 静默安装服务
 ```
 
 装上之后客户端随系统启动，登录屏和 UAC 界面也能操作。
@@ -327,7 +327,7 @@ verification-method = "use-permanent-password"   # 只认永久密码，忽略�
 配合固定密码，员工机器重启、换人都能连：
 
 ```bat
-nethelper.exe --password YourFixedPwd
+wedesk.exe --password YourFixedPwd
 ```
 
 > **比 ID 更稳的做法**：不用随机 ID，改用**固定永久密码 + 地址簿**。

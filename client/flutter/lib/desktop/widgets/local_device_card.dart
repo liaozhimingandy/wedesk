@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/animated_rotation_widget.dart';
-import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
+import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
 import 'package:flutter_hbb/common/widgets/wedesign.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
@@ -29,6 +29,13 @@ class LocalDeviceCard extends StatefulWidget {
 
 class _LocalDeviceCardState extends State<LocalDeviceCard> {
   bool _passwordVisible = true;
+
+  /// "permanent-password-set" 的查询 future。缓存住是为了让 FutureBuilder
+  /// 不在每次 rebuild 时重新发 FFI 请求（future 实例不变才不重跑）。
+  Future<String>? _permSetFuture;
+
+  Future<String> get _permSet =>
+      _permSetFuture ??= bind.mainGetCommon(key: "permanent-password-set");
 
   @override
   Widget build(BuildContext context) {
@@ -176,13 +183,12 @@ class _LocalDeviceCardState extends State<LocalDeviceCard> {
 
   Widget _buildPasswordColumn(BuildContext context, ServerModel model) {
     final colors = WeColors.of(context);
-    final showOneTime = model.approveMode != 'click' &&
-        model.verificationMethod != kUsePermanentPassword;
-    final passwd = model.serverPasswd.text.trim();
-    final masked =
-        List<String>.filled(passwd.isEmpty ? 6 : passwd.length, '•').join();
-    final display =
-        !showOneTime ? '-' : (_passwordVisible ? passwd : masked);
+    final method = model.verificationMethod;
+    final noPassword = model.approveMode == 'click';
+    final showOneTime = !noPassword &&
+        (method == kUseTemporaryPassword || method == kUseBothPasswords);
+    final showPermanent = !noPassword &&
+        (method == kUsePermanentPassword || method == kUseBothPasswords);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -196,10 +202,80 @@ class _LocalDeviceCardState extends State<LocalDeviceCard> {
           ),
         ),
         const SizedBox(height: 6),
-        Row(
-          children: [
-            Expanded(
-              child: Text(
+        // 连接模式（一次性密码 / 固定密码 / 两者都用）直接在这里切，
+        // 不用再进设置页。写的是 kOptionVerificationMethod，与设置页同一个选项。
+        ComboBox(
+          enabled: !bind.isDisableSettings(),
+          keys: const [
+            kUseTemporaryPassword,
+            kUsePermanentPassword,
+            kUseBothPasswords,
+          ],
+          values: [
+            translate('Use one-time password'),
+            translate('Use permanent password'),
+            translate('Use both passwords'),
+          ],
+          initialKey: method,
+          onChanged: (key) => _onMethodChanged(model, key),
+        ),
+        const SizedBox(height: 10),
+        if (showOneTime) _buildOneTimeRow(context, model),
+        if (showPermanent) _buildPermanentRow(context, model),
+        if (noPassword)
+          Text(
+            '-',
+            style: TextStyle(
+              color: colors.textPrimary,
+              fontSize: 20,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// 切换连接模式。与设置页同规则：选到固定密码但还没设过时，先弹设置框。
+  Future<void> _onMethodChanged(ServerModel model, String key) async {
+    Future<void> apply() async {
+      await model.setVerificationMethod(key);
+      await model.updatePasswordModel();
+      _permSetFuture = null;
+    }
+
+    if (key == kUsePermanentPassword || key == kUseBothPasswords) {
+      final set = await bind.mainGetCommon(key: "permanent-password-set");
+      if (set != "true" && !isChangePermanentPasswordDisabled()) {
+        setPasswordDialog(notEmptyCallback: apply);
+        return;
+      }
+    }
+    await apply();
+  }
+
+  Widget _buildOneTimeRow(BuildContext context, ServerModel model) {
+    final colors = WeColors.of(context);
+    final passwd = model.serverPasswd.text.trim();
+    final masked =
+        List<String>.filled(passwd.isEmpty ? 6 : passwd.length, '•').join();
+    final display = _passwordVisible ? passwd : masked;
+
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                translate('Use one-time password'),
+                style: TextStyle(
+                  color: colors.textTertiary,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
                 display,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -209,58 +285,100 @@ class _LocalDeviceCardState extends State<LocalDeviceCard> {
                   letterSpacing: 2,
                 ),
               ),
+            ],
+          ),
+        ),
+        WeIconButton(
+          icon: Icons.content_copy,
+          tooltip: translate("Copy"),
+          size: 28,
+          iconSize: 16,
+          onTap: () {
+            if (passwd.isEmpty) {
+              return;
+            }
+            Clipboard.setData(ClipboardData(text: passwd));
+            showToast(translate("Copied"));
+          },
+        ),
+        WeIconButton(
+          icon: _passwordVisible
+              ? Icons.visibility_outlined
+              : Icons.visibility_off_outlined,
+          tooltip: _passwordVisible ? translate("Hide") : translate("Show"),
+          size: 28,
+          iconSize: 16,
+          onTap: () {
+            setState(() => _passwordVisible = !_passwordVisible);
+          },
+        ),
+        AnimatedRotationWidget(
+          onPressed: () => bind.mainUpdateTemporaryPassword(),
+          child: Tooltip(
+            message: translate('Refresh Password'),
+            child: Icon(
+              Icons.refresh,
+              size: 17,
+              color: colors.textTertiary,
             ),
-            if (showOneTime)
-              WeIconButton(
-                icon: Icons.content_copy,
-                tooltip: translate("Copy"),
-                size: 28,
-                iconSize: 16,
-                onTap: () {
-                  if (passwd.isEmpty) {
-                    return;
-                  }
-                  Clipboard.setData(ClipboardData(text: passwd));
-                  showToast(translate("Copied"));
-                },
-              ),
-            if (showOneTime)
-              WeIconButton(
-                icon: _passwordVisible
-                    ? Icons.visibility_outlined
-                    : Icons.visibility_off_outlined,
-                tooltip:
-                    _passwordVisible ? translate("Hide") : translate("Show"),
-                size: 28,
-                iconSize: 16,
-                onTap: () {
-                  setState(() => _passwordVisible = !_passwordVisible);
-                },
-              ),
-            if (showOneTime)
-              AnimatedRotationWidget(
-                onPressed: () => bind.mainUpdateTemporaryPassword(),
-                child: Tooltip(
-                  message: translate('Refresh Password'),
-                  child: Icon(
-                    Icons.refresh,
-                    size: 17,
-                    color: colors.textTertiary,
-                  ),
-                ),
-              ),
-            if (!bind.isDisableSettings())
-              WeIconButton(
-                icon: Icons.edit_outlined,
-                tooltip: translate('Change Password'),
-                size: 28,
-                iconSize: 16,
-                onTap: () => DesktopSettingPage.switch2page(
-                    SettingsTabKey.safety),
-              ),
-          ],
+          ),
         ),
       ],
+    );
+  }
+
+  /// 固定密码只能写不能读（Rust 侧只暴露 "permanent-password-set" 布尔），
+  /// 所以这里显示"已设置/未设置" + 设置入口，不显示明文。
+  Widget _buildPermanentRow(BuildContext context, ServerModel model) {
+    final colors = WeColors.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: WeSpace.s),
+      child: FutureBuilder<String>(
+        future: _permSet,
+        builder: (context, snapshot) {
+          final isSet = snapshot.data == "true";
+          return Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      translate('Permanent password'),
+                      style: TextStyle(
+                        color: colors.textTertiary,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      isSet ? '••••••' : translate('Not set'),
+                      style: TextStyle(
+                        color: isSet ? colors.textPrimary : colors.textTertiary,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              WeIconButton(
+                icon: Icons.edit_outlined,
+                tooltip: translate('Set permanent password'),
+                size: 28,
+                iconSize: 16,
+                onTap: () {
+                  setPasswordDialog(notEmptyCallback: () {
+                    _permSetFuture = null;
+                    setState(() {});
+                  });
+                },
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 

@@ -831,5 +831,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Ready to connect", "已準備好連線"),
         ("Connection mode", "連線模式"),
         ("Keep background service", "保持後台服務"),
+        ("Permanent password", "固定密碼"),
+        ("Not set", "未設定"),
     ].iter().cloned().collect();
 }

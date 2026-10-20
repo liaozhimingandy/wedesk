@@ -37,7 +37,7 @@ relay_host      = "wedesk.alsoapp.com:5188"                      # hbbr —— �
 [brand]
 app_name     = "WeDesk"                  # 给用户看的产品名，可中文
 product_name = "WeDesk"                # ASCII 名：MSI 文案/服务显示名/桌面入口用
-exe_name     = "nethelper"
+exe_name     = "wedesk"
 company_name = "贵公司名称"             # ⚠️ 占位值，务必替换
 website      = "https://wedesk.alsoapp.com"
 ```

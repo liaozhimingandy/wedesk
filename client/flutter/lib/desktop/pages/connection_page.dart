@@ -307,10 +307,6 @@ class _ConnectionPageState extends State<ConnectionPage>
     final isOutgoingOnly = bind.isOutgoingOnly();
     return Column(
       children: [
-        // The native title bar is hidden; this slim bar gives the window a
-        // drag area plus minimize / close buttons (the main window is fixed
-        // in size, so there is intentionally no maximize button).
-        _buildWindowBar(context),
         Expanded(
           child: IndexedStack(
             index: widget.navIndex == 1 ? 1 : 0,
@@ -347,34 +343,6 @@ class _ConnectionPageState extends State<ConnectionPage>
     );
   }
 
-  /// A slim bar at the top of the window: drag area + window buttons.
-  Widget _buildWindowBar(BuildContext context) {
-    final colors = WeColors.of(context);
-    return Row(
-      children: [
-        Expanded(
-          child: GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onPanStart: (_) => windowManager.startDragging(),
-            child: const SizedBox(height: 34),
-          ),
-        ),
-        _WindowButton(
-          icon: Icons.horizontal_rule,
-          tooltip: translate('Minimize'),
-          hoverColor: colors.border,
-          onTap: () => windowManager.minimize(),
-        ),
-        _WindowButton(
-          icon: Icons.close,
-          tooltip: translate('Close'),
-          hoverColor: const Color(0xFFE81123),
-          onTap: () => windowManager.close(),
-        ),
-      ],
-    );
-  }
-
   /// Callback for the connect button.
   /// Connects to the selected peer.
   void onConnect(
@@ -388,60 +356,5 @@ class _ConnectionPageState extends State<ConnectionPage>
         isViewCamera: isViewCamera,
         isTerminal: isTerminal,
         isTcpTunneling: isTcpTunneling);
-  }
-
-}
-
-/// One caption-button of the custom window bar (minimize / close).
-class _WindowButton extends StatefulWidget {
-  const _WindowButton({
-    Key? key,
-    required this.icon,
-    required this.tooltip,
-    required this.onTap,
-    required this.hoverColor,
-  }) : super(key: key);
-
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback onTap;
-  final Color hoverColor;
-
-  @override
-  State<_WindowButton> createState() => _WindowButtonState();
-}
-
-class _WindowButtonState extends State<_WindowButton> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = WeColors.of(context);
-    return Tooltip(
-      message: widget.tooltip,
-      waitDuration: const Duration(milliseconds: 400),
-      child: InkWell(
-        onTap: widget.onTap,
-        onHover: (v) {
-          if (_hover != v) {
-            setState(() => _hover = v);
-          }
-        },
-        child: Container(
-          width: 42,
-          height: 34,
-          decoration: BoxDecoration(
-            color: _hover ? widget.hoverColor : Colors.transparent,
-          ),
-          child: Icon(
-            widget.icon,
-            size: 16,
-            color: _hover && widget.hoverColor == const Color(0xFFE81123)
-                ? Colors.white
-                : colors.textSecondary,
-          ),
-        ),
-      ),
-    );
   }
 }

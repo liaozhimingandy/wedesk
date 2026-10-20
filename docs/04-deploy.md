@@ -160,7 +160,7 @@ server/data/
 
 ```
 Release/
-├── nethelper.exe           # 主程序（名字由 custom.toml 的 exe_name 决定）
+├── wedesk.exe           # 主程序（名字由 custom.toml 的 exe_name 决定）
 ├── *.dll                   # Rust 与 C++ 依赖
 └── data/                   # Flutter 资源
 ```
@@ -178,7 +178,7 @@ Release/
 要让"员工不在电脑前 / 没登录时也能被连"，必须装系统服务：
 
 ```bat
-nethelper.exe --silent-install        :: 静默安装服务
+wedesk.exe --silent-install        :: 静默安装服务
 ```
 
 装上之后客户端会随系统启动，登录屏和 UAC 界面也能操作。

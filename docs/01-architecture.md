@@ -192,7 +192,7 @@ flowchart LR
     E["② 注入品牌<br/>build/client/customize.py<br/>按 custom.toml 改 13 个文件"] --> F
 
     F["③ 编译<br/>cd client &amp;&amp; python build.py<br/>--portable --flutter"] --> G
-    G["client/flutter/build/windows/x64/runner/Release/<br/>nethelper.exe + DLL + data/"]
+    G["client/flutter/build/windows/x64/runner/Release/<br/>wedesk.exe + DLL + data/"]
 
     style C fill:#fff4e6,stroke:#d9822b
     style E fill:#e8f4fd,stroke:#1f77b4

@@ -42,7 +42,7 @@ app_name = "WeDesk"
 product_name = "WeDesk"
 
 # 生成的可执行文件名（不含 .exe），只能用小写字母与数字，避免路径问题
-exe_name = "nethelper"
+exe_name = "wedesk"
 
 # 显示在"关于"与 Windows 属性里的公司名
 company_name = "贵公司名称"

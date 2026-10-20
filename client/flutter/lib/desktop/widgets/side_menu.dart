@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/wedesign.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
+import 'package:window_manager/window_manager.dart';
 
 class WeSideMenu extends StatefulWidget {
   const WeSideMenu({
@@ -37,7 +38,13 @@ class _WeSideMenuState extends State<WeSideMenu> {
     return Container(
       width: 208,
       color: colors.surfaceAlt,
-      child: Column(
+      // The native title bar is hidden and the main window is fixed in size,
+      // so the sidebar doubles as the window's drag area (there is no top bar
+      // anymore). Nav items below still handle their own taps.
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onPanStart: (_) => windowManager.startDragging(),
+        child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           SizedBox(height: WeSpace.l),
@@ -70,6 +77,7 @@ class _WeSideMenuState extends State<WeSideMenu> {
               ),
             ),
         ],
+      ),
       ),
     );
   }

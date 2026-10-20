@@ -91,15 +91,32 @@ WeCard(
 
 **主窗口是固定尺寸的**（2026-10-20 起）：
 
-- 尺寸常量 `kMainWindowFixedSize = Size(1100, 680)`（`consts.dart`），
+- 尺寸常量 `kMainWindowFixedSize = Size(960, 600)`（`consts.dart`），
   在 `main.dart` 的 `runMainApp` 里 `setSize + center`，然后
   `setResizable(false)` + `setMaximizable(false)`；
 - 只保留**位置**记忆，不再恢复保存的尺寸/最大化状态
   （`restoreWindowPosition` 在固定模式下被跳过）；
-- 标题栏是隐藏的，窗口控制按钮在 `connection_page.dart` 的
-  `_buildWindowBar`（顶部拖动条 + 最小化/关闭，**故意没有最大化按钮**）；
+- **窗口最顶部没有任何东西**：原生标题栏隐藏，也不自绘顶栏/菜单/
+  最大化按钮。标题栏隐藏后没有可拖区域，所以**左栏侧边导航兼任拖动区**
+  （`side_menu.dart` 的 `GestureDetector.onPanStart →
+  windowManager.startDragging()`）——拖动窗口抓左栏即可，导航项点击不受影响；
 - incoming-only / outgoing-only 特殊构建不走固定逻辑，行为不变；
 - 远程会话等子窗口不受影响，照常可调整大小。
+
+**密码区可以直接切连接模式**（2026-10-20 起）：本机设备卡「连接模式」
+列下方就是下拉框（`local_device_card.dart` 复用 `common.dart` 的
+`ComboBox`），选项写的是 `kOptionVerificationMethod`——与设置页
+「安全 → 密码」是**同一个选项**，两边永远一致：
+
+| 选项 | 界面表现 |
+|---|---|
+| 使用一次性密码 | 一次性密码行（显隐/复制/刷新） |
+| 使用固定密码 | 固定密码行（已设置/未设置 + 设置入口） |
+| 同时使用 | 两行都显示 |
+
+规则照搬设置页：选到固定密码但还没设过时，先弹「设置固定密码」框，
+设完才真正切过去。固定密码**只能写不能读**（Rust 侧只暴露
+`permanent-password-set` 布尔），所以显示 `••••••`/「未设置」而不显示明文。
 
 **品牌名**：窗口标题、托盘、About 页读的都是 `hbb_common` 的 `APP_NAME`
 （经 `mainGetAppNameSync()` 动态取）。改显示名要动四处，缺一处就会出现
@@ -115,7 +132,7 @@ WeCard(
 改完 `custom.toml` 后同步 `build/client/.custom-state.json` 里对应条目
 （customize.py 靠它做新旧值替换）。**exe 文件名**在
 `client/flutter/windows/CMakeLists.txt` 的 `BINARY_NAME`（当前
-`nethelper`），MSI 打包（`res/msi/preprocess.py --app-name`）必须传同名参数，
+`wedesk`），MSI 打包（`res/msi/preprocess.py --app-name`）必须传同名参数，
 否则 WiX 按 `$(var.Product).exe` 找不到主程序。
 
 **关于页/托盘等 UI 文案**不要写死 "RustDesk"：用
@@ -132,7 +149,7 @@ WeCard(
 |---|---|---|
 | `Allow remote control` | 允许控制本设备 | 设备卡开关行 |
 | `Device ID` | 设备代码 | 设备码标签 |
-| `Connection mode` | 连接模式 | 密码列标签 |
+| `Connection mode` | 连接模式 | 密码列标签 / 模式下拉 |
 | `Remote control device` | 远程控制设备 | 连接区标题 |
 | `Ready to connect` | 已准备好连接 | 连接区状态 pill |
 | `Device list` | 设备列表 | 侧边导航项 |
@@ -140,6 +157,7 @@ WeCard(
 | `Copy` | 复制 | 设备码/密码复制按钮 |
 | `Show` / `Hide` | 显示 / 隐藏 | 密码显隐 |
 | `Active sessions` | 活动会话 | 状态栏会话计数 |
+| `Permanent password` / `Not set` | 固定密码 / 未设置 | 固定密码行 |
 
 其余语言（en 等）没有对应条目时会**回退显示英文 key**，这是上游 `translate()`
 的既有行为；要补齐就往对应 `src/lang/*.rs` 里加同样的 key。

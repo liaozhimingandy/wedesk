@@ -320,7 +320,7 @@ cd server && python rdctl.py restart     # 服务端
 
 ```bash
 # 方式一：启动时指定固定密码（适合批量部署）
-nethelper.exe --password YourFixedPwd
+wedesk.exe --password YourFixedPwd
 
 # 方式二：UI 里"设置 → 安全 → 密码"里设一个永久密码，
 #         并把"验证方式"改成 仅使用永久密码

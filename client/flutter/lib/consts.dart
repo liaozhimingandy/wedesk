@@ -356,7 +356,7 @@ const Size kConnectionManagerWindowSizeOpenChat = Size(700, 490);
 
 /// 固定的主窗口尺寸（ToDesk 风格）：主窗口不可调整大小、不可最大化，
 /// 只保留位置记忆。见 main.dart 的 runMainApp。
-const Size kMainWindowFixedSize = Size(1100, 680);
+const Size kMainWindowFixedSize = Size(960, 600);
 // Tabbar transition duration, now we remove the duration
 const Duration kTabTransitionDuration = Duration.zero;
 const double kEmptyMarginTop = 50;

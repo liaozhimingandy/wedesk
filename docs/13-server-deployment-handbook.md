@@ -628,7 +628,7 @@ CI 产物（Actions Artifacts，保留 14 天）或推 `v*` 标签后的 GitHub 
 |---|---|---|
 | 便携版 | 解压即用，不写注册表 | 快速试用、U 盘携带 |
 | 安装版 | MSI / Inno Setup 打包 | 正式分发 |
-| 静默装服务 | `nethelper.exe --silent-install` | **网管无人值守接管** |
+| 静默装服务 | `wedesk.exe --silent-install` | **网管无人值守接管** |
 
 分发前确认（与 [04 部署指南](04-deploy.md) 第四节清单一致）：
 
@@ -644,10 +644,10 @@ CI 产物（Actions Artifacts，保留 14 天）或推 `v*` 标签后的 GitHub 
 
 - **ID 与随机密码都是客户端本机算的**（MAC 后 4 字节 & 0x1FFFFFFF / 启动时 PRNG），
   跟服务器无关，断网也有——只是没有意义的"离线 ID"。
-- **固定密码**（远程运维刚需）：`nethelper.exe --password YourFixedPwd`，
+- **固定密码**（远程运维刚需）：`wedesk.exe --password YourFixedPwd`，
   或在 UI 设置 → 安全 → 密码里设永久密码，验证方式改成"仅使用永久密码"。
 - **换服务器调试**：设置 → 网络 → 定制服务器，或
-  `nethelper.exe --custom-rendezvous-server 192.168.1.10:5187`。
+  `wedesk.exe --custom-rendezvous-server 192.168.1.10:5187`。
 - **判断 P2P 还是中继**：连接质量指示器，或看服务器 5188 流量——
   P2P 成功时 hbbr 几乎没有流量。
 - **配置文件位置**：Windows 便携版在 exe 同目录 `config/`，安装版在

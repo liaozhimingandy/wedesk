@@ -7,43 +7,52 @@
 #
 # 使用前请把同目录下的 .env.example 复制为 .env，并填写 RELAY_HOST。
 # =============================================================================
-# 【端口是怎么定下来的 —— 改之前务必先看这段】
+# 【固定端口表 —— 本文件所有端口都写死，不做任何 +1 / +2 推导】
 #
-# 这里的端口不是一张可以随便编的清单，而是从两个"主端口"推导出来的：
+#   ┌──────┬────────┬──────┬───────────────────────────────┬────────────────┐
+#   │ 端口 │ 协议   │ 进程 │ 用途                          │ 对外？         │
+#   ├──────┼────────┼──────┼───────────────────────────────┼────────────────┤
+#   │ 5186 │ TCP    │ hbbs │ NAT 类型探测                  │ 必须           │
+#   │ 5187 │ TCP    │ hbbs │ 注册 / TCP 打洞与连接         │ 必须           │
+#   │ 5187 │ UDP    │ hbbs │ 注册 + 心跳 + UDP 打洞        │ 必须（单独写） │
+#   │ 5188 │ TCP    │ hbbr │ 中继转发                      │ 必须           │
+#   │ 5189 │ TCP    │ hbbs │ WebSocket 注册通道            │ 必须           │
+#   │ 5190 │ TCP    │ hbbr │ WebSocket 中继                │ 必须           │
+#   │ 5191 │ TCP    │ hbbs │ 健康检查 GET /health          │ 建议           │
+#   │ 5192 │ TCP    │ hbbr │ 健康检查 GET /health          │ 建议           │
+#   └──────┴────────┴──────┴───────────────────────────────┴────────────────┘
 #
-#   hbbs 主端口 P = 5187   →  UDP P(5187)   注册 / 心跳
-#                             TCP P(5187)   TCP 打洞与连接
-#                             TCP P-1(5186) NAT 类型探测
-#                             TCP P+2(5189) WebSocket（备用注册通道，见下）
-#   hbbr 主端口 R = 5188   →  TCP R(5188)   中继数据
-#                             TCP R+2(5190) WebSocket 中继
+#   另有一个"客户端以为有、服务端没有"的端口：
+#     5185 TCP —— 客户端按 rendezvous 端口 -2 推导出来的 api-server
+#                 （心跳 / 设备台账 / 地址簿同步）。hbbs 不监听它，
+#                 那是官方 SaaS 才有的独立服务。客户端日志里会出现
+#                 Heartbeat failed ... TimedOut，连续 3 次后自动停搏，
+#                 属正常噪音，不用管，也不用放行这个端口。
 #
-#   ★ 5189 / 5190 现在默认 publish。原因（2026-10-20 排障实证）：
-#     客户端在 UDP 不通或用户勾了"使用 WebSocket"时，会改用 P+2 这个 WS 端口
-#     去注册；而这个端口如果外部摸不到，客户端就会一直卡在
-#     "正在接入网络"，日志里反复出现
+# 为什么是这几个数字（改之前务必看懂）：
+#
+#   这几个号不是挑出来的，是源码硬编码 + 端口段挤出来的唯一解：
+#     - hbbs 无条件额外监听 主端口-1（NAT 探测）与 主端口+2（WebSocket）；
+#     - hbbr 无条件额外监听 主端口+2（WebSocket 中继）；
+#     - 上面两者都没有开关可关（src/rendezvous_server.rs / src/relay_server.rs）。
+#   把 5186–5190 这段分给 wedesk，主端口就只能取 5187，中继取 5188，
+#   于是 5186 / 5189 / 5190 自动就位，健康检查顺延到 5191 / 5192。
+#
+#   ★ 5189 / 5190 必须 publish（2026-10-20 排障实证）：
+#     客户端在 UDP 不通或勾了"使用 WebSocket"时改用 5189 注册；该端口摸不到，
+#     客户端就一直卡在"正在接入网络"，日志循环打印
 #         start tcp: ws://<host>:5189
 #         rendezvous mediator error: deadline has elapsed
-#     —— 也就是说，不开这两个口子 = 一部分客户端永远注册不上。
-#     上游"不要开"的建议是针对**前面挂了反向代理**的场景：WS 分支会信任
-#     X-Real-IP / X-Forwarded-For 且不校验来源，有代理时客户端可借此伪造 IP。
-#     直连 publish 没有代理插手，风险等级远低于"注册不上"。若你在前面挂了
-#     nginx 之类，请让代理**覆写**这两个头，或注释掉下面两条映射。
+#     上游"不要开"的建议只针对**前面挂了反向代理**的场景（WS 分支无条件信任
+#     X-Real-IP / X-Forwarded-For，有代理时客户端可伪造 IP）。直连 publish 没有
+#     代理插手，风险远低于"注册不上"。前置了 nginx 就让代理覆写这两个头，
+#     或注释掉下面两条映射。
 #
-#   5185 = 客户端按 P-2 推导出来的 api-server（心跳 / 设备台账 / 地址簿同步）。
-#   hbbs 本身【不监听】这个端口 —— 那是独立的 API 服务（官方 SaaS 才有）。
-#   自建部署没有它，客户端日志会有一条 Heartbeat failed 的 WARN，连续 3 次
-#   后自动停搏，属正常现象，不用管。想彻底消掉可在客户端关闭"注册设备"。
-#
-# 源码位置：hbbs 见 src/rendezvous_server.rs 的 nat_port = port - 1 / ws_port = port + 2；
-#          hbbr 见 src/relay_server.rs 的 port2 = port + 2。它们没有开关可关。
-#
-# 所以要塞进 5186-5189 这四个号，P 只能取 5187（P-1=5186、P+2=5189 都在范围内），
-# R 只能取 5188。这也是为什么下面每条映射的左右两侧用同一个变量：
-#   左侧是宿主机端口，右侧是容器内端口，而容器端口由 command 里的 -p 决定，
-#   两者必须永远相等 —— 改成 9000:5187 只会得到"端口开着但连不上"。
-# 想整体平移，就改 HBBS_PORT / HBBR_PORT / HBBS_NAT_PORT 三个值并保持
-# HBBS_NAT_PORT == HBBS_PORT-1（rdctl.py start 会校验这个关系）。
+# 改端口的正确姿势：本文件里 8 条映射 + 两处 command 的 -p 全部写死，
+# 要平移就一处一处改成同一组新数字（左侧宿主端口 = 右侧容器端口，
+# 且容器端口必须与 command 里的 -p 一致）。改完务必跑
+# `python rdctl.py ports` —— 它会按上面的硬编码关系校验，错了直接拒绝启动。
+# 想让脚本帮你算，用 rdrun.sh（它仍接受变量，内部带同样的校验）。
 # =============================================================================
 
 services:
@@ -59,12 +68,13 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     container_name: rd-hbbs
-    # -p  : 主端口，派生出 NAT(P-1) 与 WS(P+2)。写成变量是为了让下面 ports 段
-    #       能跟着一起变，避免"一边改一边没改"这种最难查的错。
-    # -r  : 告诉客户端中继在哪台机器上。**必须带端口**，否则 hbbs 会按默认的
-    #       21117 拼出来 src/rendezvous_server.rs 的第 1322 行），
-    #       客户端会被指到一个没人监听的端口，表现为"能注册但连不上桌面"。
-    command: hbbs -p ${HBBS_PORT:-5187} -r ${RELAY_HOST:-127.0.0.1}:${HBBR_PORT:-5188}
+    # -p 5187 : hbbs 主端口，写死。它会自动额外占用 5186（NAT 探测）与
+    #           5189（WebSocket）—— 源码硬编码，改了端口这两个会跟着走，
+    #           所以下面 ports 段必须一并改，否则"端口开着但连不上"。
+    # -r ...:5188 : 告诉客户端中继在哪台机器上。**必须带端口**，否则 hbbs 会按
+    #           默认的 21117 拼（src/rendezvous_server.rs），客户端会被指到一个
+    #           没人监听的端口，表现为"能注册但连不上桌面"。
+    command: hbbs -p 5187 -r ${RELAY_HOST:-127.0.0.1}:5188
     environment:
       # 强制所有连接走中继。团队成员若分布在不同内网，开启可提高连通率，
       # 代价是所有流量经过服务器消耗带宽。内网环境建议设为 N 走 P2P 直连。
@@ -117,9 +127,11 @@ services:
       # 默认 warn 而非 info：hbbs 在 info 级别下每注册/心跳都落一行日志，
       # 长期运行的磁盘写入与格式化开销是可观测的，而排障时临时调高即可。
       - RUST_LOG=${RUST_LOG:-warn}
-      # 健康检查 HTTP 端口（GET /health）。与上面的 ports 映射保持一致；
-      # 设 0 可关闭。探针会顺带 select 1 探数据库，库挂了回 503。
-      - HEALTH_PORT=${HBBS_HEALTH_PORT:-5191}
+      # 健康检查 HTTP 端口（GET /health），写死 5191。
+      # 容器内 healthcheck 用它自检；外部监控（Prometheus blackbox / 拨测 /
+      # 负载均衡探针）也从这里拿 JSON 状态。设 0 可关闭。
+      # 探针会顺带 select 1 探数据库，库挂了回 503。
+      - HEALTH_PORT=5191
     volumes:
       # 密钥(id_ed25519 / id_ed25519.pub)与 SQLite 数据库落在此目录，务必定期备份
       - ./data:/root
@@ -128,26 +140,19 @@ services:
       # 则回退为 ./data/id_ed25519（工作目录文件，首次启动自动生成）。
       # - /d/Git/secrets/id_ed25519:/run/secrets/id_ed25519:ro
     ports:
-      # 5186 / 5187 是客户端真正要连的三个口子（5186 TCP、5187 TCP + UDP）。
+      # ---- 固定端口表（与文件顶部那张表一一对应，不做任何推导） ----------
       # 5187 同时用 TCP 与 UDP，Docker 里 "5187:5187" 只 publish TCP，
       # UDP 必须单独写一条 "/udp" —— 下面看着像重复，实际是同一端口的两种协议，
       # 缺了 UDP 那条，客户端的注册就永远超时。
-      - "${HBBS_NAT_PORT:-5186}:${HBBS_NAT_PORT:-5186}"   # NAT 类型探测 (TCP) = P-1
-      - "${HBBS_PORT:-5187}:${HBBS_PORT:-5187}"           # 注册/心跳 + TCP 打洞 (TCP)
-      - "${HBBS_PORT:-5187}:${HBBS_PORT:-5187}/udp"       # 注册 + 心跳 (UDP)
+      - "5186:5186"      # TCP   NAT 类型探测
+      - "5187:5187"      # TCP   注册 / TCP 打洞与连接
+      - "5187:5187/udp"  # UDP   注册 + 心跳 + UDP 打洞
+      - "5189:5189"      # TCP   WebSocket 注册通道（UDP 不通时客户端走这里）
+      - "5191:5191"      # TCP   健康检查 GET /health
       #
-      # 5191 = hbbs 健康检查 HTTP（GET /health，默认 = 主端口+4）。
-      # 容器内 healthcheck 用它自检；外部监控（Prometheus blackbox / 拨测 /
-      # 负载均衡探针）也从这里拿 JSON 状态。改 HBBS_PORT 时同步改 HBBS_HEALTH_PORT。
-      - "${HBBS_HEALTH_PORT:-5191}:${HBBS_HEALTH_PORT:-5191}"
-      #
-      # 5189 = hbbs 的 WebSocket 端口（= P+2），客户端在 UDP 不通 / 勾选了
-      # "使用 WebSocket" 时用它注册。**默认 publish**：不开的话这类客户端会
-      # 永远卡在"正在接入网络"。
-      # 取值必须恒等于 HBBS_PORT + 2，改 HBBS_PORT 时同步改 HBBS_WS_PORT。
-      # ⚠️ 前置了反向代理时请让代理覆写 X-Real-IP / X-Forwarded-For，否则客户端
-      #    可以伪造来源 IP 绕过限流并污染审计日志；那种情况请注释掉下面这行。
-      - "${HBBS_WS_PORT:-5189}:${HBBS_WS_PORT:-5189}"
+      # ⚠️ 5189 的安全前提：前置了反向代理时请让代理覆写 X-Real-IP /
+      #    X-Forwarded-For，否则客户端可以伪造来源 IP 绕过限流并污染审计日志；
+      #    做不到就注释掉 5189 那一条（代价是 UDP 受限的客户端注册不上）。
     # 这里用完整映射写法而不是列表，因为要给 postgres 加条件（列表形式不支持）。
     depends_on:
       hbbr:
@@ -164,7 +169,7 @@ services:
     # unhealthy（连续 3 次）。busybox wget 对 5xx 返回非 0，正好当探针。
     # `docker compose ps` 的 STATUS 列会显示 (healthy/unhealthy)。
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${HBBS_HEALTH_PORT:-5191}/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5191/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -190,31 +195,32 @@ services:
     image: ${RD_IMAGE:-wedesk-server:latest}
     build: *wedesk-build
     container_name: rd-hbbr
-    # -p  : 中继主端口。注意是【命令行 -p】而不是环境变量 PORT ——
+    # -p 5188 : 中继主端口，写死。注意是【命令行 -p】而不是环境变量 PORT ——
     #       hbbr.rs 里环境变量 PORT 会被 +1 之后再使用（历史包袱），
     #       写成 PORT=5188 它就去监听 5189，正好撞上 hbbs 的 WebSocket 端口。
-    command: hbbr -p ${HBBR_PORT:-5188}
+    #       它会自动额外占用 5190（WebSocket 中继），同样没有开关。
+    command: hbbr -p 5188
     environment:
       - RUST_LOG=${RUST_LOG:-warn}
       # 健康检查 HTTP 端口（GET /health，默认 = 中继主端口+4）。与下面
       # ports 映射保持一致；设 0 可关闭。hbbr 不碰数据库，探针只报自身存活。
-      - HEALTH_PORT=${HBBR_HEALTH_PORT:-5192}
+      - HEALTH_PORT=5192
     volumes:
       - ./data:/root
     ports:
-      - "${HBBR_PORT:-5188}:${HBBR_PORT:-5188}"      # 中继主端口 (TCP)
-      - "${HBBR_HEALTH_PORT:-5192}:${HBBR_HEALTH_PORT:-5192}"  # 健康检查 HTTP
-      #
-      # 5190 = hbbr 的 WebSocket 中继端口（= R+2）。与 hbbs 的 5189 同理默认
-      # publish：Web 客户端与"强制 WebSocket"的客户端要靠它走中继。
-      # 取值必须恒等于 HBBR_PORT + 2。前置反代时同上，注释掉本行。
-      - "${HBBR_WS_PORT:-5190}:${HBBR_WS_PORT:-5190}"
+      # ---- 固定端口表（与文件顶部那张表一一对应，不做任何推导） ----------
+      # 5190 = hbbr 的 WebSocket 中继端口，与 hbbs 的 5189 同理默认 publish：
+      # Web 客户端与"强制 WebSocket"的客户端要靠它走中继。
+      # ⚠️ 前置反代时的安全前提同 5189，做不到就注释掉这一条。
+      - "5188:5188"      # TCP   中继转发
+      - "5190:5190"      # TCP   WebSocket 中继
+      - "5192:5192"      # TCP   健康检查 GET /health
     restart: unless-stopped
     networks:
       - rd-net
     # --- 健康自检（与 hbbs 同款；hbbr 不连库，探针只报自身存活） ----------
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${HBBR_HEALTH_PORT:-5192}/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5192/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

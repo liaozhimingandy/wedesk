@@ -7,15 +7,27 @@
 
 ## 1. 一句话结论
 
-**对外需要 6 个端口（5 个端口号），全部在 hbbs + hbbr 所在的那一台机器上：**
+**端口是固定的一套，全部写死在 `server/deploy/docker-compose.yml` 里，不做任何 +1 / +2 推导。**
 
-| 端口 | 协议 | 谁在用 | 必须开吗 |
-|---|---|---|---|
-| **5186** | TCP | hbbs — NAT 类型探测 | 是 |
-| **5187** | TCP **+ UDP** | hbbs — ID 注册 / 心跳 / TCP 打洞 | 是（**两种协议都要**） |
-| **5188** | TCP | hbbr — 中继转发 | 是 |
-| **5189** | TCP | hbbs — WebSocket rendezvous（UDP 不通时的注册通道） | **建议开**（见下） |
-| **5190** | TCP | hbbr — WebSocket 中继 | **建议开**（见下） |
+服务端对外需要的端口（全部在 hbbs + hbbr 所在的那台机器上）：
+
+| 端口 | 协议 | 进程 | 用途 | 对外 |
+|---|---|---|---|---|
+| **5186** | TCP | hbbs | NAT 类型探测 | ✅ 必须 |
+| **5187** | TCP | hbbs | 注册 / TCP 打洞与连接 | ✅ 必须 |
+| **5187** | UDP | hbbs | 注册 + 心跳 + UDP 打洞 | ✅ 必须（单独一条映射） |
+| **5188** | TCP | hbbr | 中继转发 | ✅ 必须 |
+| **5189** | TCP | hbbs | WebSocket 注册通道（UDP 不通时走这里） | ✅ 必须 |
+| **5190** | TCP | hbbr | WebSocket 中继 | ✅ 必须 |
+| 5191 | TCP | hbbs | 健康检查 `GET /health` | 建议（外部监控用） |
+| 5192 | TCP | hbbr | 健康检查 `GET /health` | 建议（外部监控用） |
+
+防火墙放行清单（可直接照抄）：
+
+```
+TCP 5186, 5187, 5188, 5189, 5190, 5191, 5192
+UDP 5187
+```
 
 > **2026-10-20 排障结论：5189/5190 由"刻意不 publish"改为默认 publish。**
 > 客户端在 UDP 不通、或用户在设置里勾了"使用 WebSocket"时，会改用 `P+2` 这个
@@ -37,17 +49,19 @@
 自建部署没有那份 API 服务，客户端日志会出现 `Heartbeat failed: ... TimedOut`，
 连续 3 次后自动停搏，属正常现象。见第 4 节坑 4。
 
-客户端不需要任何固定的入站端口。员工机器只需要能**出站**访问上面五个端口。
+客户端不需要任何固定的入站端口。员工机器只需要能**出站**访问上面这些端口。
 
-`server/deploy/docker-compose.yml` 默认就 publish 了这五个 —— 直接用即可，不用改。
+`server/deploy/docker-compose.yml` 里这 8 条映射全部写死成数字，直接用即可，不用改。
 
 ---
 
-## 2. 端口全景（含"藏起来的"端口）
+## 2. 端口全景与源码里的硬编码关系
 
-RustDesk 服务端的端口不是一列固定值，而是**从主端口推导出来的**。这是本文档最需要记住的一点。
+> ⚠️ **写代码/改配置时不要用"主端口 +1 / +2"去推端口。** 部署用的那套数字是固定的
+> （第 1 节那张表），compose 里也是写死的。下面这一节讲的是**源码内部**的硬编码关系，
+> 只在你想整体平移端口、或排查"为什么多占了端口"时才需要看。
 
-### 2.1 推导规则
+### 2.1 源码内部的派生关系（理解用，不是配置方式）
 
 设 `P` = hbbs 主端口（本仓库取 **5187**），`R` = hbbr 主端口（本仓库取 **5188**）：
 
@@ -72,17 +86,19 @@ hbbr  →  TCP  R           中继主端口
 **推论**：把 hbbs 主端口改成 `-p 9000`，它实际占用 **UDP 9000 + TCP 9000 + TCP 8999 + TCP 9002** 共四个端口。
 规划防火墙时只算 9000 的话，客户端会卡在"连接中"然后超时。
 
-### 2.2 完整清单
+### 2.2 完整清单（含健康检查与那个"不存在的"端口）
 
-| 端口 | 协议 | 进程 | 状态 | 用途 | 建议是否对外 |
+| 端口 | 协议 | 进程 | 状态 | 用途 | 是否对外 |
 |---|---|---|---|---|---|
-| 5186 | TCP | hbbs | 监听 | NAT 类型探测（= P-1） | ✅ 是 |
-| 5187 | TCP | hbbs | 监听 | TCP 打洞与 rendezvous 主连接（= P） | ✅ 是 |
-| 5187 | UDP | hbbs | 监听 | ID 注册 + 心跳 + UDP 打洞（= P） | ✅ 是 |
-| 5188 | TCP | hbbr | 监听 | 中继转发画面/键鼠数据（= R） | ✅ 是 |
-| 5189 | TCP | hbbs | 监听 + 已 publish | WebSocket rendezvous（= P+2） | ✅ 是（见坑 1 前提） |
-| 5190 | TCP | hbbr | 监听 + 已 publish | WebSocket 中继（= R+2） | ✅ 是（见坑 1 前提） |
-| 5185 | TCP | **无进程监听** | 客户端推导的 api-server（= P-2） | 心跳 / 设备台账 / 地址簿 | ❌ 无需处理 |
+| 5186 | TCP | hbbs | 监听 + publish | NAT 类型探测 | ✅ 是 |
+| 5187 | TCP | hbbs | 监听 + publish | 注册 / TCP 打洞与连接 | ✅ 是 |
+| 5187 | UDP | hbbs | 监听 + publish | 注册 + 心跳 + UDP 打洞 | ✅ 是 |
+| 5188 | TCP | hbbr | 监听 + publish | 中继转发画面/键鼠数据 | ✅ 是 |
+| 5189 | TCP | hbbs | 监听 + publish | WebSocket 注册通道 | ✅ 是（见坑 1 前提） |
+| 5190 | TCP | hbbr | 监听 + publish | WebSocket 中继 | ✅ 是（见坑 1 前提） |
+| 5191 | TCP | hbbs | 监听 + publish | 健康检查 `GET /health` | 建议 |
+| 5192 | TCP | hbbr | 监听 + publish | 健康检查 `GET /health` | 建议 |
+| 5185 | TCP | **无进程监听** | — | 客户端推导的 api-server（心跳 / 设备台账 / 地址簿） | ❌ 无需处理 |
 
 > 5189/5190 是 hbbs/hbbr **进程无条件监听**的端口（没有开关能关）。
 > `docker exec rd-hbbs ss -ltnp` 能看到它们在容器里听着。
@@ -95,9 +111,9 @@ hbbr  →  TCP  R           中继主端口
 
 ---
 
-## 3. 为什么恰好是 5187 和 5188
+## 3. 为什么恰好是 5187 / 5188 这一组
 
-这四个端口号不是挑出来的，是三个约束挤出来的唯一解：
+这几个端口号不是挑出来的，是三个约束挤出来的唯一解（**只在你想整体平移端口时才需要看**）：
 
 **约束一：hbbs 的派生端口必须落在 5186–5189 里。**
 
@@ -128,7 +144,8 @@ Config::get_option("relay-server")            // 用户手动指定
 **约束三：反过来的冲突要避开**：hbbr 的 WS 端口是 R+2 = 5190，它落在 5186–5189 **之外**。
 这是好事 —— 说明 5189 不会被 hbbr 的 WS 抢走，两个 WS 端口各自独立。
 
-改这些值的入口：`server/.env`（或 `.env.example`）里的
+**日常部署不用改任何端口变量**：compose 里 8 条映射与两处 `-p` 全部写死。
+只有宿主端口冲突、需要整体平移时，才走 `rdrun.sh`（它接受变量并负责校验）：
 
 ```env
 HBBS_PORT=5187
@@ -139,21 +156,23 @@ HBBR_WS_PORT=5190      # 必须 = HBBR_PORT + 2
 ```
 
 `rdctl.py start` 会校验 `HBBS_NAT_PORT == HBBS_PORT - 1` 与两个 WS 端口的 `+2` 关系，
-不满足直接拒绝启动。`rdctl.py ports` 可以只看规划不算 Ink：
+不满足直接拒绝启动。`rdctl.py ports` 打印当前这套固定端口表：
 
 ```
 $ python rdctl.py ports
-      5186  TCP    hbbs NAT 类型探测          = P-1
-      5187  TCP    hbbs TCP 打洞与连接        = P
-      5187  UDP    hbbs ID 注册 + 心跳        = P
-      5188  TCP    hbbr 中继数据              = R
-      5189  TCP    hbbs WebSocket  已 publish（UDP 不通时的注册通道）
-      5190  TCP    hbbr WebSocket  已 publish（WebSocket 中继）
+      5186  TCP    hbbs NAT 类型探测
+      5187  TCP    hbbs 注册 / TCP 打洞与连接
+      5187  UDP    hbbs 注册 + 心跳 + UDP 打洞
+      5188  TCP    hbbr 中继数据
+      5189  TCP    hbbs WebSocket 注册通道
+      5190  TCP    hbbr WebSocket 中继
+      5191  TCP    hbbs 健康检查 /health
+      5192  TCP    hbbr 健康检查 /health
 ```
 
 ---
 
-## 4. 三个必须先知道的坑
+## 4. 四个必须先知道的坑
 
 ### 坑 1：WebSocket 端口受 trust 反向代理头 —— 默认全 trust
 

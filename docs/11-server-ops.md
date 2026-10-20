@@ -50,7 +50,7 @@ command: hbbs -p 5187 -r ${RELAY_HOST}:5188
 5186 (TCP)  ← 5187 - 1   NAT 类型探测
 5187 (TCP)  ← 主端口     打洞协调 / 连接请求
 5187 (UDP)  ← 主端口     注册 + 心跳（同一端口的另一种协议）
-5189 (TCP)  ← 5187 + 2   WebSocket（容器内始终监听，刻意不 publish）
+5189 (TCP)  ← 5187 + 2   WebSocket 注册通道（已 publish）
 ```
 
 `compose` 里 UDP 必须单独写一条 `/udp`，`"5187:5187"` 只映射 TCP。
@@ -71,7 +71,7 @@ command: hbbr -p 5188
 
 ```
 5188 (TCP)  ← 主端口      中继数据
-5190 (TCP)  ← 5188 + 2   WebSocket 中继（同样刻意不 publish）
+5190 (TCP)  ← 5188 + 2   WebSocket 中继（已 publish）
 ```
 
 hbbr 是**完全无状态**的：不读数据库、不读密钥、不认客户端身份。

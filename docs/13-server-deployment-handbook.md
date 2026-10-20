@@ -17,7 +17,7 @@
 
 ```bash
 # 1. 准备一台 Linux 服务器（Docker + Compose 已装），放行
-#    TCP 5186 / 5187 / 5188 / 5189 / 5190 + UDP 5187
+#    TCP 5186 / 5187 / 5188 / 5189 / 5190 / 5191 / 5192 + UDP 5187
 git clone <你的仓库> && cd wedesk/server/deploy
 
 # 2. 配置
@@ -102,36 +102,52 @@ flowchart TB
 3. **hbbs 挂**：新客户端拿不到 ID、无法撮合新连接，但已建立的 P2P 连接不受影响。
    **hbbr 挂**：只有本来要走中继的连接失败。
 
-### 2.2 端口推导规则（部署前必须理解）
+### 2.2 固定端口表（部署前照抄即可）
 
-端口**不是**一张可以随便编的清单，而是从两个主端口推导出来的（源码写死，无开关）：
+**端口是固定的一套，compose 里 8 条映射与两处 `-p` 全部写死数字，不做 +1 / +2 推导。**
+
+| 端口 | 协议 | 进程 | 用途 |
+|---|---|---|---|
+| 5186 | TCP | hbbs | NAT 类型探测 |
+| 5187 | TCP | hbbs | 注册 / TCP 打洞与连接 |
+| 5187 | UDP | hbbs | 注册 + 心跳 + UDP 打洞 |
+| 5188 | TCP | hbbr | 中继转发 |
+| 5189 | TCP | hbbs | WebSocket 注册通道 |
+| 5190 | TCP | hbbr | WebSocket 中继 |
+| 5191 | TCP | hbbs | 健康检查 `GET /health` |
+| 5192 | TCP | hbbr | 健康检查 `GET /health` |
 
 ```mermaid
 flowchart LR
-    subgraph HBBS_D["hbbs 主端口 P = 5187"]
-        P1["TCP 5186<br/>= P-1<br/>NAT 类型探测"]
-        P2["TCP+UDP 5187<br/>= P<br/>注册/心跳/打洞"]
-        P3["TCP 5189<br/>= P+2<br/>WebSocket 注册通道<br/>✅ 建议开"]
+    subgraph HBBS_D["hbbs · 主端口 5187"]
+        P1["TCP 5186<br/>NAT 类型探测"]
+        P2["TCP+UDP 5187<br/>注册/心跳/打洞"]
+        P3["TCP 5189<br/>WebSocket 注册通道"]
+        P4["TCP 5191<br/>健康检查"]
     end
-    subgraph HBBR_D["hbbr 主端口 R = 5188"]
-        R1["TCP 5188<br/>= R<br/>中继数据"]
-        R2["TCP 5190<br/>= R+2<br/>WebSocket 中继<br/>✅ 建议开"]
+    subgraph HBBR_D["hbbr · 主端口 5188"]
+        R1["TCP 5188<br/>中继数据"]
+        R2["TCP 5190<br/>WebSocket 中继"]
+        R3["TCP 5192<br/>健康检查"]
     end
-    PS["（客户端还会按 P-2 推导一个<br/>api-server = TCP 5185，<br/>自建无此服务，日志噪音而已）"]
+    PS["（客户端还会自己推导一个<br/>api-server = TCP 5185，<br/>自建无此服务，日志噪音而已）"]
 ```
 
 | 规则 | 说明 |
 |---|---|
-| `HBBS_NAT_PORT = HBBS_PORT - 1` | **硬约束**（源码 `nat_port = port - 1`），`rdctl.py start` 会校验，不满足直接拒绝启动 |
-| `HBBS_WS_PORT = HBBS_PORT + 2`、`HBBR_WS_PORT = HBBR_PORT + 2` | 同样是硬约束（源码 `ws_port = port + 2` / `port2 = port + 2`），`rdctl.py` 一并校验 |
-| compose 映射左右两侧必须相等 | 容器内端口由 `command: hbbs -p P` 决定，宿主映射写成 `9000:5187` 只会得到"端口开着但连不上" |
+| 映射左右两侧是同一个数字 | 容器内端口由 `command: hbbs -p 5187` 决定，宿主映射写成 `9000:5187` 只会得到"端口开着但连不上" |
 | 5187 的 TCP 与 UDP 是两条映射 | `"5187:5187"` 只发 TCP，UDP 必须单独写 `/udp`，少了它客户端注册永远超时 |
-| **5189 / 5190 默认 publish** | 客户端 UDP 不通或勾选了"使用 WebSocket"时会用 `P+2` 注册；这个端口摸不到，客户端就**一直卡在"正在接入网络"**（日志：`start tcp: ws://host:5189` → `deadline has elapsed`）。上游"不要开"是针对**前面挂了反向代理**的场景（WS 分支无条件信任 `X-Real-IP`/`X-Forwarded-For`），有代理时务必让代理覆写该头，否则注释掉这两条映射 |
+| **5189 必须开** | 客户端 UDP 不通或勾选了"使用 WebSocket"时用它注册；摸不到就**一直卡在"正在接入网络"**（日志：`start tcp: ws://host:5189` → `deadline has elapsed`）。上游"不要开"只针对**前面挂了反向代理**的场景（WS 分支无条件信任 `X-Real-IP`/`X-Forwarded-For`），有代理时必须让代理覆写该头，否则注释掉这条映射 |
+| 源码里确实有"主端口−1 / +2"的硬编码 | hbbs 无条件额外监听 主端口−1 与 主端口+2，hbbr 额外监听 主端口+2，**没有开关**。这就是为什么上面这张表是"挤出来"的，也是平移端口时必须整体移动的原因 |
 
-**防火墙放行 6 条**：`TCP 5186`、`TCP 5187`、`UDP 5187`、`TCP 5188`、`TCP 5189`、`TCP 5190`。
-若确认所有客户端都能走 UDP 5187，最后两条可以关掉。
-要改端口只能**整体平移**五个变量（`HBBS_PORT`/`HBBS_NAT_PORT`/`HBBR_PORT`/`HBBS_WS_PORT`/`HBBR_WS_PORT`），
-且客户端 `custom.toml` 的 `rendezvous_host` 必须同步改并**重新构建分发**。详见 [10 端口与网络规划](10-ports.md)。
+**防火墙放行**：`TCP 5186 / 5187 / 5188 / 5189 / 5190 / 5191 / 5192` + `UDP 5187`。
+若确认所有客户端都能走 UDP 5187，5189/5190 可以关掉。
+
+**日常部署不需要碰任何端口变量。** 只有宿主端口冲突时才整体平移 —— 用
+`rdrun.sh --hbbs-port 9100 --nat-port 9099 --hbbr-port 9101 --hbbs-ws-port 9102 --hbbr-ws-port 9103`
+（脚本会校验上面那些硬编码关系，错了直接拒绝启动），
+并且客户端 `custom.toml` 的 `rendezvous_host` 必须同步改、**重新构建分发**。
+详见 [10 端口与网络规划](10-ports.md)。
 
 ### 2.3 数据与密钥：整个服务端的全部状态
 
@@ -359,7 +375,7 @@ curl http://<server>:5191/health
 | Docker | 20.10+，`docker info` 能跑 |
 | Docker Compose | v2（`docker compose version`） |
 | Python | 3.8+（rdctl.py 只用标准库，**零第三方依赖**） |
-| 网络 | 服务器能被所有客户端访问；防火墙放行 TCP 5186/5187/5188/5189/5190 + UDP 5187 |
+| 网络 | 服务器能被所有客户端访问；防火墙放行 TCP 5186/5187/5188/5189/5190/5191/5192 + UDP 5187 |
 | 磁盘 | 镜像构建约 2-3 GB，运行期 `data/` 通常 <100 MB |
 
 ### 3.2 `rdctl.py` 完整命令参考
@@ -415,8 +431,8 @@ docker compose up -d                           # 启动（含 PostgreSQL，默�
 | `ALWAYS_USE_RELAY` | `N` | `N`=优先 P2P（内网推荐）；`Y`=强制中继（跨公网提高连通率，全部吃服务器出网带宽） |
 | `RUST_LOG` | `warn` | `error`/`warn`/`info`/`debug`/`trace`。默认 `warn` 是刻意的：info 下每次注册/心跳都落一行，长期运行磁盘写入可观。排障临时调高，**调完记得调回** |
 | `RD_IMAGE` | 注释（= 本地构建） | 有值就直接用/拉那个镜像。`liaozhiming/wedesk-server:latest` = CI 推的远端镜像；`rustdesk/rustdesk-server:latest` = 官方镜像（**失去本地化补丁，且不认 `DB_TYPE`**） |
-| `HBBS_PORT` / `HBBS_NAT_PORT` / `HBBR_PORT` | `5187` / `5186` / `5188` | 整体平移时才改，必须满足 `HBBS_NAT_PORT = HBBS_PORT - 1` |
-| `HBBS_WS_PORT` / `HBBR_WS_PORT` | `5189` / `5190` | WebSocket 端口，必须满足 `HBBS_WS_PORT = HBBS_PORT + 2`、`HBBR_WS_PORT = HBBR_PORT + 2`。关掉 WS 通道请直接注释掉 compose 里那两条映射 |
+| `HBBS_PORT` / `HBBS_NAT_PORT` / `HBBR_PORT` | `5187` / `5186` / `5188` | **compose 不读**（它用写死的数字）。只有 `rdrun.sh`/`rdctl.py` 平移端口时才用，必须满足 `HBBS_NAT_PORT = HBBS_PORT - 1` |
+| `HBBS_WS_PORT` / `HBBR_WS_PORT` | `5189` / `5190` | 同上，仅 `rdrun.sh` 平移时用，必须满足 `HBBS_WS_PORT = HBBS_PORT + 2`、`HBBR_WS_PORT = HBBR_PORT + 2`。要关掉 WS 通道，直接注释掉 compose 里 5189/5190 那两条映射 |
 | `HBBS_MEM` / `HBBS_CPUS` | `256m` / `0.50` | hbbs 实测常驻 10-40 MB，上限是"异常时快速重启"用的，不是性能预估 |
 | `HBBR_MEM` / `HBBR_CPUS` | `512m` / `1.00` | hbbr 内存随并发路数增长，但**瓶颈是出网带宽不是内存**，加到 1 GB 不会更快 |
 | `LOG_MAX_SIZE` / `LOG_MAX_FILE` | `10m` / `3` | 每容器日志约 30 MB 封顶，不会写满磁盘 |
@@ -708,8 +724,8 @@ docker rm -f rd-hbbs rd-hbbr                   # 只删容器，数据目录不�
 
 | 场景 | 选法 |
 |---|---|
-| 大多数部署 | 端口映射（上面的写法），跨平台都能跑，未 publish 的 5189/5190 天然对外不可达 |
-| Linux 生产要真实来源 IP / 更低延迟 | `--network host`，但**必须先**防火墙 DROP 5189/5190（见场景 B）；此时不用写 `-p` |
+| 大多数部署 | 端口映射（上面的写法），跨平台都能跑；5189/5190 现在默认 publish（UDP 受限客户端要用），不需要就注释掉那两条 |
+| Linux 生产要真实来源 IP / 更低延迟 | `--network host`，但要按场景 B 想清楚 5189/5190 放行还是拒绝；此时不用写 `-p` |
 | Windows / macOS Docker Desktop | 只能用端口映射，`--net=host` 不生效 |
 
 平台相关的三个坑：
@@ -901,8 +917,8 @@ compose 路线同理：`rdctl.py build --no-cache && rdctl.py restart`。
 
 | 机器 | 放行 | 不放行 |
 |---|---|---|
-| hbbs（ID 注册） | TCP 5186、TCP 5187、**UDP 5187** | 5189（WS，别开） |
-| hbbr（中继） | TCP 5188 | 5190（WS，别开） |
+| hbbs（ID 注册） | TCP 5186、TCP 5187、**UDP 5187**、TCP 5189（WS 注册通道） | 5191（健康检查，按需） |
+| hbbr（中继） | TCP 5188、TCP 5190（WS 中继） | 5192（健康检查，按需） |
 
 **Q：能加多台中继分担压力吗**
 
@@ -939,7 +955,7 @@ relay-list                                    # 看每个中继的实时时延�
 
 **Q：审计日志里来源 IP 全是网关地址**
 
-端口映射模式下 NAT 改写来源。Linux 切 `network_mode: "host"`（先防火墙 DROP 5189/5190），见场景 B。
+端口映射模式下 NAT 改写来源。Linux 可切 `network_mode: "host"`（先决定 5189/5190 放行还是拒绝），见场景 B。
 
 ### 5.2 连接类
 
@@ -1060,11 +1076,14 @@ flutter 补丁热缓存幂等、钉 git 依赖 rev 时漏改 workspace 其他成
 
 ### 5.6 安全与合规
 
-**Q：能把 5189/5190 开出去做 WebSocket 接入吗**
+**Q：5189/5190 到底该开还是不该开**
 
-默认不行：上游分支无条件信任 `X-Real-IP`/`X-Forwarded-For`，任何人直连都能
-伪造来源 IP，绕过限流/封禁并污染审计。只有前面挂了反向代理、由代理统一覆写
-该头时才开放，且防火墙限制仅代理 IP 可达。
+**默认开（compose 当前行为）**。客户端 UDP 不通或勾了"使用 WebSocket"时要用
+5189 注册，摸不到就永远卡在"正在接入网络"。
+
+风险只在**前面挂了反向代理**时才成立：上游 WS 分支无条件信任 `X-Real-IP`/
+`X-Forwarded-For`，有代理时客户端可伪造来源 IP，绕过限流/封禁并污染审计。
+那种情况下要么让代理**覆写**这两个头，要么注释掉 compose 里的 5189/5190。
 
 **Q：RustDesk 是 AGPL-3.0，我们商用要注意什么**
 

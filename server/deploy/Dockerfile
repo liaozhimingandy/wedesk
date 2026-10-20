@@ -94,9 +94,9 @@ WORKDIR /root
 # 声明仅为文档用途：真正能访问到的是 docker-compose.yml 里 publish 出来的端口。
 # 5186 = hbbs NAT 探测，5187 = hbbs 主端口（TCP 打洞 + UDP 注册心跳），
 # 5188 = hbbr 中继，5191/5192 = hbbs/hbbr 健康检查 HTTP（GET /health）。
-# 容器内还监听 5189(hbbs WS) 与 5190(hbbr WS)，刻意不列出
-# 也不 publish —— 它们无条件信任 X-Real-IP 头，见 docker-compose.yml 的说明。
-EXPOSE 5186 5187 5187/udp 5188 5191 5192
+# 5189(hbbs WS) 与 5190(hbbr WS) 也已 publish：UDP 受限的客户端要靠 5189 注册。
+# 它们无条件信任 X-Real-IP 头，前置反向代理时见 docker-compose.yml 的说明。
+EXPOSE 5186 5187 5187/udp 5188 5189 5190 5191 5192
 
 # 不设 ENTRYPOINT：让 docker-compose 的 command（hbbs -r xxx / hbbr）直接生效。
 # CMD 给个默认值，单独 docker run 时也能起来。

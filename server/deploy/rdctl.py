@@ -277,23 +277,28 @@ def check_ports(ports, fatal=False):
 
 def print_ports(ports):
     p, nat, r = ports["HBBS_PORT"], ports["HBBS_NAT_PORT"], ports["HBBR_PORT"]
+    ws, wsr = ports["HBBS_WS_PORT"], ports["HBBR_WS_PORT"]
     print()
-    info("端口规划（P-1 / P / P+2 与 R / R+2 由 hbbs、hbbr 自行派生）：")
+    info("固定端口表（docker-compose.yml 里全部写死，不做推导）：")
     print(f"""
-      {nat}  TCP    hbbs NAT 类型探测          = P-1
-      {p}  TCP    hbbs TCP 打洞与连接        = P
-      {p}  UDP    hbbs ID 注册 + 心跳        = P
-      {r}  TCP    hbbr 中继数据              = R
-      {p + 2}  TCP    hbbs WebSocket  已 publish（UDP 不通时的注册通道）
-      {r + 2}  TCP    hbbr WebSocket  已 publish（WebSocket 中继）
+      {nat}  TCP    hbbs NAT 类型探测
+      {p}  TCP    hbbs 注册 / TCP 打洞与连接
+      {p}  UDP    hbbs 注册 + 心跳 + UDP 打洞
+      {r}  TCP    hbbr 中继数据
+      {ws}  TCP    hbbs WebSocket 注册通道
+      {wsr}  TCP    hbbr WebSocket 中继
+      {ports.get('HBBS_HEALTH_PORT', p + 4)}  TCP    hbbs 健康检查 /health
+      {ports.get('HBBR_HEALTH_PORT', r + 4)}  TCP    hbbr 健康检查 /health
 """)
     print("    防火墙放行：5186/tcp、5187/tcp、5187/udp、5188/tcp")
     print("              + 5189/tcp、5190/tcp（WebSocket，UDP 受限网络需要）")
+    print("              可选：5191/tcp、5192/tcp（健康检查 / 外部监控）")
     print("    5189/5190 的安全前提与关闭方式，见 docs/10-ports.md。")
     print()
+    return
 
 
-# 旧 .env 里用过的键名（端口改成派生表之后已废弃，保留检测是为了提示迁移）
+# 旧 .env 里用过的键名（端口改成固定表之后已废弃，保留检测是为了提示迁移）
 LEGACY_KEYS = ["HBBS_TCP", "HBBS_UDP", "HBBR_TCP", "RELAY_PORT", "HBBS_TCP_HP", "HBBS_NAT"]
 
 

@@ -153,8 +153,18 @@ void runMainApp(bool startService) async {
   WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
       isMainWindow: true, alwaysOnTop: alwaysOnTop);
   windowManager.waitUntilReadyToShow(windowOptions, () async {
-    // Restore the location of the main window before window hide or show.
-    await restoreWindowPosition(WindowType.Main);
+    // WeDesk: the main window has a fixed size (ToDesk style) — no resizing
+    // and no maximizing. Only its position is remembered; the saved size and
+    // the maximized flag are deliberately ignored.
+    final fixedMain =
+        isDesktop && !bind.isIncomingOnly() && !bind.isOutgoingOnly();
+    if (fixedMain) {
+      await windowManager.setSize(kMainWindowFixedSize);
+      await windowManager.center();
+    } else {
+      // Restore the location of the main window before window hide or show.
+      await restoreWindowPosition(WindowType.Main);
+    }
     // Check the startup argument, if we successfully handle the argument, we keep the main window hidden.
     final handledByUniLinks = await initUniLinks();
     debugPrint("handled by uni links: $handledByUniLinks");
@@ -168,8 +178,15 @@ void runMainApp(bool startService) async {
     }
     windowManager.setOpacity(1);
     windowManager.setTitle(getWindowName());
-    // Do not use `windowManager.setResizable()` here.
-    setResizable(!bind.isIncomingOnly());
+    if (fixedMain) {
+      // setResizable() (not windowManager.setResizable) — it also handles the
+      // Linux resize-edge bookkeeping.
+      setResizable(false);
+      await windowManager.setMaximizable(false);
+    } else {
+      // Do not use `windowManager.setResizable()` here.
+      setResizable(!bind.isIncomingOnly());
+    }
   });
 }
 

@@ -89,6 +89,39 @@ WeCard(
 `common/formatter/id_formatter.dart` 的 `formatID`，保证卡头与输入框永远一致
 （`kIdGroupSize` 当前为 4，即 `1234 5678 9012`）。
 
+**主窗口是固定尺寸的**（2026-10-20 起）：
+
+- 尺寸常量 `kMainWindowFixedSize = Size(1100, 680)`（`consts.dart`），
+  在 `main.dart` 的 `runMainApp` 里 `setSize + center`，然后
+  `setResizable(false)` + `setMaximizable(false)`；
+- 只保留**位置**记忆，不再恢复保存的尺寸/最大化状态
+  （`restoreWindowPosition` 在固定模式下被跳过）；
+- 标题栏是隐藏的，窗口控制按钮在 `connection_page.dart` 的
+  `_buildWindowBar`（顶部拖动条 + 最小化/关闭，**故意没有最大化按钮**）；
+- incoming-only / outgoing-only 特殊构建不走固定逻辑，行为不变；
+- 远程会话等子窗口不受影响，照常可调整大小。
+
+**品牌名**：窗口标题、托盘、About 页读的都是 `hbb_common` 的 `APP_NAME`
+（经 `mainGetAppNameSync()` 动态取）。改显示名要动四处，缺一处就会出现
+「有的地方新名字、有的地方旧名字」：
+
+| 位置 | 内容 |
+|---|---|
+| `build/client/custom.toml` 的 `[brand] app_name` | 注入源头 |
+| `client/libs/hbb_common/src/config.rs` 的 `APP_NAME` | 运行时全局 |
+| `client/flutter/windows/runner/Runner.rc` | Windows 文件属性 |
+| `client/flutter/android/.../values/strings.xml`、`ios/Runner/Info.plist` | 移动端显示名 |
+
+改完 `custom.toml` 后同步 `build/client/.custom-state.json` 里对应条目
+（customize.py 靠它做新旧值替换）。**exe 文件名**在
+`client/flutter/windows/CMakeLists.txt` 的 `BINARY_NAME`（当前
+`nethelper`），MSI 打包（`res/msi/preprocess.py --app-name`）必须传同名参数，
+否则 WiX 按 `$(var.Product).exe` 找不到主程序。
+
+**关于页/托盘等 UI 文案**不要写死 "RustDesk"：用
+`'${translate('About')} ${bind.mainGetAppNameSync()}'` 这种组合；
+新增翻译时中/繁的**值**里也不应出现 RustDesk（key 里的不算，key 是代码引用）。
+
 ---
 
 ## 四、新增文案

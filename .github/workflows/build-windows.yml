@@ -805,7 +805,10 @@ jobs:
         shell: pwsh
         run: |
           Push-Location client/res/msi
-          python preprocess.py --arp -d ../../../rustdesk
+          # --app-name 必须与便携版里的 exe 名一致（windows/CMakeLists.txt 的
+          # BINARY_NAME，即 custom.toml 的 exe_name）。WiX 的 File 元素按
+          # "$(var.Product).exe" 引用主程序，对不上会直接打包失败。
+          python preprocess.py --arp --app-name nethelper -d ../../../rustdesk
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
           $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1

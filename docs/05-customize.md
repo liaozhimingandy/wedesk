@@ -35,7 +35,7 @@ key             = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0="  # RS_PUB_KEY
 relay_host      = "wedesk.alsoapp.com:5188"                      # hbbr —— 一致性记录，见下方说明
 
 [brand]
-app_name     = "企业网管助手"           # 给用户看的产品名，可中文
+app_name     = "WeDesk"                  # 给用户看的产品名，可中文
 product_name = "WeDesk"                # ASCII 名：MSI 文案/服务显示名/桌面入口用
 exe_name     = "nethelper"
 company_name = "贵公司名称"             # ⚠️ 占位值，务必替换
@@ -120,7 +120,7 @@ pub fn get_rendezvous_server(...) -> String {
 
 ```rust
 // client/libs/hbb_common/src/config.rs:72
-pub static ref APP_NAME: RwLock<String> = RwLock::new("企业网管助手".to_owned());
+pub static ref APP_NAME: RwLock<String> = RwLock::new("WeDesk".to_owned());
 ```
 
 **Flutter 侧不写死应用名**，而是运行时从 Rust 读：

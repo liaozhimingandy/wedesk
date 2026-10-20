@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "贵公司名称" "\0"
-            VALUE "FileDescription", "企业网管助手 Remote Desktop" "\0"
+            VALUE "FileDescription", "WeDesk Remote Desktop" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "nethelper" "\0"
             VALUE "LegalCopyright", "Copyright © 2026 贵公司名称. All rights reserved." "\0"
             VALUE "OriginalFilename", "nethelper.exe" "\0"
-            VALUE "ProductName", "企业网管助手" "\0"
+            VALUE "ProductName", "WeDesk" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

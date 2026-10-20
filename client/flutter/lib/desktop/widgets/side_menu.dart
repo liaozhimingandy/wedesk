@@ -16,12 +16,10 @@ class WeSideMenu extends StatefulWidget {
     Key? key,
     required this.selectedIndex,
     required this.onSelect,
-    this.onSettings,
   }) : super(key: key);
 
   final int selectedIndex;
   final ValueChanged<int> onSelect;
-  final VoidCallback? onSettings;
 
   @override
   State<WeSideMenu> createState() => _WeSideMenuState();
@@ -34,6 +32,12 @@ class _WeSideMenuState extends State<WeSideMenu> {
     final items = [
       (Icons.desktop_windows_outlined, translate('Remote control')),
       (Icons.devices_outlined, translate('Device list')),
+      // ToDesk style: settings ("advanced settings") lives in the sidebar
+      // and swaps the right pane in place, no extra window or tab.
+      (
+        Icons.settings_outlined,
+        bind.isDisableSettings() ? '' : translate('Advanced settings')
+      ),
     ];
     return Container(
       width: 208,
@@ -54,20 +58,14 @@ class _WeSideMenuState extends State<WeSideMenu> {
           ),
           SizedBox(height: WeSpace.xl),
           for (var i = 0; i < items.length; i++)
-            _NavTile(
-              icon: items[i].$1,
-              label: items[i].$2,
-              selected: widget.selectedIndex == i,
-              onTap: () => widget.onSelect(i),
-            ),
+            if (items[i].$2.isNotEmpty)
+              _NavTile(
+                icon: items[i].$1,
+                label: items[i].$2,
+                selected: widget.selectedIndex == i,
+                onTap: () => widget.onSelect(i),
+              ),
           const Spacer(),
-          if (widget.onSettings != null)
-            _NavTile(
-              icon: Icons.settings_outlined,
-              label: translate('Settings'),
-              selected: false,
-              onTap: widget.onSettings!,
-            ),
           if (bind.isCustomClient())
             Padding(
               padding: const EdgeInsets.only(bottom: WeSpace.s),

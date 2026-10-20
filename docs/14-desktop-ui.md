@@ -43,27 +43,62 @@
 ## 二、主界面改成了什么
 
 布局参考 ToDesk：**左侧竖排导航 + 右侧主内容**，主内容从上到下是
-「允许控制本设备 → 设备代码卡 → 远程控制设备」。
+「允许控制本设备 → 设备代码卡 → 远程控制设备」；整窗最上面是一条
+**ToDesk 风格功能栏**（品牌 + 快捷操作 + 最小化/关闭）。
 
 改造后（文件 → 职责）：
 
 | 文件 | 职责 |
 |---|---|
-| `desktop/widgets/side_menu.dart` | **新增**。左侧导航栏（宽 208）：Logo、「远程控制 / 设备列表」两个导航项（选中态品牌软底色 + 品牌字色）、底部「高级设置」入口（复用 `DesktopTabPage.onAddSetting`） |
-| `desktop/widgets/local_device_card.dart` | 本机设备区：**「允许控制本设备」开关**（映射 `stop-service` 选项）+ 服务状态 pill；下方浅灰卡片左列「设备代码」（12 位 4 位一组大号 + 复制）、右列「连接模式」（临时密码 + 显示/隐藏/复制/刷新/修改），中间竖分隔线 |
+| `desktop/widgets/window_top_bar.dart` | **新增**。窗口顶部功能栏（高 46）：左侧 Logo + 产品名，右侧「快速上手 / 帮助 / 设置 / 最小化 / 关闭」（关闭悬停变红）。整条栏即拖动区 |
+| `desktop/widgets/side_menu.dart` | 左侧导航栏（宽 208）：Logo、**三个导航项**「远程控制 / 设备列表 / 高级设置」（选中态品牌软底色 + 品牌字色）。选「高级设置」直接把右栏换成设置页（`weHomeNavIndex`），不再开新 Tab。栏身也是拖动区 |
+| `desktop/widgets/local_device_card.dart` | 本机设备区：**「允许控制本设备」开关**（映射 `stop-service` 选项）+ 服务状态 pill；下方浅灰卡片左列「设备代码」（12 位 4 位一组大号 + 复制）、右列「连接模式」（**下拉切换一次性/固定/两者都用** + 临时密码的显示/隐藏/复制/刷新 + 固定密码的设置入口），中间竖分隔线 |
 | `desktop/widgets/connect_panel.dart` | 连接区：标题行「远程控制设备」+ 就绪状态 pill、46px 搜索框（搜索图标 + 自动补全 + 一键清除）+ 蓝色主按钮「连接」、**连接模式单选**（远程控制 / 文件传输，Enter 与按钮跟随所选模式）、四张功能卡片（文件传输 / 摄像头 / 终端 / TCP 隧道） |
-| `desktop/pages/connection_page.dart` | 承接 `navIndex`（0=远程控制页，1=设备列表页），内部 `IndexedStack` 切换、两页保活；`header` 参数用于在连接区上方注入设备卡/帮助卡；底部状态栏保留 |
-| `desktop/pages/desktop_home_page.dart` | 普通模式：`Row[WeSideMenu, Expanded(ConnectionPage)]`；`incoming-only` 小窗保留旧紧凑布局（设备卡在左栏），`header` 置空避免重复渲染；帮助卡（安装/macOS 权限警告）移入主内容滚动区 |
+| `desktop/pages/connection_page.dart` | 承接 `navIndex`（0=远程控制页，1=设备列表页），内部 `IndexedStack` 切换、两页保活；`header` 参数用于在连接区上方注入设备卡/帮助卡；底部状态栏保留。远程控制页用 **fill-or-center**（`LayoutBuilder + ConstrainedBox(minHeight)` + `mainAxisAlignment.center`）：内容比窗口矮时垂直居中，不再出现「往下拉一片空白」 |
+| `desktop/pages/desktop_home_page.dart` | 普通模式：`Column[WeWindowTopBar, Expanded(Row[WeSideMenu, 右栏])]`，右栏按 `weHomeNavIndex` 在 `ConnectionPage` / `DesktopSettingPage` 间切换；`incoming-only` 小窗保留旧紧凑布局（设备卡在左栏），`header` 置空避免重复渲染；帮助卡（安装/macOS 权限警告）移入主内容滚动区 |
 
 **用户友好度的实际增量**（都是原来要靠猜的操作）：
 
 - 「允许控制本设备」**开关直接放在主界面**（原来只能去设置里停/启服务）；
 - 设备码、临时密码都有**显式复制按钮**（原来只有双击）；
 - 临时密码可**显示/隐藏**（原来永远明文且无法核验）；
+- 密码区**下拉直接切换连接模式**（一次性/固定/两者都用），不用进设置页；
 - 输入框有**清除按钮**和搜索图标，聚焦时高亮品牌色；
 - 连接前可用**单选**切换「远程控制 / 文件传输」，二/三类入口升级为卡片；
 - 「设备列表」成为独立页面，最近会话/收藏/地址簿不再挤在连接区下面；
 - 状态栏能看到**当前有几个会话**。
+
+### 窗口框架：原生标题栏已彻底移除
+
+`TitleBarStyle.hidden` **只缩边框、保留原生标题按钮**（截图里顶部那条
+「— □ ✕」就是它）。真正去掉要调 `windowManager.setAsFrameless()`
+（仅 Windows；macOS/Linux 的 `hidden` 本身就是全 frameless）。
+主窗口在 `runMainApp` 的固定尺寸分支里调用，代价是失去原生边框和阴影，
+用 Flutter 侧 1px 描边 + 顶栏分隔线补回层次。拖动窗口有两个区域：
+顶部功能栏、左侧导航栏（都是 `onPanStart → windowManager.startDragging()`）。
+
+### 高级设置（ToDesk 化）
+
+设置页**内嵌在主窗口右栏**：侧栏选「高级设置」（`weHomeNavIndex = 2`）
+时 `desktop_home_page.dart` 把右栏从 `ConnectionPage` 换成
+`DesktopSettingPage`；`DesktopTabPage.onAddSetting` 在新 UI 路径下
+也只是切这个导航（macOS / 兼容模式 / incoming-only 仍走旧的开 Tab 逻辑）。
+
+`desktop_setting_page.dart` 从「左侧竖 Tab + 右 PageView」改为
+**顶部横向 Tab 条**（`_horizontalTabs`：图标 + 文字，选中态品牌色 +
+2px 下划线，标签溢出可横向滚动），顺序对齐 ToDesk：
+基本设置 / 显示设置 / 安全设置 / 网络设置 / 账户设置 / 打印设置 / 关于，
+桌面端不再渲染大标题（省一截纵向空间）。
+安全页顶部是**琥珀色建议横幅**（⚠ + 「设置并开启」按钮，跳设置固定密码），
+下面是通栏圆角卡片（`_Card` 不再是 540px 定宽）。
+设置项本身的逻辑没动，只重排。
+
+### 主窗口旧标签栏已隐藏
+
+`DesktopTab` 加了实例级参数 `showTabBar`（默认 true，不影响远程会话窗口）。
+`DesktopTabPage` 在新 UI 路径（非 macOS、非兼容模式、非 incoming-only）
+下传 `showTabBar: false`——旧的那条「Logo + Tab + ≡ — □ ✕」整条消失，
+窗口按钮由顶部功能栏（`WeWindowTopBar`）承担，固定窗口没有最大化。
 
 ---
 
@@ -91,15 +126,14 @@ WeCard(
 
 **主窗口是固定尺寸的**（2026-10-20 起）：
 
-- 尺寸常量 `kMainWindowFixedSize = Size(960, 600)`（`consts.dart`），
+- 尺寸常量 `kMainWindowFixedSize = Size(960, 560)`（`consts.dart`），
   在 `main.dart` 的 `runMainApp` 里 `setSize + center`，然后
   `setResizable(false)` + `setMaximizable(false)`；
 - 只保留**位置**记忆，不再恢复保存的尺寸/最大化状态
   （`restoreWindowPosition` 在固定模式下被跳过）；
-- **窗口最顶部没有任何东西**：原生标题栏隐藏，也不自绘顶栏/菜单/
-  最大化按钮。标题栏隐藏后没有可拖区域，所以**左栏侧边导航兼任拖动区**
-  （`side_menu.dart` 的 `GestureDetector.onPanStart →
-  windowManager.startDragging()`）——拖动窗口抓左栏即可，导航项点击不受影响；
+- **窗口最顶部是自绘功能栏**（`WeWindowTopBar`：品牌 + 快捷操作 +
+  最小化/关闭），原生标题栏连同其按钮已彻底移除。拖动窗口有两个区域：
+  顶部功能栏、左侧导航栏（都是 `onPanStart → windowManager.startDragging()`）；
 - incoming-only / outgoing-only 特殊构建不走固定逻辑，行为不变；
 - 远程会话等子窗口不受影响，照常可调整大小。
 
@@ -158,6 +192,11 @@ WeCard(
 | `Show` / `Hide` | 显示 / 隐藏 | 密码显隐 |
 | `Active sessions` | 活动会话 | 状态栏会话计数 |
 | `Permanent password` / `Not set` | 固定密码 / 未设置 | 固定密码行 |
+| `Quick start` | 快速上手 | 顶部功能栏 |
+| `Basic settings` 等 7 条 | 基本设置 / 显示设置 / 安全设置 / 网络设置 / 账户设置 / 打印设置 | 设置页横向 Tab（ToDesk 顺序） |
+| `Security verification` | 安全验证 | 安全设置卡标题 |
+| `Verification method when controlling this device` | 控制本设备时的验证方式 | 安全设置卡标题 |
+| `Set up and enable` / `banner_2fa_title` / `banner_2fa_desc` | 设置并开启 / 建议设置主设备… | 安全设置顶部横幅 |
 
 其余语言（en 等）没有对应条目时会**回退显示英文 key**，这是上游 `translate()`
 的既有行为；要补齐就往对应 `src/lang/*.rs` 里加同样的 key。
@@ -173,8 +212,9 @@ WeCard(
    但它被移动端共用，改造时必须按 `isDesktop` 分流。
 2. **远程会话窗口工具栏**（`desktop/widgets/remote_toolbar.dart`，3800 行）
    —— 体积大、状态多，建议单独一次改动。
-3. **设置页**（`desktop/pages/desktop_setting_page.dart`）
-   —— 仍是上游 `settings_ui` 风格。
+3. **设置页其余分页** —— 外壳（横向 Tab + 安全页）已 ToDesk 化，
+   基本/网络/显示/账户等分页内部仍是上游 `settings_ui` 风格，
+   可逐页换成 `WeCard`。
 4. **移动端** —— 本次完全没动，按计划单独做。
 
 ---

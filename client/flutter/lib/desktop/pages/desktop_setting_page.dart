@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/audio_input.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
+import 'package:flutter_hbb/common/widgets/wedesign.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
 import 'package:flutter_hbb/common/widgets/keyboard_shortcuts/page_body.dart';
@@ -28,9 +29,6 @@ import 'package:url_launcher/url_launcher_string.dart';
 import '../../common/widgets/dialog.dart';
 import '../../common/widgets/login.dart';
 
-const double _kTabWidth = 200;
-const double _kTabHeight = 42;
-const double _kCardFixedWidth = 540;
 const double _kCardLeftMargin = 15;
 const double _kContentHMargin = 15;
 const double _kContentHSubMargin = _kContentHMargin + 33;
@@ -63,9 +61,11 @@ enum SettingsTabKey {
 
 class DesktopSettingPage extends StatefulWidget {
   final SettingsTabKey initialTabkey;
+  // ToDesk style order: basic -> display -> security -> network -> ...
   static final List<SettingsTabKey> tabKeys = [
     if (bind.mainGetBuildinOption(key: kOptionHideGeneralSetting) != 'Y')
       SettingsTabKey.general,
+    if (!bind.isIncomingOnly()) SettingsTabKey.display,
     if (!isWeb &&
         !bind.isOutgoingOnly() &&
         !bind.isDisableSettings() &&
@@ -74,7 +74,6 @@ class DesktopSettingPage extends StatefulWidget {
     if (!bind.isDisableSettings() &&
         bind.mainGetBuildinOption(key: kOptionHideNetworkSetting) != 'Y')
       SettingsTabKey.network,
-    if (!bind.isIncomingOnly()) SettingsTabKey.display,
     if (!bind.isDisableAccount()) SettingsTabKey.account,
     if (isWindows &&
         !bind.isDisableSettings() &&
@@ -189,27 +188,30 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
       switch (tab) {
         case SettingsTabKey.general:
           settingTabs.add(_TabInfo(
-              tab, 'General', Icons.settings_outlined, Icons.settings));
+              tab, 'Basic settings', Icons.settings_outlined, Icons.settings));
           break;
         case SettingsTabKey.safety:
-          settingTabs.add(_TabInfo(tab, 'Security',
+          settingTabs.add(_TabInfo(tab, 'Security settings',
               Icons.enhanced_encryption_outlined, Icons.enhanced_encryption));
           break;
         case SettingsTabKey.network:
           settingTabs
-              .add(_TabInfo(tab, 'Network', Icons.link_outlined, Icons.link));
+              .add(_TabInfo(
+                  tab, 'Network settings', Icons.link_outlined, Icons.link));
           break;
         case SettingsTabKey.display:
-          settingTabs.add(_TabInfo(tab, 'Display',
+          settingTabs.add(_TabInfo(tab, 'Display settings',
               Icons.desktop_windows_outlined, Icons.desktop_windows));
           break;
         case SettingsTabKey.account:
           settingTabs.add(
-              _TabInfo(tab, 'Account', Icons.person_outline, Icons.person));
+              _TabInfo(
+                  tab, 'Account settings', Icons.person_outline, Icons.person));
           break;
         case SettingsTabKey.printer:
           settingTabs
-              .add(_TabInfo(tab, 'Printer', Icons.print_outlined, Icons.print));
+              .add(_TabInfo(
+                  tab, 'Printer settings', Icons.print_outlined, Icons.print));
           break;
         case SettingsTabKey.about:
           settingTabs
@@ -280,24 +282,28 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
       backgroundColor: Theme.of(context).colorScheme.background,
       body: _buildBlock(
         children: <Widget>[
-          SizedBox(
-            width: _kTabWidth,
+          Expanded(
             child: Column(
               children: [
-                _header(context),
-                Flexible(child: _listView(tabs: _settingTabs())),
+                // The "Settings" headline only exists for the web layout;
+                // the desktop pane goes straight to the tab strip (ToDesk
+                // style) to save vertical space.
+                if (isWeb) _header(context),
+                // ToDesk style: horizontal tab strip on top instead of the
+                // old left-side vertical list.
+                _horizontalTabs(tabs: _settingTabs()),
+                const Divider(height: 1),
+                Expanded(
+                  child: Container(
+                    color: Theme.of(context).scaffoldBackgroundColor,
+                    child: PageView(
+                      controller: controller,
+                      physics: NeverScrollableScrollPhysics(),
+                      children: _children(),
+                    ),
+                  ),
+                )
               ],
-            ),
-          ),
-          const VerticalDivider(width: 1),
-          Expanded(
-            child: Container(
-              color: Theme.of(context).scaffoldBackgroundColor,
-              child: PageView(
-                controller: controller,
-                physics: NeverScrollableScrollPhysics(),
-                children: _children(),
-              ),
             ),
           )
         ],
@@ -344,50 +350,66 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
     );
   }
 
-  Widget _listView({required List<_TabInfo> tabs}) {
-    final scrollController = ScrollController();
-    return ListView(
-      controller: scrollController,
-      children: tabs.map((tab) => _listItem(tab: tab)).toList(),
+  /// ToDesk style horizontal tab strip: text + icon, selected tab gets the
+  /// brand color and a 2px underline. Scrolls horizontally when the labels
+  /// don't fit (small window / many tabs).
+  Widget _horizontalTabs({required List<_TabInfo> tabs}) {
+    return Container(
+      height: 48,
+      color: WeColors.of(context).surface,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: WeSpace.l),
+        children: tabs.map((tab) => _horizontalTab(tab: tab)).toList(),
+      ),
     );
   }
 
-  Widget _listItem({required _TabInfo tab}) {
+  Widget _horizontalTab({required _TabInfo tab}) {
     return Obx(() {
-      bool selected = tab.key == selectedTab.value;
-      return SizedBox(
-        width: _kTabWidth,
-        height: _kTabHeight,
-        child: InkWell(
-          onTap: () {
-            if (selectedTab.value != tab.key) {
-              int index = DesktopSettingPage.tabKeys.indexOf(tab.key);
-              if (index == -1) {
-                return;
-              }
-              controller.jumpToPage(index);
+      final selected = tab.key == selectedTab.value;
+      final colors = WeColors.of(context);
+      return InkWell(
+        onTap: () {
+          if (selectedTab.value != tab.key) {
+            int index = DesktopSettingPage.tabKeys.indexOf(tab.key);
+            if (index == -1) {
+              return;
             }
-            selectedTab.value = tab.key;
-          },
-          child: Row(children: [
-            Container(
-              width: 4,
-              height: _kTabHeight * 0.7,
-              color: selected ? _accentColor : null,
+            controller.jumpToPage(index);
+          }
+          selectedTab.value = tab.key;
+        },
+        child: Container(
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: WeSpace.m),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: selected ? colors.brand : Colors.transparent,
+                width: 2,
+              ),
             ),
-            Icon(
-              selected ? tab.selected : tab.unselected,
-              color: selected ? _accentColor : null,
-              size: 20,
-            ).marginOnly(left: 13, right: 10),
-            Text(
-              translate(tab.label),
-              style: TextStyle(
-                  color: selected ? _accentColor : null,
-                  fontWeight: FontWeight.w400,
-                  fontSize: _kContentFontSize),
-            ),
-          ]),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                selected ? tab.selected : tab.unselected,
+                size: 17,
+                color: selected ? colors.brand : colors.textSecondary,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                translate(tab.label),
+                style: TextStyle(
+                  color: selected ? colors.brand : colors.textSecondary,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  fontSize: 13.5,
+                ),
+              ),
+            ],
+          ),
         ),
       );
     });
@@ -1030,6 +1052,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
         controller: scrollController,
         child: Column(
           children: [
+            _buildSecurityBanner(context, locked),
             _lock(locked, 'Unlock Security Settings', () {
               locked = false;
               setState(() => {});
@@ -1340,36 +1363,98 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
           final usePassword = model.approveMode != 'click';
 
           final isApproveModeFixed = isOptionFixed(kOptionApproveMode);
-          return _Card(title: 'Password', children: [
-            ComboBox(
-              enabled: !locked && !isApproveModeFixed,
-              keys: modeKeys,
-              values: modeValues,
-              initialKey: modeInitialKey,
-              onChanged: (key) => model.setApproveMode(key),
-            ).marginOnly(left: _kContentHMargin),
-            if (usePassword) radios[0],
-            // 一次性密码长度已固定为 6 位数字（见 Rust 侧
-            // `password_security::TEMPORARY_PASSWORD_LENGTH`）。这里保留一行说明，
-            // 但不再给可选项 —— 否则设置里改了位数、实际生成的没变，
-            // 是最难排查的那种不一致。
-            if (usePassword)
-              _SubLabeledWidget(
-                  context,
-                  'One-time password length',
-                  Text('6',
-                      style: TextStyle(
-                          color: disabledTextColor(context, false))),
-                  enabled: false),
-            if (usePassword) radios[1],
-            if (usePassword && !isChangePermanentPasswordDisabled())
-              _SubButton('Set permanent password', setPasswordDialog,
-                  permEnabled && !locked),
-            // if (usePassword)
-            //   hide_cm(!locked).marginOnly(left: _kContentHSubMargin - 6),
-            if (usePassword) radios[2],
-          ]);
+          return Column(
+            children: [
+              // ToDesk style banner: nudges the user to set a permanent
+              // password (the closest thing we have to "main device + 2FA").
+              _buildSecurityBanner(context, locked),
+              _Card(title: 'Security verification', children: [
+                ComboBox(
+                  enabled: !locked && !isApproveModeFixed,
+                  keys: modeKeys,
+                  values: modeValues,
+                  initialKey: modeInitialKey,
+                  onChanged: (key) => model.setApproveMode(key),
+                ).marginOnly(left: _kContentHMargin),
+              ]),
+              _Card(
+                  title: 'Verification method when controlling this device',
+                  children: [
+                    if (usePassword) radios[0],
+                    // 一次性密码长度已固定为 6 位数字（见 Rust 侧
+                    // `password_security::TEMPORARY_PASSWORD_LENGTH`。这里保留一行说明，
+                    // 但不再给可选项 —— 否则设置里改了位数、实际生成的没变，
+                    // 是最难排查的那种不一致。
+                    if (usePassword)
+                      _SubLabeledWidget(
+                          context,
+                          'One-time password length',
+                          Text('6',
+                              style: TextStyle(
+                                  color: disabledTextColor(context, false))),
+                          enabled: false),
+                    if (usePassword) radios[1],
+                    if (usePassword && !isChangePermanentPasswordDisabled())
+                      _SubButton('Set permanent password', setPasswordDialog,
+                          permEnabled && !locked),
+                    // if (usePassword)
+                    //   hide_cm(!locked).marginOnly(left: _kContentHSubMargin - 6),
+                    if (usePassword) radios[2],
+                  ]),
+            ],
+          );
         })));
+  }
+
+  /// ToDesk style tip banner above the security cards.
+  /// Amber warning look (matches the reference design).
+  Widget _buildSecurityBanner(BuildContext context, bool locked) {
+    final colors = WeColors.of(context);
+    return Container(
+      margin: const EdgeInsets.only(
+          left: _kCardLeftMargin, right: _kCardLeftMargin, top: 15),
+      padding: const EdgeInsets.all(WeSpace.l),
+      decoration: BoxDecoration(
+        color: colors.warn.withOpacity(0.08),
+        borderRadius: WeRadii.mdRadius,
+        border: Border.all(color: colors.warn.withOpacity(0.35), width: 1),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.warning_amber_rounded, color: colors.warn),
+          const SizedBox(width: WeSpace.m),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  translate('banner_2fa_title'),
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: colors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  translate('banner_2fa_desc'),
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: colors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: WeSpace.m),
+          WePrimaryButton(
+            text: translate('Set up and enable'),
+            enabled: !locked,
+            onPressed: () => setPasswordDialog(),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget more(BuildContext context) {
@@ -2598,35 +2683,35 @@ Widget _Card(
     {required String title,
     required List<Widget> children,
     List<Widget>? title_suffix}) {
-  return Row(
-    children: [
-      Flexible(
-        child: SizedBox(
-          width: _kCardFixedWidth,
-          child: Card(
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                        child: Text(
-                      translate(title),
-                      textAlign: TextAlign.start,
-                      style: const TextStyle(
-                        fontSize: _kTitleFontSize,
-                      ),
-                    )),
-                    ...?title_suffix
-                  ],
-                ).marginOnly(left: _kContentHMargin, top: 10, bottom: 10),
-                ...children
-                    .map((e) => e.marginOnly(top: 4, right: _kContentHMargin)),
-              ],
-            ).marginOnly(bottom: 10),
-          ).marginOnly(left: _kCardLeftMargin, top: 15),
-        ),
-      ),
-    ],
+  // ToDesk style: full-width rounded card instead of the old fixed-width
+  // (540px) one, so the settings pane uses the whole right column.
+  return Container(
+    margin: const EdgeInsets.only(
+        left: _kCardLeftMargin, right: _kCardLeftMargin, top: 15),
+    child: Card(
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(borderRadius: WeRadii.mdRadius),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                  child: Text(
+                translate(title),
+                textAlign: TextAlign.start,
+                style: const TextStyle(
+                  fontSize: _kTitleFontSize,
+                ),
+              )),
+              ...?title_suffix
+            ],
+          ).marginOnly(left: _kContentHMargin, top: 12, bottom: 10),
+          ...children
+              .map((e) => e.marginOnly(top: 4, right: _kContentHMargin)),
+        ],
+      ).marginOnly(bottom: 10),
+    ),
   );
 }
 
@@ -2966,13 +3051,14 @@ Widget _lock(
 ) {
   return Offstage(
       offstage: !locked,
-      child: Row(
-        children: [
-          Flexible(
-            child: SizedBox(
-              width: _kCardFixedWidth,
-              child: Card(
-                child: ElevatedButton(
+      child: Container(
+        margin: const EdgeInsets.only(
+            left: _kCardLeftMargin, right: _kCardLeftMargin, top: 15),
+        child: Card(
+          elevation: 0,
+          margin: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(borderRadius: WeRadii.mdRadius),
+          child: ElevatedButton(
                   child: SizedBox(
                       height: 25,
                       child: Row(
@@ -2996,11 +3082,9 @@ Widget _lock(
                     }
                   },
                 ).marginSymmetric(horizontal: 2, vertical: 4),
-              ).marginOnly(left: _kCardLeftMargin),
-            ).marginOnly(top: 10),
-          ),
-        ],
-      ));
+              ),
+            ),
+      );
 }
 
 _LabeledTextField(

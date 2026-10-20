@@ -311,26 +311,38 @@ class _ConnectionPageState extends State<ConnectionPage>
           child: IndexedStack(
             index: widget.navIndex == 1 ? 1 : 0,
             children: [
-              SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(
-                    WeSpace.xl, WeSpace.l, WeSpace.xl, WeSpace.xl),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    ...widget.header,
-                    if (widget.header.isNotEmpty)
-                      const SizedBox(height: WeSpace.l),
-                    ConnectPanel(
-                      idController: _idController,
-                      idEditingController: _idEditingController,
-                      focusNode: _idFocusNode,
-                      idInputFocused: _idInputFocused,
-                      allPeersLoader: _allPeersLoader,
-                      onConnect: onConnect,
+              // Fill-or-center: when the content is shorter than the window
+              // (fixed height), it is vertically centered instead of leaving
+              // a large blank area under it; scrolling only kicks in when the
+              // content really overflows (large font scale, small screen).
+              LayoutBuilder(builder: (context, constraints) {
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(
+                      WeSpace.xl, WeSpace.l, WeSpace.xl, WeSpace.xl),
+                  child: ConstrainedBox(
+                    constraints:
+                        BoxConstraints(minHeight: constraints.maxHeight),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ...widget.header,
+                        if (widget.header.isNotEmpty)
+                          const SizedBox(height: WeSpace.l),
+                        ConnectPanel(
+                          idController: _idController,
+                          idEditingController: _idEditingController,
+                          focusNode: _idFocusNode,
+                          idInputFocused: _idInputFocused,
+                          allPeersLoader: _allPeersLoader,
+                          onConnect: onConnect,
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
+                  ),
+                );
+              }),
               PeerTabPage(),
             ],
           ),

@@ -20,6 +20,13 @@ class DesktopTabPage extends StatefulWidget {
 
   static void onAddSetting(
       {SettingsTabKey initialPage = SettingsTabKey.general}) {
+    // Redesigned main window: settings is a sidebar page inside the home
+    // tab, not a separate tab of the (hidden) tab strip.
+    if (!isMacOS && !kUseCompatibleUiMode && !bind.isIncomingOnly()) {
+      weSettingsInitialTab.value = initialPage;
+      weHomeNavIndex.value = 2;
+      return;
+    }
     try {
       DesktopTabController tabController = Get.find<DesktopTabController>();
       tabController.add(TabInfo(
@@ -91,13 +98,23 @@ class _DesktopTabPageState extends State<DesktopTabPage> {
 
   @override
   Widget build(BuildContext context) {
+    // The redesigned main window (Windows frameless build) draws its own
+    // ToDesk style top bar inside [DesktopHomePage], so the old tab strip
+    // (logo + tabs + hamburger / window buttons) must stay hidden. The
+    // classic platforms keep the original bar, which also hosts the
+    // settings gear as `tail`.
+    final useNewMainUi =
+        !isMacOS && !kUseCompatibleUiMode && !bind.isIncomingOnly();
     final tabWidget = Container(
         child: Scaffold(
             backgroundColor: Theme.of(context).colorScheme.background,
             body: DesktopTab(
               controller: tabController,
+              showTabBar: !useNewMainUi,
               tail: Offstage(
-                offstage: bind.isIncomingOnly() || bind.isDisableSettings(),
+                offstage: useNewMainUi ||
+                    bind.isIncomingOnly() ||
+                    bind.isDisableSettings(),
                 child: ActionIcon(
                   message: 'Settings',
                   icon: IconFont.menu,

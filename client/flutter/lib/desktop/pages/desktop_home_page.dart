@@ -13,6 +13,7 @@ import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/local_device_card.dart';
 import 'package:flutter_hbb/desktop/widgets/side_menu.dart';
 import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
+import 'package:flutter_hbb/desktop/widgets/window_top_bar.dart';
 import 'package:flutter_hbb/common/widgets/wedesign.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
@@ -33,6 +34,15 @@ class DesktopHomePage extends StatefulWidget {
 }
 
 const borderColor = Color(0xFF2F65BA);
+
+/// Sidebar navigation of the redesigned main window:
+/// 0 = remote control, 1 = device list, 2 = settings.
+/// Global so [DesktopTabPage.onAddSetting] can jump to the settings pane
+/// from anywhere (top bar, tray, `switch2page`) without adding a tab.
+final weHomeNavIndex = 0.obs;
+
+/// The tab the settings pane should show when it becomes visible.
+final weSettingsInitialTab = SettingsTabKey.general.obs;
 
 class _DesktopHomePageState extends State<DesktopHomePage>
     with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
@@ -55,9 +65,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   final GlobalKey _childKey = GlobalKey();
 
-  /// 0 = remote control page, 1 = device list page (sidebar navigation).
-  int _navIndex = 0;
-
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -74,27 +81,46 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         ],
       ));
     }
+    // Frameless windows lose the native 1px frame; draw our own hairline so
+    // the window edge stays visible on light wallpapers.
     return _buildBlock(
-        child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        WeSideMenu(
-          selectedIndex: _navIndex,
-          onSelect: (i) {
-            if (_navIndex != i) {
-              setState(() => _navIndex = i);
-            }
-          },
+        child: Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: WeColors.of(context).border, width: 1),
+      ),
+      child: Column(
+        children: [
+          // ToDesk style top bar: brand + related operations. The native title
+          // bar is fully removed (setAsFrameless), so this bar is also the
+          // window's drag area.
+          WeWindowTopBar(
           onSettings: bind.isDisableSettings()
               ? null
               : () {
                   DesktopTabPage.onAddSetting();
                 },
         ),
-        const VerticalDivider(width: 1),
-        Expanded(child: buildRightPane(context)),
+        Expanded(
+          child: Obx(() => Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              WeSideMenu(
+                selectedIndex: weHomeNavIndex.value,
+                onSelect: (i) {
+                  if (weHomeNavIndex.value != i) {
+                    weHomeNavIndex.value = i;
+                  }
+                },
+              ),
+              const VerticalDivider(width: 1),
+              Expanded(child: buildRightPane(context)),
+            ],
+          )),
+        ),
       ],
-    ));
+      ),
+    ),
+    );
   }
 
   Widget _buildBlock({required Widget child}) {
@@ -214,10 +240,24 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   }
 
   Widget buildRightPane(BuildContext context) {
+    final bg = Theme.of(context).scaffoldBackgroundColor;
+    if (weHomeNavIndex.value == 2 && !bind.isDisableSettings()) {
+      // The settings pane is embedded in place of the connection page
+      // (ToDesk style). It is keyed by the requested tab, so changing
+      // [weSettingsInitialTab] (e.g. `switch2page`) re-creates it on the
+      // right page.
+      return Container(
+        color: bg,
+        child: Obx(() => DesktopSettingPage(
+              key: ValueKey('settings-pane-${weSettingsInitialTab.value}'),
+              initialTabkey: weSettingsInitialTab.value,
+            )),
+      );
+    }
     return Container(
-      color: Theme.of(context).scaffoldBackgroundColor,
+      color: bg,
       child: ConnectionPage(
-        navIndex: _navIndex,
+        navIndex: weHomeNavIndex.value,
         header: _buildContentHeader(context),
       ),
     );

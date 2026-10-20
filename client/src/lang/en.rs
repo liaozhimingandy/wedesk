@@ -288,5 +288,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("shortcut-already-bound-to", "Already bound to"),
         ("shortcut-mobile-physical-keyboard-tip", "Recording requires a physical keyboard. Soft keyboards are not supported."),
         ("shortcut-key-not-supported", "\"{}\" can't be used as a shortcut."),
+        ("Advanced settings", "Advanced settings"),
+        ("Security verification", "Security verification"),
+        ("Verification method when controlling this device", "Verification method when controlling this device"),
+        ("Set up and enable", "Set up and enable"),
+        ("banner_2fa_title", "Set a primary device and enable 2FA protection"),
+        ("banner_2fa_desc", "Once enabled, you can change security settings remotely while this device is being controlled"),
     ].iter().cloned().collect();
 }

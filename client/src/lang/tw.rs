@@ -833,5 +833,18 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Keep background service", "保持後台服務"),
         ("Permanent password", "固定密碼"),
         ("Not set", "未設定"),
+        ("Quick start", "快速上手"),
+        ("Advanced settings", "進階設定"),
+        ("Basic settings", "基本設定"),
+        ("Security settings", "安全設定"),
+        ("Network settings", "網路設定"),
+        ("Display settings", "顯示設定"),
+        ("Account settings", "帳戶設定"),
+        ("Printer settings", "列印設定"),
+        ("Security verification", "安全驗證"),
+        ("Verification method when controlling this device", "控制本設備時的驗證方式"),
+        ("Set up and enable", "設定並開啟"),
+        ("banner_2fa_title", "建議設定主裝置並開啟二次驗證保護"),
+        ("banner_2fa_desc", "開啟後您可在被控時遠端修改安全設定"),
     ].iter().cloned().collect();
 }

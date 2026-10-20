@@ -159,6 +159,13 @@ void runMainApp(bool startService) async {
     final fixedMain =
         isDesktop && !bind.isIncomingOnly() && !bind.isOutgoingOnly();
     if (fixedMain) {
+      if (isWindows) {
+        // `TitleBarStyle.hidden` only shrinks the window frame — the native
+        // caption (icon + minimize/maximize/close) stays visible. Remove it
+        // completely; the app draws its own top bar (WeWindowTopBar) and the
+        // sidebar/top bar double as drag areas.
+        await windowManager.setAsFrameless();
+      }
       await windowManager.setSize(kMainWindowFixedSize);
       await windowManager.center();
     } else {

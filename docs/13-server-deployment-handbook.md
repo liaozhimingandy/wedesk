@@ -168,7 +168,7 @@ flowchart TB
 |---|---|---|
 | 启用方式 | 什么都不用改 | `DB_TYPE=sqlite` + `DB_URL=/root/db_v2.sqlite3` 两行一起改 |
 | 数据位置 | `server/deploy/pgdata/` | `server/data/db_v2.sqlite3` |
-| 库内表 | `peer` + `server_config` + `connection_log` | 仅 `peer` |
+| 库内表 | `peer` + `server_config` + `connection_log` + `relay_nodes` | 同上（表都会建，但密钥托管 / 审计仅 PG 生效；`relay_nodes` 两端都用，见 2.6） |
 | 密钥托管 | ✅ 多实例共享同一把钥匙 | ❌ 只用本地文件 |
 | 连接审计 | ✅ 异步批量落库 | ❌ 完全不记录 |
 | 存量迁移 | 从 SQLite 迁过来：`migrate-sqlite-to-pg.py` | — |
@@ -219,6 +219,74 @@ flowchart LR
   与服务端二进制打成 GitHub Release（该 job 有 `v*` 门控，普通 push 不会误发版）。
 
 > 流水线细节与排障见 [03b CI 云构建](03b-ci.md)。当前状态：11 个 job 全绿。
+
+### 2.6 中继调度：多节点选择与混合探测
+
+`-r` 支持逗号分隔多个中继，但上游原实现是**简单轮询**（`ROTATION_RELAY_SERVER` 取模），
+只知道"活着"、不知道"好不好"——多个中继里挑一个，跨地域部署时经常命中"能连但很慢"的那个。
+
+wedesk 把它换成了**带权优选**，并在协议里预留了"两端探测 → BOW 打分"的闭环。
+
+#### v1：服务端优选（默认生效，不需要客户端配合）
+
+hbbs 每 3 秒（`CHECK_RELAY_TIMEOUT`）探测一次每个中继：
+
+1. 对每个中继 TCP 连一次，记录 **RTT** 与是否存活；
+2. 结果写回 `relay_nodes` 表（`latency_ms` / `healthy`）并更新内存缓存；
+3. 有连接请求时按综合分挑最优：
+
+   ```
+   score = weight - (connections / capacity) × 200 - latency_ms × 0.5
+   ```
+
+   越大越优；`healthy=false` 或已满载的直接排除。探测结果还没回来（缓存为空）
+   时退回原来的轮询，保证启动瞬间可用。
+
+`region` / `weight` / `capacity` 是运维手动打标的静态权重，默认 `''` / `100` / `1000`。
+在 hbbs 控制台（`check_cmd`）里维护：
+
+```
+relay-set-meta <host> <region> <weight> <capacity>   # 打标，简写 rsm
+relay-list                                          # 列出全部中继及其实时健康，简写 rl
+relay-health                                        # 打印内存缓存（实时时延/存活），简写 rh
+```
+
+> **region 是手动标签，不是 GeoIP**——刻意不引入 IP 库依赖。
+> v1 里它参与展示与人工决策，"优先同区域"要等两端客户端上报自身区域
+> （混合探测的下一步）才能真正自动生效。
+
+#### v2（协议骨架，尚未闭环）：两端 UDP 探测 + BOW
+
+"两端并行探测 → 上报 → 敲定唯一公共中继"的三个消息已经落进 `rendezvous.proto`
+（`RelayProbeRequest` / `RelayProbeResult` / `RelaySelect`，oneof 编号 29/30/31），
+hbbs 侧的会话状态机与 BOW 打分也已实现，但**客户端的 UDP 探测还没做**，故默认关闭：
+
+```mermaid
+sequenceDiagram
+    participant A as 控制端
+    participant B as 被控端
+    participant S as hbbs
+    S->>A: RelayProbeRequest(candidates 2~3 个, session_token)
+    S->>B: RelayProbeRequest(同上)
+    A-->>S: RelayProbeResult(session_token, 各候选 RTT/丢包)
+    B-->>S: RelayProbeResult(同上)
+    S->>A: RelaySelect(最终中继, session_token)
+    S->>B: RelaySelect(同上)
+```
+
+打分用 **BOW（Best-of-Worst）**：只考虑两端都探过的候选，取
+`max(控制端RTT, 被控端RTT)` 最小者；任一端不可达（RTT = -1）的候选直接排除。
+这样选出来的是"两端都能用"的中继，而不是"对某一端很快、对另一端不通"的中继。
+
+启用（等两端客户端都支持探测后再开）：
+
+```bash
+# .env
+RELAY_PROBE=1        # 默认 0 = 关闭；关闭时行为与 v1 完全一致，旧客户端安全
+```
+
+未启用时 `punch_hole` 仍按 v1 直接下发最优中继，连接照常建立——
+**协议骨架缺失不影响 v1 的可用性**。
 
 ---
 
@@ -297,6 +365,7 @@ docker compose up -d                           # 启动（含 PostgreSQL，默�
 | `PG_IMAGE` / `PG_DB` / `PG_USER` / `PG_PASSWORD` | `postgres:16-alpine` / `rustdesk` / `rustdesk` / `changeme` | 默认生效（Postgres 容器随服务一起起）。**`PG_PASSWORD` 生产必须改** —— 私钥也托管在这个库里，留 changeme 等于把服务器私钥敞开 |
 | `DB_STORE_KEY` | `Y` | 密钥托管开关。设 `N` 退回"只用本地文件"的上游行为 |
 | `AUDIT_LOG` / `AUDIT_FLUSH_SECS` / `AUDIT_MAX_BUFFER` | `Y` / `5` / `20000` | 连接审计开关 / 刷盘间隔（秒）/ 缓冲上限 |
+| `RELAY_PROBE` | `0` | 混合探测开关（2.6 节）。`1` = hbbs 下发候选中继让两端 UDP 探测并回传。**需客户端支持，当前默认关闭**；设 0 时按服务端优选直接下发中继，旧客户端安全 |
 | `PG_MEM` / `PG_CPUS` | `512m` / `1.00` | PG 容器资源上限 |
 
 完整带注释的模板见 `server/deploy/.env.example`（每个值该不该改都写了）。
@@ -512,7 +581,8 @@ docker run -d --name rd-hbbr --restart unless-stopped \
 - 端口用**命令行 `-p`**，不要用环境变量 `PORT`——源码里环境变量 `PORT`
   会被 +1 之后再使用，写 `PORT=5188` 它去监听 5189，正好撞上 hbbs 的 WebSocket 端口；
 - 中继压力大的时候就**再加一台跑同样的命令**，然后把新 IP 追加进 hbbs 的 `-r`
-  列表（逗号分隔）。客户端会按顺序尝试，这是本方案最简单的横向扩容方式；
+  列表（逗号分隔）。hbbs 会按实时时延 / 存活 / 权重挑最优的发给两端
+  （不是客户端依次试），这是本方案最简单的横向扩容方式，详见 2.6 节；
 - hbbr 的瓶颈是**出网带宽**不是内存，加内存不会更快，该盯的是带宽与并发路数。
 
 #### 3.5.5 一键脚本 `rdrun.sh`
@@ -769,8 +839,23 @@ compose 路线同理：`rdctl.py build --no-cache && rdctl.py restart`。
 
 能。再找台机器跑一条同样的 `hbbr` 命令，然后把新地址**追加**到 hbbs 的 `-r`
 列表里（逗号分隔）：`hbbs -p 5187 -r 1.1.1.1:5188,2.2.2.2:5188`。
-客户端会按顺序尝试。注意这不是负载均衡——没有健康检查与权重，
-纯靠客户端依次试；想更精细就得自己在前面放四层代理。
+
+**hbbs 会自己做优选，不再是"客户端依次试"**：它每 3 秒探测一次每个中继，
+记录 RTT 与存活状态，然后按 `weight - 负载惩罚 - 时延惩罚` 挑最优的那个
+下发给两端（详见 [2.6 节](#26-中继调度多节点选择与混合探测)）。
+想手工干预某个中继的优先级，在控制台打标：
+
+```
+relay-set-meta 2.2.2.2:5188 cn-west 80 500    # region / weight / capacity
+relay-list                                    # 看每个中继的实时时延与存活
+```
+
+注意两点：
+
+- **它不是四层负载均衡**：hbbr 之间没有流量调度，hbbs 只是"挑一个告诉两端"。
+  真正的按连接数分摊要自己在前面放四层代理；
+- **`connections` 在 v1 恒为 0**（hbbs 没有 hbbr 的连接数上报通道），
+  所以负载惩罚在 v1 实际不参与打分，选优主要靠时延与存活。
 
 **Q：端口都放行了，客户端还是连不上**
 

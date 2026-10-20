@@ -37,8 +37,11 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     sync::Arc,
+    sync::Mutex as StdMutex,
     time::Instant,
 };
+
+use crate::database::{Database, RelayNode};
 
 #[derive(Clone, Debug)]
 enum Data {
@@ -70,6 +73,35 @@ static PUNCH_REQS: Lazy<TokioMutex<VecDeque<PunchReqEntry>>> = Lazy::new(|| Toki
 const PUNCH_REQ_DEDUPE_SEC: u64 = 60;
 static PUNCH_REQ_MAX: Lazy<usize> =
     Lazy::new(|| get_arg("MAX_PUNCH_REQUESTS").parse().unwrap_or(100_000));
+
+// ---------------------------------------------------------------------------
+// 中继调度：健康缓存 + 混合探测会话
+// ---------------------------------------------------------------------------
+/// 中继健康缓存：`check_relay_servers` 周期写入，`get_relay_server` 读取打分。
+/// 用同步 Mutex：数据量极小、更新频率低（秒级），且 `get_relay_server` 是同步函数。
+static RELAY_CACHE: Lazy<StdMutex<HashMap<String, RelayNode>>> =
+    Lazy::new(|| StdMutex::new(HashMap::new()));
+
+/// 混合探测会话表：`punch_hole` 发起时登记，两端上报探测结果后用 BOW 打分敲定唯一中继。
+static RELAY_SESSIONS: Lazy<StdMutex<HashMap<String, RelaySession>>> =
+    Lazy::new(|| StdMutex::new(HashMap::new()));
+
+/// 混合探测是否向客户端下发探测请求。需两端客户端均支持，默认关闭以兼容旧客户端。
+/// 打开后 hbbs 会下发候选中继列表 + session_token，待两端上报后再用 BOW 重选。
+static RELAY_PROBE_ENABLED: Lazy<bool> =
+    Lazy::new(|| crate::common::get_arg_or("RELAY_PROBE", "0".to_owned()) == "1");
+
+/// 一次混合探测会话：控制端 / 被控端各上报一次探测结果后，由 BOW 打分选唯一中继。
+#[derive(Clone)]
+struct RelaySession {
+    candidates: Vec<String>,
+    ctrl_addr: SocketAddr,
+    peer_addr: SocketAddr,
+    ctrl_probes: Option<Vec<(String, i32, i32)>>, // (host, rtt_ms, loss)
+    peer_probes: Option<Vec<(String, i32, i32)>>,
+    chosen: Option<String>,
+    created: Instant,
+}
 
 async fn record_punch_req(from_ip: String, to_ip: String, to_id: String) {
     let max = *PUNCH_REQ_MAX;
@@ -284,8 +316,9 @@ impl RendezvousServer {
                     if self.relay_servers0.len() > 1 {
                         let rs = self.relay_servers0.clone();
                         let tx = self.tx.clone();
+                        let db = self.pm.db.clone();
                         tokio::spawn(async move {
-                            check_relay_servers(rs, tx).await;
+                            check_relay_servers(rs, tx, db).await;
                         });
                     }
                 }
@@ -517,6 +550,9 @@ impl RendezvousServer {
                         socket.send(&msg_out, addr).await?;
                     }
                 }
+                Some(rendezvous_message::Union::RelayProbeResult(r)) => {
+                    self.handle_relay_probe_result(r, addr).await;
+                }
                 _ => {}
             }
         }
@@ -605,6 +641,9 @@ impl RendezvousServer {
                         ..Default::default()
                     });
                     Self::send_to_sink(sink, msg_out).await;
+                }
+                Some(rendezvous_message::Union::RelayProbeResult(r)) => {
+                    self.handle_relay_probe_result(r, addr).await;
                 }
                 _ => {}
             }
@@ -790,6 +829,48 @@ impl RendezvousServer {
             let peer_is_lan = self.is_lan(peer_addr);
             let is_lan = self.is_lan(addr);
             let mut relay_server = self.get_relay_server(addr.ip(), peer_addr.ip());
+            // --- 混合探测调度（v1 协议骨架；需两端客户端支持，默认关闭）---
+            // 下发候选中继列表 + session_token，待两端并行 UDP 探测并上报后，
+            // 由 BOW 打分敲定唯一公共中继（见 handle_relay_probe_result）。
+            // 旧客户端不识别该消息、也不会回传探测结果，此时退回上面选出的 relay_server。
+            if *RELAY_PROBE_ENABLED {
+                let candidates = self.select_candidates(3);
+                if candidates.len() >= 2 {
+                    let token = new_relay_session_token();
+                    {
+                        let mut sess = RELAY_SESSIONS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        // 顺带清掉过期会话：探测窗口只有 150~200 ms，保留 5 分钟足够，
+                        // 否则这张表会随连接数无限增长。
+                        let cutoff = Instant::now() - Duration::from_secs(300);
+                        sess.retain(|_, s| s.created > cutoff);
+                        sess.insert(
+                            token.clone(),
+                            RelaySession {
+                                candidates: candidates.clone(),
+                                ctrl_addr: addr,
+                                peer_addr,
+                                ctrl_probes: None,
+                                peer_probes: None,
+                                chosen: None,
+                                created: Instant::now(),
+                            },
+                        );
+                    }
+                    let mut req = RendezvousMessage::new();
+                    req.set_relay_probe_request(RelayProbeRequest {
+                        candidates: candidates.clone(),
+                        session_token: token.clone(),
+                        probe_timeout_ms: 200,
+                        ..Default::default()
+                    });
+                    // 下发给控制端与被控端两端
+                    let _ = self.tx.send(Data::Msg(Box::new(req.clone()), addr));
+                    let _ = self.tx.send(Data::Msg(Box::new(req), peer_addr));
+                    log::debug!("relay probe session {} candidates={:?}", token, candidates);
+                }
+            }
             // 是否强制走中继。客户端自己并不知道服务端的裁决结果，
             // 所以这条记录是事后判断"到底走没走 P2P"的唯一可靠依据。
             let via_relay = ALWAYS_USE_RELAY.load(Ordering::SeqCst) || (peer_is_lan ^ is_lan);
@@ -1005,8 +1086,119 @@ impl RendezvousServer {
         } else if self.relay_servers.len() == 1 {
             return self.relay_servers[0].clone();
         }
-        let i = ROTATION_RELAY_SERVER.fetch_add(1, Ordering::SeqCst) % self.relay_servers.len();
-        self.relay_servers[i].clone()
+        // 用健康缓存打分选最优：权重↑、负载↓、时延↓ 优先；不健康直接排除。
+        // 缓存为空（还没做过健康检查）则退回简单轮询，保证可用。
+        let cache = RELAY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut best: Option<(f64, &String)> = None;
+        for host in self.relay_servers.iter() {
+            let (weight, load, lat) = match cache.get(host) {
+                Some(n) => {
+                    if !n.healthy {
+                        continue;
+                    }
+                    let load = if n.capacity > 0 {
+                        (n.connections as f64 / n.capacity as f64).min(1.0)
+                    } else {
+                        1.0
+                    };
+                    (n.weight as f64, load, n.latency_ms.unwrap_or(9999) as f64)
+                }
+                None => (100.0, 0.0, 9999.0), // 还没探到健康，给中性默认
+            };
+            // 分数越高越优：权重加分，负载与时延扣分
+            let score = weight - load * 200.0 - lat * 0.5;
+            match best {
+                None => best = Some((score, host)),
+                Some((b, _)) if score > b => best = Some((score, host)),
+                _ => {}
+            }
+        }
+        match best {
+            Some((_, h)) => h.clone(),
+            None => {
+                let i =
+                    ROTATION_RELAY_SERVER.fetch_add(1, Ordering::SeqCst) % self.relay_servers.len();
+                self.relay_servers[i].clone()
+            }
+        }
+    }
+
+    /// 从存活中继里挑出综合分最高的前 `n` 个，作为混合探测的候选下发给两端。
+    /// 与 `get_relay_server` 同源打分，保证"下发去探测的"和"兜底直接用的"一致。
+    fn select_candidates(&self, n: usize) -> Vec<String> {
+        if self.relay_servers.len() <= 1 {
+            return self.relay_servers.to_vec();
+        }
+        let cache = RELAY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut scored: Vec<(f64, String)> = self
+            .relay_servers
+            .iter()
+            .map(|host| {
+                let (weight, load, lat) = match cache.get(host) {
+                    Some(node) if node.healthy => {
+                        let load = if node.capacity > 0 {
+                            (node.connections as f64 / node.capacity as f64).min(1.0)
+                        } else {
+                            1.0
+                        };
+                        (node.weight as f64, load, node.latency_ms.unwrap_or(9999) as f64)
+                    }
+                    _ => (100.0, 0.0, 9999.0),
+                };
+                (weight - load * 200.0 - lat * 0.5, host.clone())
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().take(n).map(|(_, h)| h).collect()
+    }
+
+    /// 处理一端上报的中继探测结果（混合探测调度核心）。
+    /// 找到对应会话，按上报来源（控制端 / 被控端）归档；两端都到齐后用 BOW 打分，
+    /// 敲定唯一公共中继并通过 `RelaySelect` 下发给两端。
+    /// 旧客户端不回传探测结果，故本方法在 v1 实际不会被触发，仅为协议骨架的闭环。
+    async fn handle_relay_probe_result(&self, result: RelayProbeResult, addr: SocketAddr) {
+        let token = result.session_token.clone();
+        let reported: Vec<(String, i32, i32)> = result
+            .probes
+            .iter()
+            .map(|p| (p.host.clone(), p.rtt_ms, p.loss))
+            .collect();
+        // 找到会话并按来源归档；两端都到齐后再用 BOW 打分
+        let mut fire: Option<(String, String, SocketAddr, SocketAddr)> = None;
+        {
+            let mut sess = RELAY_SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(s) = sess.get_mut(&token) {
+                // 只接受本次会话下发过的候选，避免上报任意 host 影响选路
+                let probes: Vec<(String, i32, i32)> = reported
+                    .into_iter()
+                    .filter(|(h, _, _)| s.candidates.contains(h))
+                    .collect();
+                if s.ctrl_addr == addr {
+                    s.ctrl_probes = Some(probes);
+                } else if s.peer_addr == addr {
+                    s.peer_probes = Some(probes);
+                } else {
+                    return; // 来源既非控制端也非被控端，忽略
+                }
+                if let (Some(c), Some(p)) = (&s.ctrl_probes, &s.peer_probes) {
+                    if let Some(chosen) = bow_select(c, p) {
+                        s.chosen = Some(chosen.clone());
+                        fire = Some((token.clone(), chosen, s.ctrl_addr, s.peer_addr));
+                    }
+                }
+            }
+        }
+        if let Some((tok, chosen, ctrl_addr, peer_addr)) = fire {
+            let mut sel = RendezvousMessage::new();
+            sel.set_relay_select(RelaySelect {
+                relay_server: chosen.clone(),
+                session_token: tok.clone(),
+                ..Default::default()
+            });
+            let _ = self.tx.send(Data::Msg(Box::new(sel.clone()), ctrl_addr));
+            let _ = self.tx.send(Data::Msg(Box::new(sel), peer_addr));
+            log::debug!("relay probe session {} chosen={}", tok, chosen);
+        }
     }
 
     async fn check_cmd(&self, cmd: &str) -> String {
@@ -1017,14 +1209,17 @@ impl RendezvousServer {
         match fds.next() {
             Some("h") => {
                 res = format!(
-                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
                     "relay-servers(rs) <separated by ,>",
                     "reload-geo(rg)",
                     "ip-blocker(ib) [<ip>|<number>] [-]",
                     "ip-changes(ic) [<id>|<number>] [-]",
                     "punch-requests(pr) [<number>] [-]",
                     "always-use-relay(aur)",
-                    "test-geo(tg) <ip1> <ip2>"
+                    "test-geo(tg) <ip1> <ip2>",
+                    "relay-list(rl)            # 列出 relay_nodes 表（含静态权重与健康）",
+                    "relay-set-meta(rsm) <host> <region> <weight> <capacity>",
+                    "relay-health(rh)          # 打印内存健康缓存（实时时延/存活）"
                 )
             }
             Some("relay-servers" | "rs") => {
@@ -1033,6 +1228,82 @@ impl RendezvousServer {
                 } else {
                     for ip in self.relay_servers.iter() {
                         let _ = writeln!(res, "{ip}");
+                    }
+                }
+            }
+            Some("relay-list" | "rl") => {
+                match self.pm.db.load_relay_nodes().await {
+                    Ok(nodes) if !nodes.is_empty() => {
+                        let _ = writeln!(
+                            res,
+                            "{:<24} {:<12} {:>7} {:>8} {:>8} {:>7} {:>10}",
+                            "host", "region", "weight", "cap", "lat_ms", "healthy", "conns"
+                        );
+                        for n in nodes {
+                            let _ = writeln!(
+                                res,
+                                "{:<24} {:<12} {:>7} {:>8} {:>8} {:>7} {:>10}",
+                                n.host,
+                                n.region,
+                                n.weight,
+                                n.capacity,
+                                n.latency_ms.map(|x| x as i64).unwrap_or(-1),
+                                if n.healthy { 1 } else { 0 },
+                                n.connections
+                            );
+                        }
+                    }
+                    Ok(_) => {
+                        let _ = writeln!(res, "(no relay_nodes registered)");
+                    }
+                    Err(e) => {
+                        let _ = writeln!(res, "error: {e}");
+                    }
+                }
+            }
+            Some("relay-set-meta" | "rsm") => {
+                let host = fds.next();
+                let region = fds.next();
+                let weight = fds.next().and_then(|x| x.parse::<i32>().ok());
+                let capacity = fds.next().and_then(|x| x.parse::<i32>().ok());
+                match (host, region, weight, capacity) {
+                    (Some(h), Some(r), Some(w), Some(c)) => {
+                        match self.pm.db.set_relay_meta(h, r, w, c).await {
+                            Ok(_) => {
+                                let _ = writeln!(
+                                    res,
+                                    "ok: {} region={} weight={} capacity={}",
+                                    h, r, w, c
+                                );
+                            }
+                            Err(e) => {
+                                let _ = writeln!(res, "error: {e}");
+                            }
+                        }
+                    }
+                    _ => {
+                        let _ = writeln!(
+                            res,
+                            "usage: relay-set-meta <host> <region> <weight> <capacity>"
+                        );
+                    }
+                }
+            }
+            Some("relay-health" | "rh") => {
+                let cache = RELAY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                if cache.is_empty() {
+                    let _ = writeln!(res, "(cache empty, health check not run yet)");
+                } else {
+                    let _ = writeln!(res, "{:<24} {:>8} {:>7} {:>8}", "host", "lat_ms", "healthy", "conns");
+                    for (h, n) in cache.iter() {
+                        let _ = writeln!(
+                            res,
+                            "{:<24} {:>8} {:>7} {:>8}",
+                            h,
+                            n.latency_ms.map(|x| x as i64).unwrap_or(-1),
+                            if n.healthy { 1 } else { 0 },
+                            n.connections
+                        );
                     }
                 }
             }
@@ -1348,7 +1619,41 @@ impl RendezvousServer {
     }
 }
 
-async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender) {
+/// 生成本次混合探测会话的唯一 token（单调递增计数 + 纳秒时间戳，碰撞概率可忽略）。
+fn new_relay_session_token() -> String {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let c = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{:016x}{:08x}", nanos, c)
+}
+
+/// BOW（Best-of-Worst）：在两端都探过的候选里，取 max(控制端RTT, 被控端RTT) 最小者；
+/// 任一端不可达（rtt<0）的候选直接排除。返回选中的 host:port。
+fn bow_select(
+    ctrl: &[(String, i32, i32)],
+    peer: &[(String, i32, i32)],
+) -> Option<String> {
+    let mut best: Option<(i32, String)> = None;
+    for (host, cr, _) in ctrl.iter() {
+        if let Some((_, pr, _)) = peer.iter().find(|(h, _, _)| h == host) {
+            if *cr < 0 || *pr < 0 {
+                continue; // 任一端不可达
+            }
+            let worst = (*cr).max(*pr);
+            match &best {
+                None => best = Some((worst, host.clone())),
+                Some((b, _)) if worst < *b => best = Some((worst, host.clone())),
+                _ => {}
+            }
+        }
+    }
+    best.map(|(_, h)| h)
+}
+
+async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender, db: Database) {
     let mut futs = Vec::new();
     let rs = Arc::new(Mutex::new(Vec::new()));
     for x in rs0.iter() {
@@ -1358,11 +1663,38 @@ async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender) {
         }
         let rs = rs.clone();
         let x = x.clone();
+        let db = db.clone();
         futs.push(tokio::spawn(async move {
-            if FramedStream::new(&host, None, CHECK_RELAY_TIMEOUT)
-                .await
-                .is_ok()
+            // 确保中继在 relay_nodes 表中有登记行（静态权重走默认，后续由运维 set-relay-meta 调整）
+            let _ = db.ensure_relay_node(&host).await;
+            let t0 = Instant::now();
+            let ok = FramedStream::new(&host, None, CHECK_RELAY_TIMEOUT).await.is_ok();
+            let rtt = t0.elapsed().as_millis() as i32;
+            // 写回健康探测结果（时延 / 是否存活）；connections 由 hbbr 上报，这里先置 0
+            let _ = db
+                .record_relay_health(&host, if ok { Some(rtt) } else { None }, ok, 0)
+                .await;
+            // 更新内存健康缓存，供 get_relay_server / select_candidates 打分
             {
+                let mut cache = RELAY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                let entry = cache.entry(host.clone()).or_insert_with(|| RelayNode {
+                    host: host.clone(),
+                    region: String::new(),
+                    weight: 100,
+                    capacity: 1000,
+                    latency_ms: None,
+                    healthy: true,
+                    connections: 0,
+                });
+                if ok {
+                    entry.latency_ms = Some(rtt);
+                    entry.healthy = true;
+                } else {
+                    // 不健康时保留上次 latency_ms 以便观察，但标记掉线、不再参与优选
+                    entry.healthy = false;
+                }
+            }
+            if ok {
                 rs.lock().await.push(x);
             }
         }));

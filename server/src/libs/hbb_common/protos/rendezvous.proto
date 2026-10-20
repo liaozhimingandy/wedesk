@@ -171,6 +171,39 @@ message RelayResponse {
   int32 upnp_port = 11;
 }
 
+// --- 混合探测调度（v1 协议骨架） ---------------------------------------
+// 多中继节点与 ID 服分离部署时，hbbs 不再简单轮询，而是：
+//   1) 预筛候选（优先同区域、负载未满、砍掉不可达）
+//   2) 下发候选给两端，两端并行 UDP 小包探测（RTT / 丢包）
+//   3) 两端上报探测结果，hbbs 用 BOW（max 两端 RTT 最小优先）打分
+//   4) 敲定唯一公共中继并下发 session_token
+// 客户端探测实现为后续任务；v1 若两端未上报，hbbs 退回基于自身健康探测的最优选择。
+
+// hbbs → 两端：候选中继列表 + 本次会话 token + 探测参数
+message RelayProbeRequest {
+  repeated string candidates = 1;   // 候选中继 host:port（已预筛 2~3 个）
+  string session_token = 2;        // 本次连接唯一标识，关联探测与选择
+  int32 probe_timeout_ms = 3;       // 单包探测超时（默认 200）
+}
+
+// 一端 → hbbs：本端对每个候选的探测结果
+message RelayProbeResult {
+  string session_token = 1;        // 对应 RelayProbeRequest.session_token
+  string peer = 2;                 // 上报端 ID（控制端 / 被控端），用于两端聚合
+  message Probe {
+    string host = 1;               // 候选中继 host:port
+    int32 rtt_ms = 2;              // 往返时延；-1 表示超时 / 不可达
+    int32 loss = 3;               // 丢包率 0~100
+  }
+  repeated Probe probes = 3;
+}
+
+// hbbs → 两端：最终敲定的唯一公共中继
+message RelaySelect {
+  string relay_server = 1;         // 最终选中的中继 host:port
+  string session_token = 2;        // 回显 token，两端据此确认用同一调度
+}
+
 message SoftwareUpdate { string url = 1; }
 
 // if in same intranet, punch hole won't work both for udp and tcp,
@@ -265,5 +298,8 @@ message RendezvousMessage {
     HealthCheck hc = 26;
     HttpProxyRequest http_proxy_request = 27;
     HttpProxyResponse http_proxy_response = 28;
+    RelayProbeRequest relay_probe_request = 29;
+    RelayProbeResult relay_probe_result = 30;
+    RelaySelect relay_select = 31;
   }
 }

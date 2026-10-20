@@ -139,6 +139,21 @@ pub fn audit_enabled() -> bool {
 // ---------------------------------------------------------------------------
 // 存储后端抽象
 // ---------------------------------------------------------------------------
+/// 中继节点登记表的一行（与 `relay_nodes` 表一一对应）。
+///
+/// `latency_ms` / `healthy` / `connections` 是运行期健康探测写入的实时值；
+/// `region` / `weight` / `capacity` 是运维手动打标的静态调度权重。
+#[derive(Debug, Clone)]
+pub struct RelayNode {
+    pub host: String,
+    pub region: String,
+    pub weight: i32,
+    pub capacity: i32,
+    pub latency_ms: Option<i32>,
+    pub healthy: bool,
+    pub connections: i32,
+}
+
 #[async_trait]
 pub trait DbBackend: Send + Sync {
     /// 后端名字，仅用于启动日志
@@ -174,6 +189,28 @@ pub trait DbBackend: Send + Sync {
     // --- connection_log：连接审计 ----------------------------------------
     /// 批量写入审计事件。
     async fn insert_audit(&self, events: &[AuditEvent]) -> ResultType<()>;
+
+    // --- relay_nodes：中继节点登记与实时健康 -----------------------------
+    /// 确保某个中继主机在表中存在（不存在则插入一行默认配置）。
+    async fn ensure_relay_node(&self, host: &str) -> ResultType<()>;
+    /// 更新静态调度权重（区域 / 权重 / 容量）。
+    async fn set_relay_meta(
+        &self,
+        host: &str,
+        region: &str,
+        weight: i32,
+        capacity: i32,
+    ) -> ResultType<()>;
+    /// 写入一次健康探测结果（RTT、存活、当前连接数）。
+    async fn record_relay_health(
+        &self,
+        host: &str,
+        latency_ms: Option<i32>,
+        healthy: bool,
+        connections: i32,
+    ) -> ResultType<()>;
+    /// 读出全部中继节点（含静态权重与最近一次健康）。
+    async fn load_relay_nodes(&self) -> ResultType<Vec<RelayNode>>;
 }
 
 // =============================================================================
@@ -363,6 +400,79 @@ impl DbBackend for SqliteBackend {
         }
         Ok(())
     }
+
+    async fn ensure_relay_node(&self, host: &str) -> ResultType<()> {
+        let mut conn = self.pool.get().await?;
+        sqlx::query(
+            "insert into relay_nodes(host, updated_at) values(?, current_timestamp)
+             on conflict(host) do nothing",
+        )
+        .bind(host)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    async fn set_relay_meta(
+        &self,
+        host: &str,
+        region: &str,
+        weight: i32,
+        capacity: i32,
+    ) -> ResultType<()> {
+        let mut conn = self.pool.get().await?;
+        sqlx::query(
+            "update relay_nodes set region=?, weight=?, capacity=? where host=?",
+        )
+        .bind(region)
+        .bind(weight)
+        .bind(capacity)
+        .bind(host)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    async fn record_relay_health(
+        &self,
+        host: &str,
+        latency_ms: Option<i32>,
+        healthy: bool,
+        connections: i32,
+    ) -> ResultType<()> {
+        let mut conn = self.pool.get().await?;
+        sqlx::query(
+            "update relay_nodes
+             set latency_ms=?, healthy=?, connections=?, updated_at=current_timestamp
+             where host=?",
+        )
+        .bind(latency_ms)
+        .bind(healthy as i32)
+        .bind(connections)
+        .bind(host)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_relay_nodes(&self) -> ResultType<Vec<RelayNode>> {
+        let mut conn = self.pool.get().await?;
+        let rows = sqlx::query("select host, region, weight, capacity, latency_ms, healthy, connections from relay_nodes")
+            .fetch_all(&mut *conn)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| RelayNode {
+                host: r.get("host"),
+                region: r.get("region"),
+                weight: r.get("weight"),
+                capacity: r.get("capacity"),
+                latency_ms: r.get("latency_ms"),
+                healthy: r.get::<i32, _>("healthy") != 0,
+                connections: r.get("connections"),
+            })
+            .collect())
+    }
 }
 
 /// SQLite 侧的 server_config / connection_log DDL。
@@ -386,6 +496,16 @@ const SQLITE_EXTRA_DDL: &[&str] = &[
        )"#,
     r#"create index if not exists index_connection_log_ts    on connection_log (ts)"#,
     r#"create index if not exists index_connection_log_event on connection_log (event)"#,
+    r#"create table if not exists relay_nodes (
+           host        varchar(255) primary key not null,
+           region      varchar(64)  not null default '',
+           weight      integer not null default 100,
+           capacity    integer not null default 1000,
+           latency_ms  integer,
+           healthy     integer not null default 1,
+           connections integer not null default 0,
+           updated_at  datetime not null default(current_timestamp)
+       )"#,
 ];
 
 // =============================================================================
@@ -631,6 +751,78 @@ impl DbBackend for PgBackend {
         tx.commit().await?;
         Ok(())
     }
+
+    async fn ensure_relay_node(&self, host: &str) -> ResultType<()> {
+        sqlx::query(
+            r#"insert into relay_nodes(host, updated_at) values($1, now())
+               on conflict (host) do nothing"#,
+        )
+        .bind(host)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn set_relay_meta(
+        &self,
+        host: &str,
+        region: &str,
+        weight: i32,
+        capacity: i32,
+    ) -> ResultType<()> {
+        sqlx::query(
+            r#"update relay_nodes set region=$1, weight=$2, capacity=$3 where host=$4"#,
+        )
+        .bind(region)
+        .bind(weight)
+        .bind(capacity)
+        .bind(host)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn record_relay_health(
+        &self,
+        host: &str,
+        latency_ms: Option<i32>,
+        healthy: bool,
+        connections: i32,
+    ) -> ResultType<()> {
+        sqlx::query(
+            r#"update relay_nodes
+               set latency_ms=$1, healthy=$2, connections=$3, updated_at=now()
+               where host=$4"#,
+        )
+        .bind(latency_ms)
+        .bind(healthy)
+        .bind(connections)
+        .bind(host)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_relay_nodes(&self) -> ResultType<Vec<RelayNode>> {
+        let rows = sqlx::query(
+            r#"select host, region, weight, capacity, latency_ms, healthy, connections
+               from relay_nodes"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| RelayNode {
+                host: r.get("host"),
+                region: r.get("region"),
+                weight: r.get("weight"),
+                capacity: r.get("capacity"),
+                latency_ms: r.get("latency_ms"),
+                healthy: r.get::<bool, _>("healthy"),
+                connections: r.get("connections"),
+            })
+            .collect())
+    }
 }
 
 /// PostgreSQL 的 peer 表结构。类型承接 SQLite 版：
@@ -675,6 +867,16 @@ const PG_EXTRA_DDL: &[&str] = &[
        )"#,
     r#"create index if not exists index_connection_log_ts    on connection_log (ts)"#,
     r#"create index if not exists index_connection_log_event on connection_log (event)"#,
+    r#"create table if not exists relay_nodes (
+           host        varchar(255) primary key not null,
+           region      varchar(64)  not null default '',
+           weight      integer not null default 100,
+           capacity    integer not null default 1000,
+           latency_ms  integer,
+           healthy     boolean not null default true,
+           connections integer not null default 0,
+           updated_at  timestamptz not null default now()
+       )"#,
 ];
 
 // =============================================================================
@@ -921,6 +1123,40 @@ impl Database {
 
     pub async fn insert_audit(&self, events: &[AuditEvent]) -> ResultType<()> {
         self.backend.insert_audit(events).await
+    }
+
+    // --- relay_nodes：中继节点登记与实时健康 -----------------------------
+
+    /// 确保某个中继主机在 `relay_nodes` 表中存在（不存在则插入默认行）。
+    pub async fn ensure_relay_node(&self, host: &str) -> ResultType<()> {
+        self.backend.ensure_relay_node(host).await
+    }
+
+    /// 更新中继的静态调度权重（区域 / 权重 / 容量）。
+    pub async fn set_relay_meta(
+        &self,
+        host: &str,
+        region: &str,
+        weight: i32,
+        capacity: i32,
+    ) -> ResultType<()> {
+        self.backend.set_relay_meta(host, region, weight, capacity).await
+    }
+
+    /// 写入一次健康探测结果（时延 / 是否存活 / 当前连接数）。
+    pub async fn record_relay_health(
+        &self,
+        host: &str,
+        latency_ms: Option<i32>,
+        healthy: bool,
+        connections: i32,
+    ) -> ResultType<()> {
+        self.backend.record_relay_health(host, latency_ms, healthy, connections).await
+    }
+
+    /// 读出全部中继节点（含静态权重与最近一次健康）。
+    pub async fn load_relay_nodes(&self) -> ResultType<Vec<RelayNode>> {
+        self.backend.load_relay_nodes().await
     }
 }
 

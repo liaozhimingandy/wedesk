@@ -1799,6 +1799,35 @@ pub fn main_get_home_dir() -> String {
     fs::get_home_as_string()
 }
 
+/// 客户端日志目录（Rust 侧 flexi_logger 的落盘目录）。
+///
+/// 排查"为什么走了中继"这类问题必须看这里的日志：打洞、NAT 类型探测、
+/// 局域网发现的结果都只打在日志里，界面上看不到。暴露目录是为了让
+/// 设置页的"关于"能直接打开它 —— 用户不需要知道路径规则（每个平台都不同）。
+pub fn main_get_log_dir() -> String {
+    config::Config::log_path().to_string_lossy().to_string()
+}
+
+/// 日志目录里当前存在的日志文件（按修改时间倒序，最多 5 个）。
+/// 目录为空（还没写过日志）时返回空列表，界面据此提示"暂无日志"。
+pub fn main_get_log_files() -> Vec<String> {
+    let dir = config::Config::log_path();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<(std::time::SystemTime, String)> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, name))
+        })
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.into_iter().take(5).map(|(_, name)| name).collect()
+}
+
 pub fn main_get_langs() -> String {
     get_langs()
 }

@@ -2575,6 +2575,108 @@ class _About extends StatefulWidget {
   State<_About> createState() => _AboutState();
 }
 
+/// "关于"页里的日志入口。
+///
+/// 排查连接类问题（典型如"同一 WiFi 下却走了中继"）只能靠日志：打洞结果、
+/// NAT 类型探测、局域网发现是否成功都不体现在界面上。这里把日志目录直接
+/// 暴露给用户 —— 点击打开目录，最近几个日志文件可单独打开或复制路径。
+class _LogDirEntry extends StatefulWidget {
+  const _LogDirEntry({Key? key}) : super(key: key);
+
+  @override
+  State<_LogDirEntry> createState() => _LogDirEntryState();
+}
+
+class _LogDirEntryState extends State<_LogDirEntry> {
+  late final String _dir;
+  List<String> _files = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _dir = bind.mainGetLogDir();
+    _refresh();
+  }
+
+  void _refresh() {
+    if (!mounted) return;
+    setState(() {
+      _files = bind.mainGetLogFiles();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = WeColors.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Text('${translate('Log directory')}:',
+                style: const TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: GestureDetector(
+                onTap: _dir.isEmpty ? null : () => launchUrl(Uri.file(_dir)),
+                child: Text(
+                  _dir.isEmpty ? '-' : _dir,
+                  softWrap: true,
+                  style: const TextStyle(
+                      decoration: TextDecoration.underline, fontSize: 13),
+                ),
+              ),
+            ),
+            WeIconButton(
+              icon: Icons.content_copy,
+              tooltip: translate('Copy'),
+              size: 28,
+              iconSize: 16,
+              onTap: () {
+                if (_dir.isEmpty) return;
+                Clipboard.setData(ClipboardData(text: _dir));
+                showToast(translate('Copied'));
+              },
+            ),
+            WeIconButton(
+              icon: Icons.folder_open_outlined,
+              tooltip: translate('Open'),
+              size: 28,
+              iconSize: 16,
+              onTap: () {
+                _refresh();
+                if (_dir.isNotEmpty) launchUrl(Uri.file(_dir));
+              },
+            ),
+          ],
+        ),
+        if (_files.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(translate('No logs yet'),
+                style: TextStyle(fontSize: 12.5, color: colors.textTertiary)),
+          )
+        else
+          ..._files.map((f) => Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: GestureDetector(
+                  onTap: () => launchUrl(Uri.file('$_dir${Platform.pathSeparator}$f')),
+                  child: Text(
+                    f,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: colors.textSecondary,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+              )),
+      ],
+    );
+  }
+}
+
 class _AboutState extends State<_About> {
   @override
   Widget build(BuildContext context) {
@@ -2639,6 +2741,7 @@ class _AboutState extends State<_About> {
                     translate('Website'),
                     style: linkStyle,
                   ).marginSymmetric(vertical: 4.0)),
+              if (!isWeb) const _LogDirEntry(),
               Container(
                 decoration: const BoxDecoration(color: Color(0xFF2c8cff)),
                 padding:

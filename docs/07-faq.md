@@ -203,11 +203,60 @@ python build/client/customize.py --dry-run    # 看命中数与未命中项
 看连接质量指示器，或直接看服务端 5188 端口流量 ——
 **P2P 成功时 hbbr 几乎没有流量**。
 
-如果内网环境下大量走中继，检查：
+#### 客户端日志在哪
 
-- `ALWAYS_USE_RELAY` 是否被设成了 `Y`
-- 是否跨了 VLAN（不同 VLAN 之间打洞成功率下降）
-- 客户端是否走了 VPN（VPN 会改变 NAT 行为）
+桌面端：**设置 → 关于 → 日志目录**（点击路径直接打开文件夹，最近 5 个日志文件
+可单独打开）。Rust 侧日志默认就是 debug 级、按天/16 MB 轮转保留 90 份，
+界面上能看到的只有"连没连上"，**为什么走中继只能看日志**。
+
+各平台落盘位置（`Config::log_path()`）：
+
+| 平台 | 目录 |
+|---|---|
+| Windows | 配置目录下 `log\` |
+| macOS | `~/Library/Logs/<AppName>/` |
+| Linux | `~/.local/share/logs/<AppName>/` |
+| Android | 应用主目录下 `<AppName>/Logs/` |
+
+排查连接问题时在日志里搜这些关键字：
+
+| 关键字 | 含义 |
+|---|---|
+| `lan discovery listener started` / `discover ping` | 局域网发现是否在工作 |
+| `test nat` / `UDP NAT test` | NAT 类型探测是否成功（失败会反复重试） |
+| `Hole Punched` | 打洞成功 |
+| `Nothing connected to the hole punched to` | 洞打通了但没人来连 —— 典型的 hairpin/NAT 回环失败 |
+| `failed to listen on ... after punching` | 打洞后监听失败 |
+
+#### 如果内网环境下（同一 WiFi）却大量走中继
+
+按概率排序，**逐条排除**：
+
+1. **局域网发现没生效**（最常见）
+   客户端的局域网发现是**固定端口的 UDP 广播**：`RENDEZVOUS_PORT + 3`，
+   `RENDEZVOUS_PORT` 是编译期常量（`client/libs/hbb_common/src/config.rs`），
+   与自定义服务器端口**无关**。所以：
+   - Windows 防火墙必须允许本程序**入站 UDP** —— 装的时候如果点了"拒绝"，
+     局域网发现会**静默**失效（不报错，只是永远发现不了）；
+   - 路由器开了 **AP 隔离 / 客户端隔离 / 访客网络** → 广播不转发，必然走中继；
+   - 设置里 `Deny LAN discovery` 是否被勾上。
+
+2. **NAT 类型探测失败**（自建服务端很容易踩）
+   NAT 类型是拿**主端口**和**主端口 - 1** 两个 TCP 端口探测的
+   （`src/common.rs: test_nat_type_`），也就是默认的 **5187 + 5186**。
+   **只 publish 了 5187 而漏了 5186**，探测就永远失败，`nat_type` 停在 UNKNOWN，
+   打洞窗口被缩短，表现为"能连但常常走中继"。
+   自查：`docker ps` 看 5186 是否在端口映射里，或
+   `Test-NetConnection <服务器> -Port 5186`。
+
+3. **路由器不支持 hairpin（NAT 回环）**
+   两台设备在同一个路由器下时，打洞用的是**各自的公网映射地址**，需要路由器把
+   发往自己公网 IP 的包转回内网。家用路由器相当一部分不支持，日志里表现为
+   `Nothing connected to the hole punched to`。这一步失败就只能走中继。
+
+4. 其它：`ALWAYS_USE_RELAY` 是否被设成 `Y`；是否跨 VLAN；是否走了 VPN
+   （VPN 会改变 NAT 行为）；客户端是否指定了 socks 代理 / 强制走 WebSocket
+   （`use_ws()` 为真时会**直接把 NAT 类型标成 SYMMETRIC**，等于放弃打洞）。
 
 ---
 

@@ -80,6 +80,15 @@ server/src/**/target/
 server/src/src/version.rs
 # 本地编译产出的 exe（build/server/build-server.bat 会拷到这里）
 server/bin/
+# cargo test 的 SQLite 副产品（test.sqlite3 / -wal / -shm / test_access_list.db），
+# 每次跑 `cargo test --lib` 都会重新生成，别入库。注意 db_v2.sqlite3 是已跟踪的
+# 本地开发库，不在此列。
+server/src/test.sqlite3
+server/src/test.sqlite3-*
+server/src/test_access_list.db
+server/src/**/test.sqlite3
+server/src/**/test.sqlite3-*
+server/src/**/test_access_list.db
 
 # =============================================================================
 # vcpkg —— C++ 依赖（libvpx / aom / opus），体积以 GB 计且可再生

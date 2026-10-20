@@ -11,11 +11,11 @@
 # ID/注册服务器地址，可写域名或 IP。不带端口时自动使用 5187。
 #  !! 端口必须显式写出来 !!
 #  客户端内置的兜底端口是 21116，而我们服务端跑在 5187。不写端口的话，
-#  客户端会去连 wedesk.alsoapp.com:21116 —— 表现是"ID 一直显示未就绪"。
+#  客户端会去连 21116 —— 表现是"ID 一直显示未就绪"。
 #  填域名时的前提：客户端所在网络的 DNS 能解析它；解析到的是 hbbs 那台机器。
 #  服务端端口定义见 ../docs/10-ports.md：hbbs 主端口 5187，hbbr 主端口 5188。
 #  !! 不要用环回地址，必须填客户端真正能连到的那个地址 !!
-rendezvous_host = "wedesk.alsoapp.com:5187"
+rendezvous_host = "id.wedesk.alsoapp.com:5187"
 
 # 服务器公钥：hbbs 首次启动后生成的 id_ed25519.pub 内容。
 #  获取方式： cd ../server && python rdctl.py key
@@ -25,10 +25,12 @@ rendezvous_host = "wedesk.alsoapp.com:5187"
 #       公钥也会变，客户端必须跟着改。
 key = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0="
 
-# 中继服务器地址。必须带端口：hbbr 与 hbbs 主端口不同（5188 vs 5187），
-# 省略端口会被客户端当成 hbbs 的端口去连，中继握手必然失败。
-# 留空表示与 rendezvous_host 同机、端口由客户端按内置默认值推导 —— 我们不走这条路。
-relay_host = "wedesk.alsoapp.com:5188"
+# 中继服务器地址：已【移除】。客户端不再保存任何中继节点数据 ——
+# 每台 hbbr 启动后自动向 hbbs 注册上报（60s 一次），hbbs 维护 relay_nodes 表，
+# P2P 打洞失败时按 权重/负载/时延 统一下发最优节点。超过 3 个周期未上报的
+# 节点自动剔除。运维只需在 hbbr 容器上设置 RELAY_PUBLIC_ADDR（客户端可达地址）。
+# 详见 docs/10-ports.md 与 server/deploy/docker-compose.yml 的 hbbr 段。
+# relay_host = "wedesk.alsoapp.com:5188"
 
 
 [brand]

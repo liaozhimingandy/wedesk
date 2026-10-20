@@ -1360,11 +1360,14 @@ impl RendezvousMediator {
         Ok(())
     }
 
+    /// 取本次连接要使用的中继地址。
+    ///
+    /// 优先级：hbbs 在 PunchHole / FetchLocalAddr 里下发的地址 → 按主端口+1 兜底推导。
+    /// **不再读客户端自己的配置**：中继节点清单由 hbbs 维护（hbbr 自动注册上报），
+    /// 客户端再存一份只会出现"服务端换了节点、客户端还连老的"这种最难查的问题。
+    /// 网络设置界面里对应的入口也已移除。
     fn get_relay_server(&self, provided_by_rendezvous_server: String) -> String {
-        let mut relay_server = Config::get_option("relay-server");
-        if relay_server.is_empty() {
-            relay_server = provided_by_rendezvous_server;
-        }
+        let mut relay_server = provided_by_rendezvous_server;
         if relay_server.is_empty() {
             relay_server = crate::increase_port(&self.host, 1);
         }

@@ -30,31 +30,33 @@
 
 ```toml
 [server]
-rendezvous_host = "wedesk.alsoapp.com:5187"                      # hbbs —— 端口必须写全
+rendezvous_host = "id.wedesk.alsoapp.com:5187"                  # hbbs —— 端口必须写全
 key             = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0="  # RS_PUB_KEY
-relay_host      = "wedesk.alsoapp.com:5188"                      # hbbr —— 一致性记录，见下方说明
+# relay_host 已废弃（2026-10-21）：客户端不再保存中继节点数据。
+# 中继清单由 hbbs 维护 —— 每台 hbbr 自动注册上报，P2P 失败时 hbbs 统一下发。
+# 运维只需在 hbbr 容器上设 RELAY_PUBLIC_ADDR，改它不需要重新构建客户端。
 
 [brand]
 app_name     = "WeDesk"                  # 给用户看的产品名，可中文
 product_name = "WeDesk"                # ASCII 名：MSI 文案/服务显示名/桌面入口用
 exe_name     = "wedesk"
 company_name = "贵公司名称"             # ⚠️ 占位值，务必替换
-website      = "https://wedesk.alsoapp.com"
+website      = "https://www.alsoapp.com/wedesk"
 ```
 
 > **`rendezvous_host` 必须写端口。**
 > 客户端内置的兜底端口是 `21116`（`client/libs/hbb_common/src/config.rs` 的 `RENDEZVOUS_PORT`，
-> 本文第 3.3 节），而服务端跑在 **5187** —— 不带端口时客户端会去连 `wedesk.alsoapp.com:21116`，
+> 本文第 3.3 节），而服务端跑在 **5187** —— 不带端口时客户端会去连 `id.wedesk.alsoapp.com:21116`，
 > 表现是"ID 一直显示未就绪"，抓包才会发现方向就不对。
 > 服务端改端口时这里必须跟着改，并**重新编译客户端**。端口推导规则见
 > [10 端口与网络规划](10-ports.md)。
 
-> **`relay_host` 不会被注入到源码里**，它只是一致性记录。
-> 客户端的中继地址永远来自 hbbs 握手时下发的内容；只有在 hbbs **没有**给的时候，
-> 才会按 `rendezvous 端口 + 1` 兜底（见 `client/src/rendezvous_mediator.rs` 的 `get_relay_server`）。
-> 所以本仓库把 hbbr 定在 `hbbs + 1`（5188）是刻意的 —— 它让这条兜底路径自动成立。
-> `customize.py` 会校验 `relay_host 端口 == rendezvous_host 端口 + 1`，
-> 不满足就告警提醒你去给 hbbs 加 `-r host:port`。
+> **`relay_host` 已废弃**：客户端不再配置中继地址，网络设置界面的
+> "ID/Relay Server" 入口也随之移除（只保留代理设置）。
+> 中继地址永远来自 hbbs 握手时下发的内容（节点由 hbbr 自动注册维护）；
+> 只有在 hbbs 没有给的时候，才按 `rendezvous 端口 + 1` 兜底
+> （见 `client/src/rendezvous_mediator.rs` 的 `get_relay_server`）。
+> 所以本仓库把 hbbr 定在 `hbbs + 1`（5188）仍然有用 —— 它让这条兜底路径自动成立。
 
 **`app_name` 与 `product_name` 为什么要分开**：前者会写进标题栏、安装目录名、
 用户配置目录（中文完全没问题）；后者只用于**必须是 ASCII / 文件名安全**的场合 ——

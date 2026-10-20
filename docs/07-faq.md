@@ -278,7 +278,7 @@ cd server && python rdctl.py backup    # 加进计划任务，异地存一份
 
 ```bash
 docker ps              # Docker 是否在运行
-cd server && cat .env  # RELAY_HOST 是否填了实际 IP
+cd server && cat .env  # RELAY_HOST / RELAY_PUBLIC_ADDR 是否填了实际 IP
 python rdctl.py logs   # 看容器日志
 ```
 
@@ -326,6 +326,30 @@ docker compose exec -T postgres psql -U rustdesk -d rustdesk \
 
 > 已经配好库的话，`blacklist.txt` 里的老条目会在启动时自动迁移进库一次
 > （只在库为空时执行），不需要手工导。
+
+### hbbr 日志一直刷「连接 hbbs 失败」，中继时断时续
+
+**原因**：这是**节点注册**没成功（不影响已经在转发的连接，但 hbbs 的
+多节点调度会失效，客户端回落到"主端口+1"推导）。按顺序查三样：
+
+```bash
+docker compose logs rd-hbbr | grep -E "注册|hbbs"
+#   连接 hbbs(hbbs:5187)失败        → HBBS_HOST 填错 / hbbs 没起来 / 5187 不通
+#   未配置 RELAY_PUBLIC_ADDR         → 补上（Docker 网络下来源 IP 是网桥地址）
+#   hbbs 拒绝中继节点注册            → 填了环回地址（127.0.0.1/localhost）
+```
+
+**确认注册成功**（hbbs 那台机器上执行）：
+
+```bash
+docker compose exec -T rd-hbbs sh -c 'echo rrg | nc 127.0.0.1 5187'
+#   输出一张表：host / region / capacity / conns / seen_s
+#   (no relay registered) = 一台都没注册上
+```
+
+`seen_s` 是"最近一次上报距现在多少秒"，超过 210 秒的节点会被 hbbs 自动剔除。
+分机部署（hbbr 不在 hbbs 那台机器）时，`HBBS_HOST` 必须指向 hbbs 的公网/内网
+可达地址，光通容器名是不够的。
 
 ---
 

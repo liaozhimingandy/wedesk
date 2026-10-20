@@ -71,10 +71,14 @@ services:
     # -p 5187 : hbbs 主端口，写死。它会自动额外占用 5186（NAT 探测）与
     #           5189（WebSocket）—— 源码硬编码，改了端口这两个会跟着走，
     #           所以下面 ports 段必须一并改，否则"端口开着但连不上"。
-    # -r ...:5188 : 告诉客户端中继在哪台机器上。**必须带端口**，否则 hbbs 会按
-    #           默认的 21117 拼（src/rendezvous_server.rs），客户端会被指到一个
-    #           没人监听的端口，表现为"能注册但连不上桌面"。
-    command: hbbs -p 5187 -r ${RELAY_HOST:-127.0.0.1}:5188
+    #
+    # 不再需要 -r 指定中继地址：每台 hbbr 启动后自动向 hbbs 注册上报
+    # （RelayRegister，默认 60s 一次），hbbs 把节点写进 relay_nodes 表，
+    # P2P 打洞失败时按 权重/负载/时延 打分下发。超过 3 个周期没上报的
+    # 节点自动剔除。客户端侧对应配置已移除 —— 服务器节点数据只由服务端维护。
+    # 想看当前有哪些节点在线：docker exec rd-hbbs ./hbbs ... 或
+    # 控制台命令 relay-registered(rrg) / relay-list(rl) / relay-health(rh)。
+    command: hbbs -p 5187
     environment:
       # 强制所有连接走中继。团队成员若分布在不同内网，开启可提高连通率，
       # 代价是所有流量经过服务器消耗带宽。内网环境建议设为 N 走 P2P 直连。
@@ -217,6 +221,24 @@ services:
       - DB_CONNECT_RETRIES=${HBBR_DB_RETRIES:-1}
       # 名单从数据库重载的间隔（秒）；设 0 关闭周期性重载（只在启动时读一次）。
       - ACCESS_RELOAD_SECS=${ACCESS_RELOAD_SECS:-60}
+      # --- 中继节点自动注册 -------------------------------------------------
+      # 每台 hbbr 启动后向 hbbs 上报自身信息（默认 60s 一次），hbbs 维护
+      # relay_nodes 表并在 P2P 失败时统一下发。客户端不再配置中继地址。
+      #
+      # HBBS_HOST：注册目标。同栈部署就是服务名 hbbs:5187；
+      #            中继单独一台机器时改成 <hbbs机器IP>:5187。
+      - HBBS_HOST=${HBBS_HOST:-hbbs:5187}
+      #
+      # RELAY_PUBLIC_ADDR：**客户端可达**的地址（域名或 IP，不带端口）。
+      #   必须填！Docker 网络下 hbbs 从 TCP 连接看到的来源 IP 是网桥地址
+      #   （172.x），客户端连不上。默认沿用 RELAY_HOST（这台机器对外的地址）。
+      #   单机同栈部署填公网 IP / 域名；内网部署填内网 IP。
+      - RELAY_PUBLIC_ADDR=${RELAY_PUBLIC_ADDR:-${RELAY_HOST:-}}
+      #
+      # 可选：区域标签与并发容量，用于 hbbs 打分（同区域优先、容量越大负载惩罚越小）。
+      #   多地域部署时建议按机房填，如 cn-north / ap-southeast。
+      - RELAY_REGION=${RELAY_REGION:-}
+      - RELAY_CAPACITY=${RELAY_CAPACITY:-}
     volumes:
       - ./data:/root
     ports:

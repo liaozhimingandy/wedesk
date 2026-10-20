@@ -53,7 +53,7 @@ flowchart TB
 ```bash
 cd server\deploy
 copy .env.example .env      # 复制配置模板
-# 编辑 .env，把 RELAY_HOST 改成服务器的实际 IP 或域名
+# 编辑 .env，把 RELAY_HOST 改成服务器的实际 IP 或域名（hbbr 注册节点用）
 python rdctl.py start       # 没有本地镜像时会先自动从源码构建（首次约 15-25 分钟）
 python rdctl.py key         # 打印公钥 —— 记下来，客户端要用
 ```
@@ -82,7 +82,7 @@ python rdctl.py key         # 打印公钥 —— 记下来，客户端要用
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `RELAY_HOST` | `127.0.0.1` | **必须改成实际 IP/域名**，客户端靠它找中继 |
+| `RELAY_HOST` | `127.0.0.1` | **必须改成实际 IP/域名**。hbbr 用它向 hbbs 注册节点（`RELAY_PUBLIC_ADDR` 默认沿用） |
 | `ALWAYS_USE_RELAY` | `N` | `N`=优先 P2P（内网推荐）；`Y`=强制走中继（跨公网、提高连通率，耗带宽） |
 | `RD_IMAGE` | `wedesk-server:latest` | 本地源码构建的镜像。想用 CI 推的远端镜像改这里：<br>`RD_IMAGE=liaozhiming/wedesk-server:latest`；<br>改回 `rustdesk/rustdesk-server:latest` 则用官方镜像（**会失去本地化补丁**） |
 | `RUST_LOG` | `info` | 排障时调 `debug` |
@@ -235,7 +235,7 @@ RustDesk 是 **AGPL-3.0**，衍生作品必须沿用同一许可证：
 ```
 服务端
 □ Docker 与 Compose 可用
-□ .env 的 RELAY_HOST 已改成实际 IP
+□ .env 的 RELAY_HOST 已改成实际 IP；hbbr 日志有「中继节点已注册」
 □ 端口已放行（TCP 5186/5187/5188 + UDP 5187）
 □ rdctl.py status 显示健康
 □ 公网 key 已备份到异地

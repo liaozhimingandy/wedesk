@@ -1814,7 +1814,6 @@ class _Network extends StatefulWidget {
 class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
-  bool locked = !isWeb && bind.mainIsInstalled();
 
   final scrollController = ScrollController();
 
@@ -1822,28 +1821,14 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
   Widget build(BuildContext context) {
     super.build(context);
     return ListView(controller: scrollController, children: [
-      _lock(locked, 'Unlock Network Settings', () {
-        locked = false;
-        setState(() => {});
-      }),
-      preventMouseKeyBuilder(
-        block: locked,
-        child: Column(children: [
-          network(context),
-        ]),
-      ),
+      network(context),
     ]).marginOnly(bottom: _kListViewBottomMargin);
   }
 
   Widget network(BuildContext context) {
-    final hideServer =
-        bind.mainGetBuildinOption(key: kOptionHideServerSetting) == 'Y';
     final hideProxy =
         isWeb || bind.mainGetBuildinOption(key: kOptionHideProxySetting) == 'Y';
-    final hideWebSocket = isWeb ||
-        bind.mainGetBuildinOption(key: kOptionHideWebSocketSetting) == 'Y';
-
-    if (hideServer && hideProxy && hideWebSocket) {
+    if (hideProxy) {
       return Offstage();
     }
 
@@ -1853,45 +1838,13 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
       required String title,
       VoidCallback? onTap,
       Widget? trailing,
-      bool showTooltip = false,
-      String tooltipMessage = '',
     }) {
-      final titleWidget = showTooltip
-          ? Row(
-              children: [
-                Tooltip(
-                  waitDuration: Duration(milliseconds: 1000),
-                  message: translate(tooltipMessage),
-                  child: Row(
-                    children: [
-                      Text(
-                        translate(title),
-                        style: TextStyle(fontSize: _kContentFontSize),
-                      ),
-                      SizedBox(width: 5),
-                      Icon(
-                        Icons.help_outline,
-                        size: 14,
-                        color: Theme.of(context)
-                            .textTheme
-                            .titleLarge
-                            ?.color
-                            ?.withOpacity(0.7),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            )
-          : Text(
-              translate(title),
-              style: TextStyle(fontSize: _kContentFontSize),
-            );
-
       return ListTile(
         leading: Icon(icon, color: _accentColor),
-        title: titleWidget,
-        enabled: !locked,
+        title: Text(
+          translate(title),
+          style: TextStyle(fontSize: _kContentFontSize),
+        ),
         onTap: onTap,
         trailing: trailing,
         shape: RoundedRectangleBorder(
@@ -1903,27 +1856,18 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
       );
     }
 
-    Widget switchWidget(IconData icon, String title, String tooltipMessage,
-            String optionKey) =>
-        listTile(
-          icon: icon,
-          title: title,
-          showTooltip: true,
-          tooltipMessage: tooltipMessage,
-          trailing: Switch(
-            value: mainGetBoolOptionSync(optionKey),
-            onChanged: locked || isOptionFixed(optionKey)
-                ? null
-                : (value) {
-                    mainSetBoolOption(optionKey, value);
-                    setState(() {});
-                  },
-          ),
-        );
-
-    final outgoingOnly = bind.isOutgoingOnly();
-
-    final divider = const Divider(height: 1, indent: 16, endIndent: 16);
+    // 这里只保留代理设置。
+    //
+    // 原先的"ID/Relay Server"（自定义服务器地址）已整体移除：中继节点清单改由
+    // hbbs 维护 —— 每台 hbbr 启动后自动向 hbbs 注册上报，打洞失败时由 hbbs
+    // 按权重 / 负载 / 时延统一下发。客户端再存一份服务器数据，只会出现
+    // "服务端换了节点、客户端还连老的"这类最难排查的问题。
+    //
+    // 同时移除的还有 "Use WebSocket" / "Disable UDP" / "Allow insecure TLS
+    // fallback" 三个开关：它们都属运行期调优，日常用户不需要，且误开
+    // "Disable UDP" 会直接把连接拖进"正在接入网络"卡死的分支。
+    // 确有需要时仍可通过配置文件修改对应 option（allow-websocket / disable-udp），
+    // 或让运维在构建时用 customize.py 调整默认值。
     return _Card(
       title: 'Network',
       children: [
@@ -1931,70 +1875,11 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (!hideServer)
-                listTile(
-                  icon: Icons.dns_outlined,
-                  title: 'ID/Relay Server',
-                  onTap: () => showServerSettings(gFFI.dialogManager, setState),
-                ),
-              if (!hideProxy && !hideServer) divider,
-              if (!hideProxy)
-                listTile(
-                  icon: Icons.network_ping_outlined,
-                  title: 'Socks5/Http(s) Proxy',
-                  onTap: changeSocks5Proxy,
-                ),
-              if (!hideWebSocket && (!hideServer || !hideProxy)) divider,
-              if (!hideWebSocket)
-                switchWidget(
-                    Icons.web_asset_outlined,
-                    'Use WebSocket',
-                    '${translate('websocket_tip')}\n\n${translate('server-oss-not-support-tip')}',
-                    kOptionAllowWebSocket),
-              if (!isWeb)
-                futureBuilder(
-                  future: bind.mainIsUsingPublicServer(),
-                  hasData: (isUsingPublicServer) {
-                    if (isUsingPublicServer) {
-                      return Offstage();
-                    } else {
-                      return Column(
-                        children: [
-                          if (!hideServer || !hideProxy || !hideWebSocket)
-                            divider,
-                          switchWidget(
-                              Icons.no_encryption_outlined,
-                              'Allow insecure TLS fallback',
-                              'allow-insecure-tls-fallback-tip',
-                              kOptionAllowInsecureTLSFallback),
-                          if (!outgoingOnly) divider,
-                          if (!outgoingOnly)
-                            listTile(
-                              icon: Icons.lan_outlined,
-                              title: 'Disable UDP',
-                              showTooltip: true,
-                              tooltipMessage:
-                                  '${translate('disable-udp-tip')}\n\n${translate('server-oss-not-support-tip')}',
-                              trailing: Switch(
-                                value: bind.mainGetOptionSync(
-                                        key: kOptionDisableUdp) ==
-                                    'Y',
-                                onChanged:
-                                    locked || isOptionFixed(kOptionDisableUdp)
-                                        ? null
-                                        : (value) async {
-                                            await bind.mainSetOption(
-                                                key: kOptionDisableUdp,
-                                                value: value ? 'Y' : 'N');
-                                            setState(() {});
-                                          },
-                              ),
-                            ),
-                        ],
-                      );
-                    }
-                  },
-                ),
+              listTile(
+                icon: Icons.network_ping_outlined,
+                title: 'Socks5/Http(s) Proxy',
+                onTap: changeSocks5Proxy,
+              ),
             ],
           ),
         ),

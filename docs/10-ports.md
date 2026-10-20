@@ -224,7 +224,7 @@ if let Some(v) = common::get_arg_opt("PORT") {   // ← 注意：读的是环境
 | 1 | `server/deploy/.env.example` → `.env` | `HBBS_PORT` / `HBBS_NAT_PORT` / `HBBR_PORT` / `HBBS_WS_PORT` / `HBBR_WS_PORT`，并保持 `NAT = P-1`、`WS = P+2` |
 |   |                                       |                                                                                                          |
 | 2 | `server/deploy/docker-compose.yml`    | 不用改 —— `ports:` 段与 `command` 都引用同一批变量，会自动跟着走                                                             |
-| 3 | **客户端 `build/client/custom.toml`**    | `rendezvous_host = "wedesk.alsoapp.com:P"`，**然后重新编译客户端**                                                 |
+| 3 | **客户端 `build/client/custom.toml`**    | `rendezvous_host = "id.wedesk.alsoapp.com:P"`，**然后重新编译客户端**（中继地址不用配，见方案 C）                |
 
 第 3 点最容易漏：客户端碰到不带端口的域名时，兜底用 `RENDEZVOUS_PORT`(21116)。  
 服务端改了端口而客户端没改，现象是"ID 一直转圈，最后超时"，看日志还以为是鉴权失败。
@@ -261,8 +261,8 @@ WARN [src/hbbs_http/sync.rs] Heartbeat failed: reqwest::Error { kind: Request,
 
 ### 方案 A：就在本仓库这套配置上跑（推荐起点）
 
-域名 `wedesk.alsoapp.com` 解析到 hbbs/hbbr 所在机器，端口用 **5186 / 5187 / 5188**。  
-客户端 `rendezvous_host = "wedesk.alsoapp.com:5187"`，`relay_host = "wedesk.alsoapp.com:5188"`。
+域名 `id.wedesk.alsoapp.com` 解析到 hbbs/hbbr 所在机器，端口用 **5186 / 5187 / 5188**。  
+客户端只配 `rendezvous_host = "id.wedesk.alsoapp.com:5187"`；中继由 hbbr 自动注册、hbbs 下发，客户端不存中继地址。
 
 **这是当前 `build/client/custom.toml` 与 `docker-compose.yml` 里已经配好的状态，什么都不用改。**
 
@@ -277,8 +277,8 @@ HBBR_PORT=9101          # = 9100 + 1，保住客户端兜底推导
 ```
 
 ```toml
-rendezvous_host = "wedesk.alsoapp.com:9100"     # 改完必须重新编译客户端
-relay_host      = "wedesk.alsoapp.com:9101"
+rendezvous_host = "id.wedesk.alsoapp.com:9100"  # 改完必须重新编译客户端
+# relay_host 已废弃：中继节点由 hbbr 自动注册，只需设 RELAY_PUBLIC_ADDR
 ```
 
 注意**别只看主端口**：9100 会派生出 9099 和 9102。排布前先按第 2.1 节的公式把  
@@ -287,14 +287,23 @@ relay_host      = "wedesk.alsoapp.com:9101"
 
 ### 方案 C：hbbs 与 hbbr 分机
 
-中继流量大时可以拆开两台机器。这时 hbbs 启动时要用 `-r` 明确告诉客户端中继在哪：
+中继流量大时可以拆开两台机器。**现在不需要在 hbbs 上配 `-r`**：B 机的 hbbr
+启动后会自动向 hbbs 注册（60 秒一次），hbbs 维护 `relay_nodes` 表并在
+P2P 失败时下发最优节点。B 机只需要两个环境变量：
 
 ```bash
-hbbs -p 5187 -r hbbr.internal:5188     # 或公网域名 wedesk.alsoapp.com:5188
+docker run ... -e HBBS_HOST=<A机IP>:5187 -e RELAY_PUBLIC_ADDR=<B机IP或域名> ... hbbr -p 5188
 ```
 
 放行策略随之分开：hbbs 那台放行 **TCP 5186 + TCP/UDP 5187**，hbbr 那台只放行 **TCP 5188**。  
-客户端配置不变（仍然指向 hbbs 的域名）。
+客户端配置不变（仍然指向 hbbs 的域名），也不保存任何中继地址。
+
+> 旧的 `-r <host>:5188` 仍受支持（兼容存量部署、临时固定一台中继），
+> 与自动注册共用同一套健康检查与打分。验证注册是否成功（控制台只收
+> 环回来源，端口映射下必须进容器里执行）：
+> ```bash
+> docker compose exec -T rd-hbbs sh -c 'echo rrg | nc 127.0.0.1 5187'
+> ```
 
 ---
 
@@ -303,13 +312,13 @@ hbbs -p 5187 -r hbbr.internal:5188     # 或公网域名 wedesk.alsoapp.com:5188
 
 | 方向     | 要求                                                    | 说明                                 |
 | ------ | ----------------------------------------------------- | ---------------------------------- |
-| 出站     | TCP 5186 / TCP 5187 / UDP 5187 → `wedesk.alsoapp.com` | 注册、心跳、打洞协调                         |
-| 出站     | TCP 5188 → `wedesk.alsoapp.com`                       | P2P 失败时走中继                         |
+| 出站     | TCP 5186 / TCP 5187 / UDP 5187 → `id.wedesk.alsoapp.com` | 注册、心跳、打洞协调                         |
+| 出站     | TCP 5188 → `id.wedesk.alsoapp.com`                       | P2P 失败时走中继                         |
 | 入站     | **无固定端口**                                             | P2P 用的是随机临时端口，NAT 会话自动放行           |
 | IP 直连  | 本机监听 TCP 21118（可选功能）                                  | 见第 2.2 节的说明；不用这个功能就不用管             |
 | P2P 直连 | 依赖对方 NAT 类型                                           | 对称 NAT ↔ 对称 NAT 必然走中继，这是协议限制而非配置问题 |
 
-如果员工网络只允许访问白名单域名，只需在出口白名单里放行 `wedesk.alsoapp.com` 的上述端口  
+如果员工网络只允许访问白名单域名，只需在出口白名单里放行 `id.wedesk.alsoapp.com` 的上述端口  
 —— 客户端**不会**再访问任何 rustdesk 官方域名（见 [05 定制与断网](05-customize.md)）。
 
 > **不建议**在 hbbs 前面套通用 CDN / HTTP 反向代理：5187 的 **UDP** 无法被普通七层代理转发，  
@@ -339,7 +348,7 @@ rustdesk-utils doctor <服务器IP>
 ```bash
 # 外部 —— 期望：5186/tcp open、5187/tcp open、5187/udp open|filtered、5188/tcp open
 #        5189、5190 必须 closed / filtered
-nmap -sU -sT -p 5186-5190 wedesk.alsoapp.com
+nmap -sU -sT -p 5186-5192 id.wedesk.alsoapp.com
 ```
 
 宿主机上的真实监听（确认没有把 WS 端口 publish 出去）：

@@ -8,7 +8,7 @@
 > | `peer` | ID / 设备台账（ID、uuid、公钥、备注、注册信息、状态） | hbbs |
 > | `server_config` | 服务端自身状态 —— 旧版密钥残留，新版本启动时迁出并清空 | hbbs |
 > | `connection_log` | 连接审计 —— 谁连了谁、时间、走中继还是 P2P | hbbs |
-> | `relay_nodes` | 中继节点登记与实时健康（区域 / 权重 / 容量 / 时延） | hbbs |
+> | `relay_nodes` | 中继节点登记与实时健康（区域 / 权重 / 容量 / 时延） | hbbs（数据源是 hbbr 的自动注册上报） |
 > | `relay_access_list` | hbbr 的黑名单与阻断名单 | **hbbr** |
 >
 > hbbr 只读写最后一张，且是"可降级"的：没配 `DB_TYPE`/`DB_URL` 或连不上库时，

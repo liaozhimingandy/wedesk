@@ -82,6 +82,27 @@ static PUNCH_REQ_MAX: Lazy<usize> =
 static RELAY_CACHE: Lazy<StdMutex<HashMap<String, RelayNode>>> =
     Lazy::new(|| StdMutex::new(HashMap::new()));
 
+/// 自动注册的中继节点：hbbr 周期上报（RelayRegister），hbbs 据此维护节点清单。
+/// key = 对外可达地址 "host:port"，value = 最近一次上报的信息。
+/// 与静态 `-r` 配置并存：`check_relay_servers` 对两者做同一套健康检查，
+/// 超过 `RELAY_REGISTER_TIMEOUT` 没再上报的注册节点自动剔除。
+static RELAY_REGISTRY: Lazy<StdMutex<HashMap<String, RelayReg>>> =
+    Lazy::new(|| StdMutex::new(HashMap::new()));
+
+/// hbbs 建议 hbbr 的上报间隔（秒）。也是"多久没上报算掉线"的基准：
+/// 3 个周期（RELAY_REGISTER_TIMEOUT）收不到即剔除。
+const RELAY_REGISTER_INTERVAL: i32 = 60;
+const RELAY_REGISTER_TIMEOUT: Duration = Duration::from_secs(3 * RELAY_REGISTER_INTERVAL as u64 + 30);
+
+#[derive(Clone)]
+struct RelayReg {
+    region: String,
+    capacity: i32,
+    connections: i32,
+    version: String,
+    last_seen: Instant,
+}
+
 /// 混合探测会话表：`punch_hole` 发起时登记，两端上报探测结果后用 BOW 打分敲定唯一中继。
 static RELAY_SESSIONS: Lazy<StdMutex<HashMap<String, RelaySession>>> =
     Lazy::new(|| StdMutex::new(HashMap::new()));
@@ -332,7 +353,14 @@ impl RendezvousServer {
         loop {
             tokio::select! {
                 _ = timer_check_relay.tick() => {
-                    if self.relay_servers0.len() > 1 {
+                    // 静态多中继（-r 给了多个）或存在自动注册节点时，才需要周期健康检查。
+                    // 自动注册的节点即使只有一个也要查：它是"上报即接入"的，掉线了
+                    // 得靠这个循环把它从调度列表里摘掉。
+                    let has_registered = !RELAY_REGISTRY
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_empty();
+                    if self.relay_servers0.len() > 1 || has_registered {
                         let rs = self.relay_servers0.clone();
                         let tx = self.tx.clone();
                         let db = self.pm.db.clone();
@@ -663,6 +691,9 @@ impl RendezvousServer {
                 }
                 Some(rendezvous_message::Union::RelayProbeResult(r)) => {
                     self.handle_relay_probe_result(r, addr).await;
+                }
+                Some(rendezvous_message::Union::RelayRegister(reg)) => {
+                    self.handle_relay_register(reg, addr, sink).await;
                 }
                 _ => {}
             }
@@ -1220,6 +1251,114 @@ impl RendezvousServer {
         }
     }
 
+    /// 处理 hbbr 的节点自注册（RelayRegister）。
+    ///
+    /// 这是"中继节点由服务端维护"的入口：客户端不再配置中继地址，
+    /// 每台 hbbr 启动后周期上报，hbbs 在这里记账（内存表 + relay_nodes 表 +
+    /// 健康缓存三处），并立即把它并入存活列表参与调度。
+    async fn handle_relay_register(
+        &mut self,
+        reg: RelayRegister,
+        addr: SocketAddr,
+        sink: &mut Option<Sink>,
+    ) {
+        let host = resolve_relay_host(&reg, addr);
+        // 准入检查：环回 / 未指定地址不能作为对外中继地址。误配时（比如把
+        // RELAY_PUBLIC_ADDR 留成默认的 127.0.0.1）拒绝登记并说明原因，
+        // 客户端随即回落到"主端口+1"推导 —— 比被指到一个连不上的地址好得多。
+        if let Some(reason) = relay_host_reject_reason(&host) {
+            log::warn!("拒绝中继节点注册 {host}：{reason}");
+            let mut msg_out = RendezvousMessage::new();
+            msg_out.set_relay_register_response(RelayRegisterResponse {
+                ok: false,
+                interval_sec: RELAY_REGISTER_INTERVAL,
+                reason,
+                ..Default::default()
+            });
+            Self::send_to_sink(sink, msg_out).await;
+            return;
+        }
+        // 1) 内存注册表：check_relay_servers 据此汇总待检查节点，超时未上报则剔除
+        {
+            let mut map = RELAY_REGISTRY
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            map.insert(
+                host.clone(),
+                RelayReg {
+                    region: reg.region.clone(),
+                    capacity: reg.capacity,
+                    connections: reg.connections,
+                    version: reg.version.clone(),
+                    last_seen: Instant::now(),
+                },
+            );
+        }
+        // 2) 落库：节点登记 + 静态元数据 + 一次健康（注册即视为存活）
+        let db = self.pm.db.clone();
+        let _ = db.ensure_relay_node(&host).await;
+        if !reg.region.is_empty() || reg.capacity > 0 {
+            // 只同步注册上报的 region / capacity；weight 保留运维手工
+            // `relay-set-meta` 设的值（默认 100），否则每次心跳都会把它打回默认。
+            let weight = db
+                .load_relay_nodes()
+                .await
+                .ok()
+                .and_then(|nodes| nodes.into_iter().find(|n| n.host == host).map(|n| n.weight))
+                .unwrap_or(100);
+            let _ = db
+                .set_relay_meta(&host, &reg.region, weight, reg.capacity.max(1000))
+                .await;
+        }
+        let _ = db
+            .record_relay_health(&host, None, true, reg.connections)
+            .await;
+        // 3) 内存健康缓存：让 get_relay_server / select_candidates 立刻能选到它
+        {
+            let mut cache = RELAY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            let entry = cache.entry(host.clone()).or_insert_with(|| RelayNode {
+                host: host.clone(),
+                region: String::new(),
+                weight: 100,
+                capacity: 1000,
+                latency_ms: None,
+                healthy: true,
+                connections: 0,
+            });
+            entry.healthy = true;
+            if !reg.region.is_empty() {
+                entry.region = reg.region.clone();
+            }
+            if reg.capacity > 0 {
+                entry.capacity = reg.capacity;
+            }
+            entry.connections = reg.connections;
+        }
+        // 4) 立即并入存活列表（下个检查周期会重新汇总，这里抢一个即时生效）
+        let mut list: Vec<String> = (*self.relay_servers).clone();
+        if !list.iter().any(|h| h == &host) {
+            list.push(host.clone());
+        }
+        self.tx.send(Data::RelayServers(list)).ok();
+        log::info!(
+            "中继节点注册：{} region={} capacity={} conn={} v={}",
+            host,
+            if reg.region.is_empty() { "-" } else { &reg.region },
+            if reg.capacity > 0 { reg.capacity } else { 1000 },
+            reg.connections,
+            if reg.version.is_empty() { "-" } else { &reg.version }
+        );
+        // 5) 应答：告知登记结果与建议间隔
+        let mut msg_out = RendezvousMessage::new();
+        msg_out.set_relay_register_response(RelayRegisterResponse {
+            ok: true,
+            interval_sec: RELAY_REGISTER_INTERVAL,
+            relay_server: host,
+            ..Default::default()
+        });
+        Self::send_to_sink(sink, msg_out).await;
+    }
+
     async fn check_cmd(&self, cmd: &str) -> String {
         use std::fmt::Write as _;
 
@@ -1228,7 +1367,7 @@ impl RendezvousServer {
         match fds.next() {
             Some("h") => {
                 res = format!(
-                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
                     "relay-servers(rs) <separated by ,>",
                     "reload-geo(rg)",
                     "ip-blocker(ib) [<ip>|<number>] [-]",
@@ -1237,6 +1376,7 @@ impl RendezvousServer {
                     "always-use-relay(aur)",
                     "test-geo(tg) <ip1> <ip2>",
                     "relay-list(rl)            # 列出 relay_nodes 表（含静态权重与健康）",
+                    "relay-registered(rrg)     # 列出自动注册的中继节点（hbbr 上报）",
                     "relay-set-meta(rsm) <host> <region> <weight> <capacity>",
                     "relay-health(rh)          # 打印内存健康缓存（实时时延/存活）"
                 )
@@ -1324,6 +1464,40 @@ impl RendezvousServer {
                             n.connections
                         );
                     }
+                }
+            }
+            Some("relay-registered" | "rrg") => {
+                // 自动注册节点（hbbr 周期上报）。超时未上报的会在下次健康检查时剔除，
+                // 所以这里看到的都是"最近还在心跳"的节点。
+                let map = RELAY_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+                if map.is_empty() {
+                    let _ = writeln!(res, "(no relay registered)");
+                } else {
+                    let _ = writeln!(
+                        res,
+                        "{:<24} {:<12} {:>8} {:>6} {:>7} {:>6}",
+                        "host", "region", "capacity", "conns", "seen_s", "version"
+                    );
+                    let mut rows: Vec<(&String, &RelayReg)> = map.iter().collect();
+                    rows.sort_by(|a, b| a.0.cmp(b.0));
+                    for (h, v) in rows {
+                        let _ = writeln!(
+                            res,
+                            "{:<24} {:<12} {:>8} {:>6} {:>7} {:>6}",
+                            h,
+                            if v.region.is_empty() { "-" } else { &v.region },
+                            v.capacity,
+                            v.connections,
+                            v.last_seen.elapsed().as_secs(),
+                            if v.version.is_empty() { "-" } else { &v.version }
+                        );
+                    }
+                    let _ = writeln!(
+                        res,
+                        "上报间隔 {}s，超过 {}s 未上报自动剔除",
+                        RELAY_REGISTER_INTERVAL,
+                        RELAY_REGISTER_TIMEOUT.as_secs()
+                    );
                 }
             }
             Some("ip-blocker" | "ib") => {
@@ -1672,16 +1846,97 @@ fn bow_select(
     best.map(|(_, h)| h)
 }
 
+/// 把 hbbr 上报的注册信息折算成对外可达地址 "host:port"。
+///
+/// 优先用 hbbr 自报的 host（RELAY_PUBLIC_ADDR，运维保证客户端可达）；
+/// 没报则退回 hbbs 在 TCP 连接上看到的来源 IP —— Docker 网络下这是网桥
+/// 地址，客户端连不到，所以部署时必须给 hbbr 配 RELAY_PUBLIC_ADDR。
+fn resolve_relay_host(reg: &RelayRegister, addr: SocketAddr) -> String {
+    let port = if reg.port > 0 && reg.port <= 65535 {
+        reg.port
+    } else {
+        config::RELAY_PORT as i32
+    };
+    let h = reg.host.trim();
+    if h.is_empty() {
+        return format!("{}:{}", addr.ip(), port);
+    }
+    if h.starts_with('[') {
+        // 方括号形式：[v6] 或 [v6]:port
+        if let Some(end) = h.find(']') {
+            return if h[end + 1..].is_empty() {
+                format!("{}:{}", h, port)
+            } else {
+                h.to_owned()
+            };
+        }
+    }
+    // 恰好一个冒号 → 视为 "host:port"（域名或 IPv4），原样使用；
+    // 多个冒号 → 裸 IPv6，补上端口（IPv6 推荐写成 [v6]:port 以避免歧义）。
+    if h.matches(':').count() == 1 {
+        return h.to_owned();
+    }
+    format!("{}:{}", h, port)
+}
+
+/// 对外中继地址的准入检查：拒绝环回 / 未指定地址。
+/// 返回 `Some(原因)` 表示应当拒绝这次注册。
+fn relay_host_reject_reason(host: &str) -> Option<String> {
+    let h = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+    let h = h.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = h.parse::<IpAddr>() {
+        if ip.is_loopback() {
+            return Some(format!(
+                "地址是环回地址({h})，客户端连不到；请给 hbbr 设置 RELAY_PUBLIC_ADDR=<客户端可达的域名或 IP>"
+            ));
+        }
+        if ip.is_unspecified() {
+            return Some(format!("地址是未指定地址({h})"));
+        }
+    }
+    None
+}
+
 async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender, db: Database) {
     let mut futs = Vec::new();
     let rs = Arc::new(Mutex::new(Vec::new()));
-    for x in rs0.iter() {
-        let mut host = x.to_owned();
-        if !host.contains(':') {
-            host = format!("{}:{}", host, config::RELAY_PORT);
+    // 待检查节点 = 静态配置（-r）∪ 自动注册；顺带剔除超过 3 个周期未上报的注册节点。
+    // 两条来源共用同一套探测与打分，对 get_relay_server 完全透明。
+    let mut hosts: Vec<String> = rs0
+        .iter()
+        .map(|x| {
+            if x.contains(':') {
+                x.to_owned()
+            } else {
+                format!("{}:{}", x, config::RELAY_PORT)
+            }
+        })
+        .collect();
+    {
+        let mut map = RELAY_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+        let cutoff = Instant::now() - RELAY_REGISTER_TIMEOUT;
+        let stale: Vec<String> = map
+            .iter()
+            .filter(|(_, v)| v.last_seen < cutoff)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for h in stale {
+            log::info!(
+                "中继节点 {} 超过 {} 秒未上报，已从调度列表剔除",
+                h,
+                RELAY_REGISTER_TIMEOUT.as_secs()
+            );
+            map.remove(&h);
         }
+        for h in map.keys() {
+            if !hosts.contains(h) {
+                hosts.push(h.clone());
+            }
+        }
+    }
+    for host in hosts.iter() {
+        let host = host.clone();
         let rs = rs.clone();
-        let x = x.clone();
         let db = db.clone();
         futs.push(tokio::spawn(async move {
             // 确保中继在 relay_nodes 表中有登记行（静态权重走默认，后续由运维 set-relay-meta 调整）
@@ -1714,7 +1969,7 @@ async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender, db: Database) {
                 }
             }
             if ok {
-                rs.lock().await.push(x);
+                rs.lock().await.push(host);
             }
         }));
     }
@@ -1814,6 +2069,64 @@ mod tests {
         let bind_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let socket = create_udp_listener(Some(bind_addr), 0, 0).await.unwrap();
         assert_eq!(socket.local_addr().unwrap().ip(), bind_addr);
+    }
+
+    // --- 中继节点自动注册 ------------------------------------------------
+
+    /// hbbr 自报地址（不带端口）→ hbbs 补上它监听的端口
+    #[test]
+    fn resolve_relay_host_appends_port() {
+        let addr: SocketAddr = "10.0.0.9:5187".parse().unwrap();
+        let reg = RelayRegister {
+            host: "relay.example.com".to_owned(),
+            port: 5188,
+            ..Default::default()
+        };
+        assert_eq!(resolve_relay_host(&reg, addr), "relay.example.com:5188");
+    }
+
+    /// 没自报地址 → 用 hbbs 看到的来源 IP（Docker 下这是网桥地址，运维会看到告警）
+    #[test]
+    fn resolve_relay_host_falls_back_to_observed_ip() {
+        let addr: SocketAddr = "172.18.0.1:5187".parse().unwrap();
+        let reg = RelayRegister {
+            host: String::new(),
+            port: 5188,
+            ..Default::default()
+        };
+        assert_eq!(resolve_relay_host(&reg, addr), "172.18.0.1:5188");
+    }
+
+    /// 自报地址已带端口 / 是裸 IPv6 时不得重复拼接
+    #[test]
+    fn resolve_relay_host_keeps_explicit_port_and_bare_v6() {
+        let addr: SocketAddr = "10.0.0.9:5187".parse().unwrap();
+        let with_port = RelayRegister {
+            host: "relay.example.com:5188".to_owned(),
+            port: 5188,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_relay_host(&with_port, addr),
+            "relay.example.com:5188"
+        );
+        let v6 = RelayRegister {
+            host: "2001:db8::1".to_owned(),
+            port: 5188,
+            ..Default::default()
+        };
+        assert_eq!(resolve_relay_host(&v6, addr), "2001:db8::1:5188");
+    }
+
+    /// 环回 / 未指定地址必须拒绝：否则客户端会被指到一个连不上的地址
+    #[test]
+    fn relay_host_rejects_loopback_and_unspecified() {
+        assert!(relay_host_reject_reason("127.0.0.1:5188").is_some());
+        assert!(relay_host_reject_reason("localhost:5188").is_none()); // 域名不当场解析
+        assert!(relay_host_reject_reason("0.0.0.0:5188").is_some());
+        assert!(relay_host_reject_reason("[::1]:5188").is_some());
+        assert!(relay_host_reject_reason("id.wedesk.alsoapp.com:5188").is_none());
+        assert!(relay_host_reject_reason("172.18.0.1:5188").is_none()); // 网桥地址放行，由 hbbr 侧告警
     }
 
     #[hbb_common::tokio::test]

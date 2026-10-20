@@ -141,7 +141,7 @@ wedesk/
 
 # 2. 起服务端（30 分钟，首次构建慢）
 cd server/deploy
-copy .env.example .env          # 然后编辑 .env，把 RELAY_HOST 改成服务器 IP
+copy .env.example .env          # 然后编辑 .env，把 RELAY_HOST 改成服务器 IP（hbbr 注册用）
 python rdctl.py build           # 容器内从源码编译，约 15-25 分钟
 python rdctl.py start           # 起来后 python rdctl.py status 看状态
 python rdctl.py ports           # 核对端口映射是否符合预期

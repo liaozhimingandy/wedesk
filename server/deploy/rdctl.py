@@ -971,10 +971,14 @@ def cmd_doctor(args):
         info(".env 存在")
     relay = env.get("RELAY_HOST", "127.0.0.1")
     if relay in ("127.0.0.1", "localhost", ""):
-        w(f"RELAY_HOST={relay or '(空)'} —— 只有本机能连中继，外部客户端连不上",
+        w(f"RELAY_HOST={relay or '(空)'} —— hbbr 会把它注册成对外地址，只有本机能连",
           ".env 里改成服务器的外网 IP 或域名")
     else:
         info(f"RELAY_HOST={relay}")
+    # hbbr 注册目标：分机部署时才需要改（默认同栈内的 hbbs:5187）
+    hbbs_host = env.get("HBBS_HOST", "")
+    if hbbs_host and hbbs_host != "hbbs:5187":
+        info(f"HBBS_HOST={hbbs_host}（hbbr 将注册到这台 hbbs）")
     # 复用已有的检查：废弃变量、data/.env 陷阱、RD_IMAGE 指向官方镜像
     check_env_legacy()
 

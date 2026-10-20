@@ -93,6 +93,32 @@
 下面是通栏圆角卡片（`_Card` 不再是 540px 定宽）。
 设置项本身的逻辑没动，只重排。
 
+### 网络设置页：只保留代理（2026-10-21 起）
+
+「网络设置」Tab 原先有四个入口：**ID/Relay Server**（自定义服务器地址）、
+**Socks5/Http(s) Proxy**、**Use WebSocket** 开关，以及自建服务器才出现的
+**Allow insecure TLS fallback** / **Disable UDP**。现在**只剩代理一项**。
+
+原因：中继节点清单改由服务端维护 —— 每台 hbbr 启动后自动向 hbbs 注册上报，
+P2P 打洞失败时由 hbbs 按 权重 / 负载 / 时延 统一下发。客户端再保存一份
+服务器数据，只会出现"服务端换了节点、客户端还连老的"这类最难排查的问题，
+所以"ID/Relay Server"整个入口被移除（`showServerSettings` 调用点删掉），
+`get_relay_server()` 也不再读 `relay-server` 配置项。
+
+三个开关一并移除的理由：它们都属运行期调优，日常用户不需要，且误开
+**Disable UDP** 会直接把连接拖进"正在接入网络"卡死的分支
+（`force_tcp` 路径，WS 失败也不会回退 UDP，见 docs/10-ports.md 坑 4）。
+确有需要时仍可通过配置文件改对应 option：
+
+```
+allow-websocket = Y      # 等价于原 "Use WebSocket" 开关
+disable-udp = Y          # 等价于原 "Disable UDP" 开关
+```
+
+或让运维在 `build/client/custom.toml` 里调整默认值后重新构建。
+移动端设置页只移除了"ID/Relay Server"一项，本地传输类开关保留 ——
+运营商网络下 UDP 常被限制，"Use WebSocket"是移动端唯一的自救手段。
+
 ### 主窗口旧标签栏已隐藏
 
 `DesktopTab` 加了实例级参数 `showTabBar`（默认 true，不影响远程会话窗口）。

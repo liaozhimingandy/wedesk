@@ -82,11 +82,129 @@ pub async fn start_with_bind(
             .await;
         }
     };
+    // 中继节点自动注册：客户端不再配置中继地址，节点清单与调度由 hbbs 维护。
+    // 注册失败只影响"本节点被调度到"的概率，不影响正在服务的连接，
+    // 所以它是独立的后台任务，与转发主循环互不阻塞。
+    tokio::spawn(register_loop(port));
     let listen_signal = crate::common::listen_signal();
     tokio::select!(
         res = main_task => res,
         res = listen_signal => res,
     )
+}
+
+// =============================================================================
+// 中继节点自动注册（上报给 hbbs）
+// =============================================================================
+//
+// 设计要点：客户端不再维护中继服务器清单（配置项已关闭），改由每台 hbbr
+// 主动向 hbbs 上报。hbbs 把节点写进 relay_nodes 表，P2P 打洞失败时按
+// 权重 / 负载 / 时延打分下发（rendezvous_server.rs::get_relay_server）。
+// 超过 3 个周期没上报的节点会被 hbbs 自动剔除，所以"下线"不需要人工操作。
+//
+// 地址口径：hbbr 用 RELAY_PUBLIC_ADDR（运维指定的客户端可达地址）自报；
+// 没配时 hbbs 只能看到 TCP 来源 IP —— Docker 网络下那是网桥地址，
+// 客户端连不到，所以容器部署必须显式设置。
+
+/// hbbs 地址。环境变量 HBBS_HOST，默认 127.0.0.1:5187（compose 里用服务名 hbbs:5187）。
+fn hbbs_addr() -> String {
+    crate::common::get_arg_or("HBBS_HOST", "127.0.0.1:5187".to_owned())
+}
+
+/// 周期上报的间隔（秒）。与 hbbs 的 RELAY_REGISTER_INTERVAL 保持一致即可，
+/// 真正的节奏以 hbbs 应答里的 interval_sec 为准，这里只做失败重试的兜底。
+const REGISTER_INTERVAL_SEC: u64 = 60;
+
+/// 注册主循环：先立即注册一次，之后按间隔心跳；失败 10 秒后快速重试。
+async fn register_loop(port: u16) {
+    let hbbs = hbbs_addr();
+    let public = crate::common::get_arg("RELAY_PUBLIC_ADDR");
+    let region = crate::common::get_arg_or("RELAY_REGION", String::new());
+    let capacity: i32 = crate::common::get_arg_or("RELAY_CAPACITY", "0".to_owned())
+        .parse()
+        .unwrap_or(0);
+    if public.is_empty() {
+        log::warn!(
+            "未配置 RELAY_PUBLIC_ADDR：hbbs 将按连接来源 IP 登记本节点，\
+             Docker / 云主机场景下客户端可能连不到中继。\
+             请设置 RELAY_PUBLIC_ADDR=<客户端可达的域名或 IP>"
+        );
+    }
+    log::info!(
+        "中继节点自动注册已启动：hbbs={} port={} public={} region={}",
+        hbbs,
+        port,
+        if public.is_empty() {
+            "(来源 IP)"
+        } else {
+            public.as_str()
+        },
+        if region.is_empty() { "-" } else { region.as_str() }
+    );
+    loop {
+        let ok = register_once(&hbbs, port, &public, &region, capacity).await;
+        // 失败快速重试（10s），成功按一个完整间隔 —— 注册是轻量心跳，
+        // 没必要等满 60s 才发现 hbbs 挂了。
+        sleep(if ok { REGISTER_INTERVAL_SEC as f32 } else { 10.0 }).await;
+    }
+}
+
+/// 单次注册：连接 hbbs → 上报节点信息 → 等应答。返回是否登记成功。
+async fn register_once(
+    hbbs: &str,
+    port: u16,
+    public: &str,
+    region: &str,
+    capacity: i32,
+) -> bool {
+    let mut conn = match FramedStream::new(hbbs, None, 10_000).await {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("连接 hbbs({hbbs}) 失败，中继节点注册推迟到下个周期：{e}");
+            return false;
+        }
+    };
+    let connections = USAGE.read().await.len() as i32;
+    let mut msg = RendezvousMessage::new();
+    msg.set_relay_register(RelayRegister {
+        host: public.to_owned(),
+        port: port as i32,
+        region: region.to_owned(),
+        capacity,
+        connections,
+        version: crate::version::VERSION.to_owned(),
+        ..Default::default()
+    });
+    if let Err(e) = conn.send(&msg).await {
+        log::warn!("向 hbbs({hbbs}) 发送注册消息失败：{e}");
+        return false;
+    }
+    match conn.next_timeout(10_000).await {
+        Some(Ok(bytes)) => match RendezvousMessage::parse_from_bytes(&bytes) {
+            Ok(resp) => {
+                if let Some(rendezvous_message::Union::RelayRegisterResponse(r)) = resp.union {
+                    if r.ok {
+                        log::info!(
+                            "中继节点已注册：{}（hbbs 认定的对外地址，建议间隔 {}s）",
+                            r.relay_server,
+                            r.interval_sec
+                        );
+                        return true;
+                    }
+                }
+                log::warn!("hbbs 返回了无法识别的注册应答，下个周期重试");
+                false
+            }
+            Err(e) => {
+                log::warn!("解析 hbbs 注册应答失败：{e}");
+                false
+            }
+        },
+        _ => {
+            log::warn!("等待 hbbs({hbbs}) 注册应答超时");
+            false
+        }
+    }
 }
 
 // =============================================================================

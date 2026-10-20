@@ -750,16 +750,10 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
             ],
           ),
         SettingsSection(title: Text(translate("Settings")), tiles: [
-          if (!disabledSettings && !_hideNetwork && !_hideServer)
-            SettingsTile(
-                title: Text(translate('ID/Relay Server')),
-                leading: Icon(Icons.cloud),
-                onPressed: (context) {
-                  showServerSettings(gFFI.dialogManager, (callback) async {
-                    _isUsingPublicServer = await bind.mainIsUsingPublicServer();
-                    setState(callback);
-                  });
-                }),
+          // "ID/Relay Server"（自定义服务器地址）已移除：中继节点清单改由 hbbs
+          // 维护（hbbr 自动注册上报），客户端不再保存任何服务器节点数据。
+          // 下面的代理与本地传输开关仍保留 —— 移动网络下 UDP 常被运营商限制，
+          // "Use WebSocket" 是这类场景的唯一自救手段。
           if (!_hideNetwork && !_hideProxy)
             SettingsTile(
                 title: Text(translate('Socks5/Http(s) Proxy')),

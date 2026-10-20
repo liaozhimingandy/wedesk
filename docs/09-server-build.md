@@ -160,7 +160,7 @@ environment:
 
 ```bash
 cd server\deploy
-copy .env.example .env        # 编辑 RELAY_HOST = 服务器 IP
+copy .env.example .env        # 编辑 RELAY_HOST = 服务器 IP（hbbr 注册用）
 python rdctl.py build         # 从源码构建镜像（首次）
 python rdctl.py start         # 启动，并打印服务器公钥
 python rdctl.py key           # 再打印一次公钥（填进客户端 custom.toml）

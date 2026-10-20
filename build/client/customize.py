@@ -563,20 +563,16 @@ def validate(c: dict):
             "服务端不在 21116 时必须写成 \"域名:端口\""
         )
 
-    # relay_host 只做一致性记录：它【不会】被注入到源码里 ——
-    # 客户端的中继地址是 hbbs 在握手时下发的，或 hbbs 没给时按
-    # "rendezvous 端口 + 1" 兜底（src/rendezvous_mediator.rs 的 get_relay_server）。
-    # 正是因为这个兜底，hbbr 端口维持 rel = rs port + 1 才最省心；
-    # 一旦 hbbr 跑在别的端口/别的机器，就必须给 hbbs 加 `-r <host>:<port>`。
-    if host and relay:
-        p1 = _port_of(host)
-        p2 = _port_of(relay)
-        if p1 and p2 and p2 != p1 + 1:
-            problems.append(
-                f"relay_host 端口({p2}) ≠ rendezvous_host 端口({p1})+1："
-                "hbbs 必须显式加 -r 参数告诉客户端中继地址，"
-                "否则客户端会按 \"rendezvous 端口+1\" 推导，中继握手必然失败"
-            )
+    # relay_host 已废弃（2026-10-21）：客户端不再保存中继节点数据。
+    # 中继清单由 hbbs 维护 —— 每台 hbbr 启动后自动注册上报，hbbs 在 P2P
+    # 失败时统一下发。客户端这里只按"主端口+1"做最后兜底推导。
+    # 若老配置里还留着这个键，仅提示、不再校验。
+    if relay:
+        print(
+            "注意：server.relay_host 已被忽略 —— 中继节点改由 hbbs 维护"
+            "（hbbr 自动注册上报），客户端不再配置中继地址。"
+            "维护 hbbr 容器上的 RELAY_PUBLIC_ADDR 即可，详见 docs/10-ports.md。"
+        )
     return problems
 
 

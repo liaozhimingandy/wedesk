@@ -36,13 +36,16 @@
 ### 2.1 `rd-hbbs` —— ID 注册与打洞协调
 
 ```yaml
-command: hbbs -p 5187 -r ${RELAY_HOST}:5188
+command: hbbs -p 5187
 ```
 
 | 参数 | 含义 | 为什么这么写 |
 |---|---|---|
 | `-p 5187` | 主端口 | 由它**推导**出另外两个端口，见下 |
-| `-r host:5188` | 告诉客户端"中继在哪" | **必须带端口**。漏了端口 hbbs 会按上游默认的 21117 拼，客户端被指到一个没人监听的端口，表现为"能注册但连不上桌面" |
+
+中继地址不再用 `-r` 静态指定：hbbr 启动后通过 `RelayRegister`（协议号 32）自动向
+hbbs 注册，hbbs 维护节点表（`rrg` 可查），P2P 失败时调度下发。静态 `-r` 只剩一个
+用途——hbbr 还没起来时的兜底，写法 `-r 1.2.3.4:5188,5.6.7.8:5188`。
 
 `-p 5187` 会派生三个端口（源码 `src/rendezvous_server.rs`）：
 
@@ -78,10 +81,23 @@ hbbr 是**近乎无状态**的：不读密钥、不认客户端身份，
 它只负责把一条 TCP 连接上的字节流搬到另一条上。
 所以它随时可以重启、扩容、甚至起多个实例，不影响在线连接以外的任何东西。
 
-唯一的例外是**名单**：配了数据库时，黑名单 / 阻断名单落在
-`relay_access_list` 表（见 6.2 节），并周期性重载 —— 这是多台中继
-能共享同一份封禁的原因。这个状态是"可读可丢"的：库连不上时 hbbr
-退回文件模式继续转发，不会因为一张名单拒绝启动。
+两个例外，都"可读可丢"——连不上也不会阻止它转发：
+
+1. **名单**：配了数据库时，黑名单 / 阻断名单落在 `relay_access_list` 表
+   （见 6.2 节），并周期性重载，这是多台中继共享同一份封禁的原因；
+2. **节点注册**：hbbr 启动后每 60 秒向 hbbs 上报一次自身信息
+   （`RelayRegister`），hbbs 据此维护 `relay_nodes` 表，P2P 打洞失败时
+   按 权重 / 负载 / 时延 统一下发最优节点。**客户端不再配置中继地址**，
+   服务器节点数据只由服务端维护。运维要做的只有一件事：给 hbbr 容器设置
+   `RELAY_PUBLIC_ADDR`（客户端可达的域名或 IP，不带端口），否则 hbbs 只能
+   按连接来源 IP 登记 —— Docker 网络下那是网桥地址，客户端连不上。
+
+```bash
+# 看当前在线的中继节点（hbbs 控制台命令）
+docker exec rd-hbbs sh -c 'echo "rrg" | nc 127.0.0.1 5187'   # relay-registered
+docker exec rd-hbbs sh -c 'echo "rl"  | nc 127.0.0.1 5187'   # relay_nodes 表
+docker exec rd-hbbs sh -c 'echo "rh"  | nc 127.0.0.1 5187'   # 内存健康缓存
+```
 
 > ⚠️ `hbbr` 的环境变量 **`PORT` 会 +1 之后才使用**（历史包袱，见 `src/hbbr.rs`）。
 > 写 `PORT=5188` 它就去监听 **5189**，正好撞上 hbbs 的 WebSocket 端口。
@@ -90,9 +106,8 @@ hbbr 是**近乎无状态**的：不读密钥、不认客户端身份，
 ### 2.3 `rd-net` —— 容器网络
 
 一个普通的 bridge 网络。两个容器通过**服务名**互相访问（`hbbs` ↔ `hbbr`）。
-这就是为什么 `command` 里 `-r` 可以写 `${RELAY_HOST}` 而 hbbs 日志里显示
-`relay-servers=["127.0.0.1:5188"]` —— 这里 127.0.0.1 是**容器视角**的 127.0.0.1
-还是宿主机，取决于 `RELAY_HOST` 填什么，见 [10-ports.md](10-ports.md) 方案 C。
+hbbr 注册时默认就找 `hbbs:5187`（环境变量 `HBBS_HOST`）—— 同栈部署不用改；
+中继单独一台机器时才需要把 `HBBS_HOST` 改成 hbbs 那台机器的 IP。
 
 ### 2.4 `./data:/root` —— 唯一需要备份的卷
 
@@ -147,6 +162,17 @@ INFO [src/relay_server.rs:88] Listening on websocket :5190
 **容器内始终在听，只是 compose 没有 publish 它**——别以为没开。
 
 ```
+INFO [src/relay_server.rs:xxx] 中继节点自动注册已启动：hbbs=hbbs:5187 port=5188 public=wedesk.alsoapp.com region=-
+INFO [src/relay_server.rs:xxx] 中继节点已注册：wedesk.alsoapp.com:5188（hbbs 认定的对外地址，建议间隔 60s）
+```
+
+这两行是**节点注册**：连上了 hbbs 并登记成功。看不到第二行、或反复出现
+`连接 hbbs(hbbs:5187) 失败`，说明注册没成功 —— 客户端仍能靠"主端口+1"
+兜底找到中继，但 hbbs 的多节点调度（权重 / 负载 / 时延）就失效了。
+排查顺序：`HBBS_HOST` 通不通 → `RELAY_PUBLIC_ADDR` 填了没 →
+hbbs 日志里有没有 `拒绝中继节点注册`（环回地址会被拒）。
+
+```
 INFO [src/relay_server.rs:91] Start
 INFO [src/relay_server.rs:115] DOWNGRADE_THRESHOLD: 0.66
 INFO [src/relay_server.rs:125] DOWNGRADE_START_CHECK: 1800s
@@ -192,15 +218,19 @@ INFO [src/rendezvous_server.rs:137] serial=0
 INFO [src/common.rs:105] rendezvous-servers=[]
 INFO [src/rendezvous_server.rs:173] mask: None
 INFO [src/rendezvous_server.rs:174] local-ip: ""
-INFO [src/common.rs:105] relay-servers=["127.0.0.1:5188"]
+INFO [src/common.rs:105] relay-servers=[]
+INFO [src/rendezvous_server.rs:xxx] 中继节点注册：wedesk.alsoapp.com:5188 region=- capacity=1000 conn=0 v=1.1.17
 ```
 
 - `rendezvous-servers=[]`：我们没有配多级 hbbs 集群，单节点，正常
 - `mask: None`：没配"哪些网段算内网"，因此 hbbs 无法判定连接来自 LAN，
   **它会把所有连接都当作外网处理**（影响的是"是否尝试内网直连"的判断，不影响连通性）
 - `local-ip: ""`：没指定对外宣告的 IP，用默认路由
-- `relay-servers=[...]`：**这一行是客户端拿到的中继地址**。它来自 `command` 里的 `-r`。
-  如果这里显示的不是客户端能访问到的地址，中继必然连不上
+- `relay-servers=[]`：**不再来自 `-r` 参数**（compose 已去掉）。这里是"当前参与
+  调度的中继列表"，启动时为空，等 hbbr 注册后由 `中继节点注册` 那行补上。
+  每台中继 60 秒上报一次，超过 210 秒没上报自动剔除
+- `中继节点注册：...`：一台 hbbr 刚登记成功。后面跟的是它自报的区域 / 容量 /
+  当前连接数 / 版本。多台中继就会有多行，`rrg` 命令可随时再看
 
 ```
 INFO [src/rendezvous_server.rs:181] Listening on tcp/udp [::]:5187
@@ -245,6 +275,11 @@ INFO [src/rendezvous_server.rs:223] Start
 
 > 这五层是"或"的关系：**高优先级为空才往下走**。
 > 所以如果员工在界面里手填过一次，那一台的默认值就被覆盖了 —— 批量部署时要注意。
+
+**中继地址不在这五层里**（2026-10-21 起）：客户端不再保存任何中继节点数据，
+设置界面的"ID/Relay Server"入口已移除，只保留代理设置。中继由 hbbs 维护 ——
+每台 hbbr 自动注册上报，P2P 打洞失败时 hbbs 按 权重 / 负载 / 时延 打分下发
+（见 2.2 节）。客户端仅在没有拿到服务端下发时，按"主端口+1"做最后兜底推导。
 
 ### 4.2 三步接入
 
@@ -467,6 +502,20 @@ cd server && python rdctl.py backup
 | `DB_URL` | SQLite 路径 |
 | `RUST_LOG` | 日志级别 |
 | `-k <KEY>` | 只允许携带相同 key 的客户端连接（额外的一道准入，默认不设） |
+
+**hbbr 的节点注册参数**（`src/relay_server.rs` 的 `register_loop()`）：
+
+| 环境变量 | 默认 | 作用 |
+|---|---|---|
+| `HBBS_HOST` | `127.0.0.1:5187` | 注册目标（compose 里是 `hbbs:5187`）。中继单独部署时改成 hbbs 机器的 IP |
+| `RELAY_PUBLIC_ADDR` | 空 | **客户端可达**的域名或 IP（不带端口）。**Docker 部署必须填**，否则 hbbs 登记到的是网桥地址 |
+| `RELAY_REGION` | 空 | 区域标签（如 `cn-north`），hbbs 打分时同区域优先 |
+| `RELAY_CAPACITY` | 0（=1000） | 声明的并发容量，越大负载惩罚越小 |
+
+注册是"上报即接入"：hbbs 每收到一次上报就把节点写进 `relay_nodes` 表并
+立即参与调度；超过 3 个周期（默认 210 秒）没再上报的节点自动剔除，
+下线不需要任何人工操作。hbbs 侧另有硬校验：环回 / 未指定地址会被拒绝登记
+并在 hbbr 日志里给出原因。
 
 > 这些值改完**立即生效**（重启容器后），不需要重新编译。
 > 打印在启动日志里，改完看一眼确认生效。

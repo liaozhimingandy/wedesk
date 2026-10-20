@@ -204,6 +204,33 @@ message RelaySelect {
   string session_token = 2;        // 回显 token，两端据此确认用同一调度
 }
 
+// --- 中继节点自动注册 -------------------------------------------------------
+// 多中继部署时，节点清单不再由客户端配置、也不靠运维在 hbbs 上写死 -r：
+// 每台 hbbr 启动后周期向 hbbs 上报自身信息，hbbs 落库 relay_nodes 表，
+// P2P 打洞失败时由 hbbs 统一打分调度。超过 3 个周期未上报的节点自动剔除。
+//
+// 地址口径：hbbr 优先用 RELAY_PUBLIC_ADDR（运维指定的客户端可达地址）；
+// 没配时 hbbs 用 TCP 连接看到的来源 IP —— Docker 网络下那是网桥地址，
+// 客户端连不上，所以部署时必须显式设置（见 docker-compose.yml 注释）。
+
+// hbbr → hbbs：本节点自注册 / 周期心跳
+message RelayRegister {
+  string host = 1;          // 对外可达主机名或 IP（不带端口）；为空 = 用 hbbs 看到的来源 IP
+  int32 port = 2;           // hbbr 监听端口（必填，hbbs 不猜）
+  string region = 3;        // 区域标签（如 cn-north / ap-southeast），可空
+  int32 capacity = 4;       // 声明的并发容量，0 = 用默认
+  int32 connections = 5;    // 当前连接数快照，供调度打分
+  string version = 6;       // hbbr 版本
+}
+
+// hbbs → hbbr：登记结果 + 建议的下次上报间隔
+message RelayRegisterResponse {
+  bool ok = 1;
+  int32 interval_sec = 2;   // 建议上报间隔（默认 60 秒）
+  string relay_server = 3;  // 回显 hbbs 认定的对外地址 host:port
+  string reason = 4;        // ok=false 时的原因（给运维看的）
+}
+
 message SoftwareUpdate { string url = 1; }
 
 // if in same intranet, punch hole won't work both for udp and tcp,
@@ -301,5 +328,7 @@ message RendezvousMessage {
     RelayProbeRequest relay_probe_request = 29;
     RelayProbeResult relay_probe_result = 30;
     RelaySelect relay_select = 31;
+    RelayRegister relay_register = 32;
+    RelayRegisterResponse relay_register_response = 33;
   }
 }

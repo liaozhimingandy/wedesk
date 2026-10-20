@@ -20,11 +20,11 @@
 #   - 想接外部库：填 DB_URL=postgres://user:pwd@host:5432/db 即可，脚本不会拉起本地 PG。
 #   - 想退回 SQLite：--db-type sqlite（此时不托管密钥、不落审计，与官方行为一致）。
 #
-# 典型分机部署：
+# 典型分机部署（中继节点自动向 hbbs 注册，无需在 hbbs 侧配 -r）：
 #   # A 机（ID 注册）：
-#   ./rdrun.sh hbbs --relay-host 203.0.113.10
-#   # B 机（中继）：
-#   ./rdrun.sh hbbr
+#   ./rdrun.sh hbbs
+#   # B 机（中继，向 A 机的 hbbs 自动注册）：
+#   ./rdrun.sh hbbr --relay-host 203.0.113.10 --hbbs-host 203.0.113.9:5187
 #
 # 完整文档：docs/13-server-deployment-handbook.md 第 3.5 节
 # =============================================================================
@@ -34,7 +34,10 @@ SELF="$(basename "$0")"
 
 # --- 默认值（会被同目录 .env 覆盖，再被命令行覆盖） -------------------------
 IMAGE="wedesk-server:latest"
-RELAY_HOST=""
+RELAY_HOST=""            # hbbr 对外注册的中继地址（客户端靠它连中继），不带端口
+HBBS_HOST=""             # hbbr 回连 hbbs 注册的地址；留空 = 按网络模式自动推导
+RELAY_REGION=""          # 可选：区域标签，客户端优先拿到同区域中继
+RELAY_CAPACITY=""        # 可选：声明的并发容量，0/空 = 用默认
 HBBS_PORT="5187"
 HBBS_NAT_PORT="5186"
 HBBR_PORT="5188"
@@ -85,7 +88,13 @@ $SELF —— 用 docker run 启动 wedesk 服务端（hbbs / hbbr），不依赖
 
 选项:
   --image <镜像>            默认 wedesk-server:latest（.env 的 RD_IMAGE 优先）
-  --relay-host <IP|域名>    客户端访问【中继】的地址。不填则自动探测本机 IP 并提醒确认
+  --relay-host <IP|域名>    hbbr 对外注册的中继地址（客户端访问中继用，不带端口）。
+                           hbbr 会把它连同端口自动上报给 hbbs，由 hbbs 调度下发。
+                           不填则自动探测本机 IP 并提醒确认
+  --hbbs-host <IP:端口>     hbbr 回连 hbbs 注册/心跳的地址。分机部署必填；
+                           留空 = 同机自动推导（bridge → rd-hbbs:5187，host → 127.0.0.1:5187）
+  --relay-region <标签>     中继节点区域标签（可选，调度时客户端优先同区域）
+  --relay-capacity <N>      中继节点声明的并发容量（可选，0/空 = 用默认）
   --hbbs-port <P>           hbbs 主端口，默认 5187
   --nat-port  <P-1>         NAT 探测端口，默认 = 主端口-1（源码硬编码，改了会拒绝启动）
   --hbbr-port <R>           hbbr 中继端口，默认 5188
@@ -109,8 +118,9 @@ $SELF —— 用 docker run 启动 wedesk 服务端（hbbs / hbbr），不依赖
 
 示例:
   $SELF both --relay-host 10.0.0.5            # 单机：注册 + 中继
-  $SELF hbbs --relay-host 203.0.113.10        # 分机：只做 ID 注册
-  $SELF hbbr                                  # 分机：只做中继
+  $SELF hbbs                                   # 分机：只做 ID 注册（中继节点自动注册上来）
+  $SELF hbbr --relay-host 203.0.113.10 --hbbs-host 203.0.113.9:5187
+                                                # 分机：只做中继，并自动向 A 机 hbbs 注册
   $SELF hbbr --hbbr-port 5188 --net host      # 中继机走宿主网络
   $SELF key                                   # 打印服务端公钥
 EOF
@@ -139,6 +149,9 @@ load_env() {
     case "$k" in
       RD_IMAGE)                 IMAGE="$v" ;;
       RELAY_HOST)               RELAY_HOST="$v" ;;
+      HBBS_HOST)                HBBS_HOST="$v" ;;
+      RELAY_REGION)             RELAY_REGION="$v" ;;
+      RELAY_CAPACITY)           RELAY_CAPACITY="$v" ;;
       HBBS_PORT)                HBBS_PORT="$v" ;;
       HBBS_NAT_PORT)            HBBS_NAT_PORT="$v" ;;
       HBBR_PORT)                HBBR_PORT="$v" ;;
@@ -385,11 +398,12 @@ start_hbbs() {
   if [ -n "$MAX_DATABASE_CONNECTIONS" ]; then
     cmd+=(-e "MAX_DATABASE_CONNECTIONS=$MAX_DATABASE_CONNECTIONS")
   fi
-  # -r 必须带端口：不带的话 hbbs 会按默认的 21117 拼给客户端，
-  # 表现为"能注册、连不上桌面"。多个中继用逗号分隔：1.2.3.4:5188,5.6.7.8:5188
-  cmd+=("$IMAGE" hbbs -p "$HBBS_PORT" -r "$RELAY_HOST:$HBBR_PORT")
+  # 中继节点不再用 -r 静态指定：hbbr 起来后会通过 RelayRegister（proto 32）
+  # 自动向 hbbs 注册，hbbs 维护节点表并在 P2P 失败时调度下发。
+  # 静态 -r 仅剩一个用途：hbbr 还没起来/注册不上时的兜底，逗号分隔多个地址。
+  cmd+=("$IMAGE" hbbs -p "$HBBS_PORT")
 
-  info "启动 hbbs（ID 注册） 端口 TCP $HBBS_NAT_PORT/$HBBS_PORT + UDP $HBBS_PORT，中继指向 $RELAY_HOST:$HBBR_PORT"
+  info "启动 hbbs（ID 注册） 端口 TCP $HBBS_NAT_PORT/$HBBS_PORT + UDP $HBBS_PORT；中继节点由 hbbr 自动注册"
   run_or_print "${cmd[@]}"
 }
 
@@ -415,9 +429,30 @@ start_hbbr() {
   cmd+=(-e "RUST_LOG=$RUST_LOG")
   # 注意这里是命令行 -p，不是环境变量 PORT：hbbr 源码里环境变量 PORT 会被 +1 再用，
   # 写成 PORT=5188 它会去监听 5189，正好撞上 hbbs 的 WebSocket 端口。
+  # 注册三件套：HBBS_HOST 指向 ID 注册服务器；RELAY_PUBLIC_ADDR 是【客户端】访问
+  # 中继的地址（bridge 模式下填宿主 IP/域名，不能填容器名，否则调度下发也用不了）。
+  # 分机部署时用 --hbbs-host 指定 A 机地址，如 203.0.113.9:5187。
+  local hbbs_host="$HBBS_HOST"
+  if [ -z "$hbbs_host" ]; then
+    if [ "$NET_MODE" = "host" ]; then
+      hbbs_host="127.0.0.1:$HBBS_PORT"
+    else
+      hbbs_host="rd-hbbs:$HBBS_PORT"   # 同 compose 网络内的服务名
+      warn "未指定 --hbbs-host，按同机部署推导为 $hbbs_host。若 hbbs 在另一台机器，请用 --hbbs-host <IP:5187> 指定。"
+    fi
+  fi
+  # 用户可能写成 host:port，注册协议只要主机部分（端口用 hbbr 实际监听端口）
+  cmd+=(-e "HBBS_HOST=$hbbs_host")
+  cmd+=(-e "RELAY_PUBLIC_ADDR=${RELAY_HOST%%:*}")
+  if [ -n "$RELAY_REGION" ]; then
+    cmd+=(-e "RELAY_REGION=$RELAY_REGION")
+  fi
+  if [ -n "$RELAY_CAPACITY" ]; then
+    cmd+=(-e "RELAY_CAPACITY=$RELAY_CAPACITY")
+  fi
   cmd+=("$IMAGE" hbbr -p "$HBBR_PORT")
 
-  info "启动 hbbr（中继） 端口 TCP $HBBR_PORT"
+  info "启动 hbbr（中继） 端口 TCP $HBBR_PORT；向 $hbbs_host 自动注册，对外地址 ${RELAY_HOST%%:*}:$HBBR_PORT"
   run_or_print "${cmd[@]}"
 }
 
@@ -502,6 +537,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --image)                   IMAGE="${2:?--image 需要一个值}"; shift 2 ;;
     --relay-host)              RELAY_HOST="${2:?--relay-host 需要一个值}"; shift 2 ;;
+    --hbbs-host)               HBBS_HOST="${2:?--hbbs-host 需要一个值}"; shift 2 ;;
+    --relay-region)            RELAY_REGION="${2:?--relay-region 需要一个值}"; shift 2 ;;
+    --relay-capacity)          RELAY_CAPACITY="${2:?--relay-capacity 需要一个值}"; shift 2 ;;
     --hbbs-port)               HBBS_PORT="${2:?--hbbs-port 需要一个值}"; shift 2 ;;
     --nat-port)                HBBS_NAT_PORT="${2:?--nat-port 需要一个值}"; shift 2 ;;
     --hbbr-port)               HBBR_PORT="${2:?--hbbr-port 需要一个值}"; shift 2 ;;
@@ -542,20 +580,25 @@ case "$(uname -s 2>/dev/null)" in
     ;;
 esac
 
-# RELAY_HOST 决定客户端去哪找中继，是最容易填错的一个值：
-# 填 127.0.0.1 的话，客户端会拿"自己的 127.0.0.1"当中继地址 —— 本机自测能连，
-# 别的机器一律连不上。没填就探测本机 IP，并明确要求确认。
-if [ -z "$RELAY_HOST" ]; then
-  RELAY_HOST="$(detect_ip)"
-  if [ -n "$RELAY_HOST" ]; then
-    warn "未指定 --relay-host，已探测到本机 IP：${RELAY_HOST}。请确认这是【客户端能访问到】的地址，否则改用 --relay-host <IP|域名>。"
-  else
-    die "无法自动探测本机 IP，请用 --relay-host <IP|域名> 指定客户端访问【中继】的地址。"
-  fi
-fi
-case "$RELAY_HOST" in
-  127.0.0.1|localhost|0.0.0.0)
-    warn "RELAY_HOST=$RELAY_HOST：客户端会把中继地址解析成它自己，除本机外全都连不上。多机部署请填这台机器的实际 IP/域名。"
+# RELAY_HOST 是 hbbr 注册给 hbbs 的【对外中继地址】，是最容易填错的一个值：
+# 填 127.0.0.1 的话，hbbs 会把"127.0.0.1"当中继地址调度给客户端 —— 本机自测能连，
+# 别的机器一律连不上。只有跑 hbbr/both 时才需要；纯 hbbs 机器不再依赖它
+# （中继节点由 hbbr 自动注册，见 docs/11-server-ops.md 2.2）。
+case "$ACTION" in
+  hbbr|both)
+    if [ -z "$RELAY_HOST" ]; then
+      RELAY_HOST="$(detect_ip)"
+      if [ -n "$RELAY_HOST" ]; then
+        warn "未指定 --relay-host，已探测到本机 IP：${RELAY_HOST}。请确认这是【客户端能访问到】的地址，否则改用 --relay-host <IP|域名>。"
+      else
+        die "无法自动探测本机 IP，请用 --relay-host <IP|域名> 指定客户端访问【中继】的地址。"
+      fi
+    fi
+    case "$RELAY_HOST" in
+      127.0.0.1|localhost|0.0.0.0)
+        warn "RELAY_HOST=$RELAY_HOST：hbbs 会把中继地址调度成客户端自己，除本机外全都连不上。多机部署请填这台机器的实际 IP/域名。"
+        ;;
+    esac
     ;;
 esac
 

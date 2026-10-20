@@ -22,7 +22,7 @@ git clone <你的仓库> && cd wedesk/server/deploy
 
 # 2. 配置
 copy .env.example .env        # Windows；Linux/macOS 用 cp
-#    编辑 .env：把 RELAY_HOST 改成这台服务器的内网 IP 或域名
+#    编辑 .env：把 RELAY_HOST 改成这台服务器的内网 IP 或域名（hbbr 注册用）
 
 # 3. 启动（首次自动从源码构建镜像，约 15-25 分钟）
 python rdctl.py start
@@ -241,12 +241,29 @@ flowchart LR
 
 ### 2.6 中继调度：多节点选择与混合探测
 
-`-r` 支持逗号分隔多个中继，但上游原实现是**简单轮询**（`ROTATION_RELAY_SERVER` 取模），
-只知道"活着"、不知道"好不好"——多个中继里挑一个，跨地域部署时经常命中"能连但很慢"的那个。
+中继节点清单有两个来源：**hbbr 自动注册**（默认，推荐）与静态 `-r` 参数（兼容旧部署）。
+两者进入同一套优选流程，对调度完全透明。
 
-wedesk 把它换成了**带权优选**，并在协议里预留了"两端探测 → BOW 打分"的闭环。
+#### 节点来源：hbbr 自动注册
 
-#### v1：服务端优选（默认生效，不需要客户端配合）
+每台 hbbr 启动后每 60 秒向 hbbs 上报一次（`RelayRegister`，协议 oneof 32）：
+
+```
+hbbr --(host/port/region/capacity/connections/version)--> hbbs
+hbbs --(ok / interval_sec / 认定的对外地址)--> hbbr
+```
+
+- hbbs 收登记后立即把节点并入调度列表，并落库 `relay_nodes` 表；
+- **超过 210 秒（3 个周期）没再上报的节点自动剔除**——下线不需要人工操作；
+- hbbr 侧只需要一个变量：`RELAY_PUBLIC_ADDR=<客户端可达的域名或IP>`
+  （Docker 网络下 hbbs 看到的来源 IP 是网桥地址，不可用）；
+- 环回 / 未指定地址会被 hbbs **拒绝登记**并在 hbbr 日志里说明原因；
+- `region` / `capacity` 随注册上报，省掉手工打标；`connections` 是实时快照，
+  让负载惩罚真正参与打分（v1 静态 `-r` 场景下它恒为 0）。
+
+控制台查看：`relay-registered`（简写 `rrg`）列出当前在线的注册节点。
+
+#### 优选：带权打分（默认生效，不需要客户端配合）
 
 hbbs 每 3 秒（`CHECK_RELAY_TIMEOUT`）探测一次每个中继：
 
@@ -279,6 +296,10 @@ relay-health                                        # 打印内存缓存（实�
 "两端并行探测 → 上报 → 敲定唯一公共中继"的三个消息已经落进 `rendezvous.proto`
 （`RelayProbeRequest` / `RelayProbeResult` / `RelaySelect`，oneof 编号 29/30/31），
 hbbs 侧的会话状态机与 BOW 打分也已实现，但**客户端的 UDP 探测还没做**，故默认关闭：
+
+> 已落地的注册消息：`RelayRegister` / `RelayRegisterResponse`（oneof 32/33），
+> 仅 hbbr ↔ hbbs 之间使用，不涉及客户端，因此没有兼容性负担 ——
+> 旧版 hbbr 只是不注册，行为退回 `-r` 静态配置。
 
 ```mermaid
 sequenceDiagram
@@ -427,7 +448,10 @@ docker compose up -d                           # 启动（含 PostgreSQL，默�
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `RELAY_HOST` | `127.0.0.1` | **必须改成实际 IP/域名**。客户端靠它找中继；`rdctl.py doctor` 会对 localhost 告警 |
+| `RELAY_HOST` | `127.0.0.1` | **必须改成实际 IP/域名**。它经 `RELAY_PUBLIC_ADDR` 传给 hbbr 做节点注册；`rdctl.py doctor` 会对 localhost 告警 |
+| `RELAY_PUBLIC_ADDR` | 空（= 沿用 `RELAY_HOST`） | hbbr 注册时自报的**客户端可达地址**。Docker 部署必须填，否则 hbbs 登记到网桥地址 |
+| `HBBS_HOST` | `hbbs:5187` | hbbr 的注册目标。中继单独一台机器时改成 hbbs 那台的 IP |
+| `RELAY_REGION` / `RELAY_CAPACITY` | 空 | 可选：区域标签 / 并发容量，用于 hbbs 打分 |
 | `ALWAYS_USE_RELAY` | `N` | `N`=优先 P2P（内网推荐）；`Y`=强制中继（跨公网提高连通率，全部吃服务器出网带宽） |
 | `RUST_LOG` | `warn` | `error`/`warn`/`info`/`debug`/`trace`。默认 `warn` 是刻意的：info 下每次注册/心跳都落一行，长期运行磁盘写入可观。排障临时调高，**调完记得调回** |
 | `RD_IMAGE` | 注释（= 本地构建） | 有值就直接用/拉那个镜像。`liaozhiming/wedesk-server:latest` = CI 推的远端镜像；`rustdesk/rustdesk-server:latest` = 官方镜像（**失去本地化补丁，且不认 `DB_TYPE`**） |
@@ -486,7 +510,8 @@ iptables -I INPUT -p tcp --dport 5190 -j ACCEPT
 中继带宽吃紧时，把 hbbr 单独搬到带宽更好的机器：
 
 1. A 机跑 hbbs（含 `data/`），B 机跑 hbbr；
-2. A 机 `.env`：`RELAY_HOST=<B 机 IP>`（客户端被指到 B 机走中继）；
+2. A 机 `.env`：`RELAY_HOST=<A 机对外 IP/域名>`（hbbr 注册用）；
+   B 机 `docker run` hbbr 时带 `-e HBBS_HOST=<A机IP>:5187 -e RELAY_PUBLIC_ADDR=<B机IP>`；
 3. hbbs 侧设 `ENFORCED_RELAY=N`（允许中继到非本机地址）；
 4. 防火墙：A 机放行 5186/5187（TCP+UDP），B 机放行 5188。
 
@@ -547,10 +572,11 @@ flowchart LR
 
     C1 -- "① 注册 / 心跳 / 打洞协调<br/>UDP 5187 + TCP 5186" --> H
     C2 -- "① 注册 / 心跳 / 打洞协调" --> H
-    H -. "② 用 -r 把中继地址告诉客户端<br/>只告知，不转发数据" .-> C1
-    H -. "② 同上" .-> C2
-    C1 -- "③ 打洞失败时走中继<br/>TCP 5188" --> R
-    C2 -- "③ 中继数据" --> R
+    H -. "② hbbr 自动注册上报（60s）<br/>hbbs 维护 relay_nodes 表" .-> R
+    H -. "③ 打洞失败时下发最优中继<br/>只告知，不转发数据" .-> C1
+    H -. "③ 同上" .-> C2
+    C1 -- "④ 打洞失败时走中继<br/>TCP 5188" --> R
+    C2 -- "④ 中继数据" --> R
     C1 <-. "P2P 直连：优先，不经过任何服务器" .-> C2
 ```
 
@@ -558,9 +584,12 @@ flowchart LR
 
 | 规则 | 含义 |
 |---|---|
-| hbbr **不需要知道** hbbs 在哪 | 它只转发数据，不查 ID、不鉴权，配置里没有任何 hbbs 的地址 |
-| hbbs **必须知道** hbbr 的对外地址 | 就是 `hbbs -r <IP>:<端口>`；客户端靠这一句才知道去哪中继 |
+| hbbr **只需要知道** hbbs 在哪 | `HBBS_HOST=<A机IP>:5187`，用于自动注册上报节点信息 |
+| hbbs **不需要**再用 `-r` 写死中继地址 | 节点由 hbbr 自动注册（60s 一次），hbbs 维护 `relay_nodes` 表并统一调度 |
 | 客户端必须**同时能访问**两台机器 | hbbs 的 5186/5187（TCP+UDP）**和** hbbr 的 5188，缺一个就"能注册但连不上桌面" |
+
+> 静态 `-r` 仍然支持（兼容旧部署与"临时指定一台中继"的场景），但 **compose 已不再使用它**。
+> 两条链路并存时共用同一套健康检查与打分，`-r` 的节点与自动注册的节点对调度完全透明。
 
 #### 3.5.1 准备镜像（两种来源，二选一）
 
@@ -596,9 +625,9 @@ docker run -d --name rd-hbbs --restart unless-stopped \
   -e DB_TYPE=postgres -e DB_URL=postgres://rustdesk:changeme@postgres:5432/rustdesk \
   -e RUST_LOG=warn \
   wedesk-server:latest \
-  hbbs -p 5187 -r <这台机器的IP>:5188
+  hbbs -p 5187
 
-# 2) 中继服务器
+# 2) 中继服务器（同一台机器；HBBS_HOST 默认就是 hbbs:5187，这里显式写出来）
 docker run -d --name rd-hbbr --restart unless-stopped \
   --network rd-net \
   -p 5188:5188/tcp -p 5190:5190/tcp \
@@ -606,6 +635,8 @@ docker run -d --name rd-hbbr --restart unless-stopped \
   --memory 512m --cpus 1.00 --pids-limit 256 \
   --log-opt max-size=10m --log-opt max-file=3 \
   -e RUST_LOG=warn \
+  -e HBBS_HOST=hbbs:5187 \
+  -e RELAY_PUBLIC_ADDR=<客户端可达的域名或IP> \
   wedesk-server:latest \
   hbbr -p 5188
 
@@ -613,12 +644,13 @@ docker run -d --name rd-hbbr --restart unless-stopped \
 docker exec rd-hbbs cat /root/id_ed25519.pub
 ```
 
-`<这台机器的IP>` 必须换成客户端能访问到的地址。填 `127.0.0.1` 的话，
-客户端会把"它自己的 127.0.0.1"当中继——只有服务器本机自测能连，别的一律失败。
+`RELAY_PUBLIC_ADDR` 必须换成客户端能访问到的地址（域名或 IP，**不带端口**）。
+留空的话 hbbs 只能按连接来源 IP 登记 —— Docker 网络下那是网桥地址，
+客户端连不到，中继退化成立即失败再回退 P2P。
 
 #### 3.5.3 只跑 ID 注册服务器（hbbs）
 
-分机时 A 机只跑这一条，中继地址填 **B 机的 IP**：
+分机时 A 机只跑这一条，中继由 B 机的 hbbr 自动注册上来：
 
 ```bash
 docker run -d --name rd-hbbs --restart unless-stopped \
@@ -629,7 +661,7 @@ docker run -d --name rd-hbbs --restart unless-stopped \
   -e DB_TYPE=postgres -e DB_URL=postgres://rustdesk:changeme@postgres:5432/rustdesk \
   -e RUST_LOG=warn \
   wedesk-server:latest \
-  hbbs -p 5187 -r 203.0.113.10:5188     # ← B 机（hbbr）的地址
+  hbbs -p 5187
 ```
 
 要点：
@@ -641,12 +673,12 @@ docker run -d --name rd-hbbs --restart unless-stopped \
 - 默认就是 PG 后端，hbbs 会自动连内置容器；接外部库时才需要显式指定
   `DB_URL=postgres://user:pwd@host:5432/db`（见 3.4 场景 D）；
   并建议带 `-e DB_CONNECT_RETRIES=10`（hbbs 可能先于 PG 就绪）；
-- 想接多台中继：`-r` 支持逗号分隔，`-r 1.1.1.1:5188,2.2.2.2:5188`
-  （源码里 `relay-servers` 的解析就是按逗号切的）。
+- 想看中继节点注册上来了没（控制台只收环回来源，端口映射下要进容器）：
+  `docker compose exec -T rd-hbbs sh -c 'echo rrg | nc 127.0.0.1 5187'`。
 
 #### 3.5.4 只跑中继服务器（hbbr）
 
-分机时 B 机只跑这一条，**不需要任何关于 hbbs 的配置**：
+分机时 B 机只跑这一条，**只需要知道 hbbs 在哪**：
 
 ```bash
 docker run -d --name rd-hbbr --restart unless-stopped \
@@ -654,6 +686,9 @@ docker run -d --name rd-hbbr --restart unless-stopped \
   -v /srv/wedesk/data:/root \
   --memory 512m --cpus 1.00 \
   -e RUST_LOG=warn \
+  -e HBBS_HOST=<A机IP>:5187 \
+  -e RELAY_PUBLIC_ADDR=<B机客户端可达的IP或域名> \
+  -e RELAY_REGION=<区域标签，可省> \
   wedesk-server:latest \
   hbbr -p 5188
 ```
@@ -661,13 +696,17 @@ docker run -d --name rd-hbbr --restart unless-stopped \
 要点：
 
 - 放行 **5188（TCP）**，需要 WebSocket 中继再加 **5190（TCP）**；hbbr 只在
-  "名单持久化"一件事上用数据库（配了 `DB_TYPE`/`DB_URL` 才连，
+  "名单持久化"与"节点注册"两件事上用数据库（配了 `DB_TYPE`/`DB_URL` 才连，
   连不上就退回文件模式继续转发），那个 `-v` 只为与 compose 行为一致
   （密钥目录同源）；
 - 端口用**命令行 `-p`**，不要用环境变量 `PORT`——源码里环境变量 `PORT`
   会被 +1 之后再使用，写 `PORT=5188` 它去监听 5189，正好撞上 hbbs 的 WebSocket 端口；
-- 中继压力大的时候就**再加一台跑同样的命令**，然后把新 IP 追加进 hbbs 的 `-r`
-  列表（逗号分隔）。hbbs 会按实时时延 / 存活 / 权重挑最优的发给两端
+- `RELAY_PUBLIC_ADDR` 是**唯一必填**的新变量：它是客户端视角的本机地址。
+  填错 / 不填的表现是中继"注册了但连不上"——hbbr 日志里
+  `中继节点已注册：<地址>` 那行会把它实际登记的地址打出来，拿它对照一下就知道；
+- 中继压力大的时候就**再加一台跑同样的命令**（改 `RELAY_PUBLIC_ADDR` 即可），
+  无需改 hbbs 任何配置 —— hbbs 按实时时延 / 存活 / 权重挑最优的发给两端，
+  超过 210 秒没上报的节点自动剔除
   （不是客户端依次试），这是本方案最简单的横向扩容方式，详见 2.6 节；
 - hbbr 的瓶颈是**出网带宽**不是内存，加内存不会更快，该盯的是带宽与并发路数。
 
@@ -762,7 +801,7 @@ docker rm -f rd-hbbs rd-hbbr                   # 只删容器，数据目录不�
 □ 从客户端所在网络（不是服务器本机）能连上 5187：
     Test-NetConnection -ComputerName <IP> -Port 5187
 □ hbbs 启动日志有 "服务端私钥来自文件"（说明密钥是复用不是新生成）
-□ relay-servers=[<RELAY_HOST>:5188] 是客户端能访问到的地址
+□ hbbs 日志有「中继节点注册：<地址>:5188」，且该地址客户端能访问（`echo rrg \| nc 127.0.0.1 5187`）
 □ 备份已进计划任务（crontab / 任务计划程序），异地存一份
 
 客户端
@@ -859,7 +898,7 @@ hbbr 出网带宽（持续打满 → 大量走中继，查 `ALWAYS_USE_RELAY`）
 
 ```bash
 docker ps                  # Docker 在跑吗
-cat .env                   # RELAY_HOST 填了吗
+cat .env                   # RELAY_HOST / RELAY_PUBLIC_ADDR 填了吗
 python rdctl.py logs       # 容器日志
 ```
 
@@ -911,8 +950,9 @@ compose 路线同理：`rdctl.py build --no-cache && rdctl.py restart`。
 
 走 [3.5 用 docker run 启动](#35-用-docker-run-启动hbbs--hbbr-可分离部署)：
 两条 `docker run` 各自独立，或用 `rdrun.sh hbbs` / `rdrun.sh hbbr`。
-分机时记住：hbbr **不需要**知道 hbbs 在哪，hbbs **必须**用 `-r <中继IP>:5188`
-告诉客户端去哪中继，客户端**同时**要能访问两台机器。
+分机时记住：hbbr 用 `HBBS_HOST=<A机IP>:5187` 找到 hbbs 并自动注册，
+`RELAY_PUBLIC_ADDR=<B机IP>` 告诉 hbbs"客户端怎么找到我"；
+客户端**同时**要能访问两台机器（A 机 5186/5187，B 机 5188）。
 
 **Q：分机部署各要放行哪些端口**
 
@@ -923,8 +963,12 @@ compose 路线同理：`rdctl.py build --no-cache && rdctl.py restart`。
 
 **Q：能加多台中继分担压力吗**
 
-能。再找台机器跑一条同样的 `hbbr` 命令，然后把新地址**追加**到 hbbs 的 `-r`
-列表里（逗号分隔）：`hbbs -p 5187 -r 1.1.1.1:5188,2.2.2.2:5188`。
+能，而且现在**不用改 hbbs 任何配置**：再找台机器跑一条同样的 `hbbr` 命令
+（带上它自己的 `RELAY_PUBLIC_ADDR`），它会在 60 秒内自动注册到 hbbs 并
+立即参与调度。想下线就停掉容器 —— 超过 210 秒没上报，hbbs 自动把它剔除。
+
+（旧的 `-r a:5188,b:5188` 逗号列表仍然有效，用于"临时固定一台中继"或
+兼容还没升级的部署；两种来源共用同一套健康检查与打分。）
 
 **hbbs 会自己做优选，不再是"客户端依次试"**：它每 3 秒探测一次每个中继，
 记录 RTT 与存活状态，然后按 `weight - 负载惩罚 - 时延惩罚` 挑最优的那个
@@ -936,12 +980,14 @@ relay-set-meta 2.2.2.2:5188 cn-west 80 500    # region / weight / capacity
 relay-list                                    # 看每个中继的实时时延与存活
 ```
 
-注意两点：
+注意三点：
 
 - **它不是四层负载均衡**：hbbr 之间没有流量调度，hbbs 只是"挑一个告诉两端"。
   真正的按连接数分摊要自己在前面放四层代理；
-- **`connections` 在 v1 恒为 0**（hbbs 没有 hbbr 的连接数上报通道），
-  所以负载惩罚在 v1 实际不参与打分，选优主要靠时延与存活。
+- **静态 `-r` 节点没有 connections 上报**，负载惩罚对它们不参与打分，
+  选优主要靠时延与存活；自动注册的节点两项都参与；
+- 想手工干预某个中继优先级，用 `relay-set-meta` 打标（会覆盖注册上报的值，
+  下次注册上报再同步刷新 region / capacity）。
 
 **Q：端口都放行了，客户端还是连不上**
 

@@ -306,8 +306,9 @@ docker run ... \
 | 优先级 | 来源 | 说明 |
 |---|---|---|
 | 1 | `-k <base64私钥>` | 命令行显式指定，仅本次生效，不落盘 |
-| 2 | `KEY_FILE` 环境变量 | 显式指定任意容器内路径 |
+| 2 | `KEY_FILE` 环境变量 | 显式指定任意容器内路径（文件或目录） |
 | 3 | `/run/secrets/id_ed25519` | docker secrets 标准挂载点 |
+| 3' | `/run/secrets/` 目录扫描 | 挂载名**不必叫 id_ed25519**：目录内任何"base64 解出 64 字节"的文件都认作私钥（按文件名排序取首个，如 `id`、`wedesk.key` 均可） |
 | 4 | `./data/id_ed25519`（工作目录） | 上游行为，首次启动自动生成 |
 | 5 | 旧库一次性迁移 | `server_config` 里还留着旧版托管的私钥时，自动写回文件并**删除库中该行** |
 | 6 | 就地生成 | 以上都没有，只写文件（与上游一致） |
@@ -419,7 +420,7 @@ docker compose up -d                           # 启动（含 PostgreSQL，默�
 | `MAX_DATABASE_CONNECTIONS` | 留空 | **刻意留空**：留空则 sqlite→1、postgres→8 各用合理默认；写死会迫使 SQLite 路径也用它，更容易撞 `database is locked` |
 | `DB_CONNECT_RETRIES` | 留空（=10） | 仅 postgres 生效。容器并发启动时 hbbs 常先于 PG 可用，不重试会 CrashLoop。设 1 恢复"立刻失败" |
 | `PG_IMAGE` / `PG_DB` / `PG_USER` / `PG_PASSWORD` | `postgres:16-alpine` / `rustdesk` / `rustdesk` / `changeme` | 默认生效（Postgres 容器随服务一起起）。**`PG_PASSWORD` 生产必须改** |
-| `KEY_FILE` | 留空 | 显式指定私钥文件路径（容器内）。留空则按 `KEY_FILE → /run/secrets/id_ed25519 → ./data/id_ed25519` 顺序自动探测，见 2.7 |
+| `KEY_FILE` | 留空 | 显式指定私钥路径（容器内，文件或目录）。留空则按 `KEY_FILE → /run/secrets/id_ed25519 → /run/secrets/ 目录扫描 → ./data/id_ed25519` 顺序自动探测，目录内文件名不限（内容合法即可），见 2.7 |
 | `HBBS_HEALTH_PORT` / `HBBR_HEALTH_PORT` | `5191` / `5192` | 健康检查 HTTP 端口（2.8 节），compose healthcheck 与外部监控都用它；设 0 关闭 |
 | `AUDIT_LOG` / `AUDIT_FLUSH_SECS` / `AUDIT_MAX_BUFFER` | `Y` / `5` / `20000` | 连接审计开关 / 刷盘间隔（秒）/ 缓冲上限 |
 | `RELAY_PROBE` | `0` | 混合探测开关（2.6 节）。`1` = hbbs 下发候选中继让两端 UDP 探测并回传。**需客户端支持，当前默认关闭**；设 0 时按服务端优选直接下发中继，旧客户端安全 |
@@ -997,6 +998,21 @@ hbbs 先于 PG 可用。默认 10 次 × 3 秒自动重试（`DB_CONNECT_RETRIES
 所有实例读同一把私钥，客户端拿到的服务端公钥始终一致。
 2026-10-20 前的老版本靠 `server_config` 表共享；新版启动时会把库里的
 私钥自动迁出成文件并删除该行——**不要再依赖数据库共享密钥**。
+
+**Q：我 docker run 跑的是 hbbr，为什么日志提示要配 PostgreSQL**
+
+镜像的默认命令是 **hbbs**（`CMD ["hbbs"]`）——`docker run` 结尾不带命令
+时启动的是 hbbs，它需要数据库，日志会出现
+`DB_URL 未设置，按 PG_* 推导为 …` / `DB_TYPE=postgres，但 DB_URL 不是
+Postgres 连接串…` 之类的提示。跑中继必须在命令**末尾显式写 hbbr**：
+
+```bash
+docker run ... <镜像> hbbr -p 5188
+```
+
+反过来验证：hbbr（中继）**完全不碰数据库**，就算给它挂上 `DB_*`/`PG_*`
+配置也只会打一行"hbbr 不使用数据库，忽略配置"的 info 然后正常跑。如果你
+在一个容器里同时看到数据库提示，那它跑的一定是 hbbs，不是 hbbr。
 
 **Q：`connection_log` 会一直涨吗**
 

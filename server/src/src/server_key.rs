@@ -16,11 +16,13 @@
 //
 //   docker run ... -v /d/Git/secrets/id_ed25519:/run/secrets/id_ed25519:ro
 //
-// 解析顺序（先命中先用）
-// ----------------------
+// 解析顺序（先命中先用；路径可以是文件，也可以是目录）
+// ------------------------------------------------------
 //   1. 命令行 `-k/--key` 给的 64 字节私钥 —— 最高优先级（不落盘，仅本次生效）。
-//   2. `KEY_FILE` 环境变量指定的私钥文件（显式声明，如 /run/secrets/id_ed25519）。
-//   3. docker secrets 约定路径 `/run/secrets/id_ed25519`（标准挂载点）。
+//   2. `KEY_FILE` 环境变量指定的路径（文件；目录则扫描其中内容合法的文件）。
+//   3. docker secrets 约定路径 `/run/secrets/id_ed25519`（标准挂载点），
+//      随后整个 `/run/secrets` 目录 —— 目录内**任何**"base64 解出 64 字节"
+//      的文件都认作私钥（按文件名排序取首个），挂载时不必改名成 id_ed25519。
 //   4. 工作目录 `id_ed25519`（上游行为，兼容既有部署）。
 //   5. 旧版数据库托管的一次性迁移：库里还有私钥 → 写回工作目录文件，
 //      随即**把密钥行从库里删除**。多实例共享请改用统一挂载同一 secret 文件。
@@ -111,10 +113,10 @@ pub async fn resolve(key_arg: &str, db: &Database) -> ResultType<ServerKey> {
     // 是否把找到的公钥写回 key（"" 时不写，"-" / "_" 时写）
     let want_pk_as_license = !key.is_empty();
 
-    // ---- 2/3/4) 依次尝试候选私钥文件 -------------------------------------
+    // ---- 2/3/4) 依次尝试候选私钥路径（文件或目录） ------------------------
     for candidate in candidate_key_files() {
-        if let Some(secret) = load_sk_from_path(&candidate) {
-            log::info!("服务端私钥来自文件 {}", candidate.display());
+        if let Some((file, secret)) = load_sk_from_path(&candidate) {
+            log::info!("服务端私钥来自文件 {}", file.display());
             return Ok(ServerKey {
                 pk: if want_pk_as_license {
                     base64::encode(secret.public_key())
@@ -170,10 +172,13 @@ pub async fn resolve(key_arg: &str, db: &Database) -> ResultType<ServerKey> {
     })
 }
 
-/// 候选私钥文件，按优先级返回（存在性由调用方逐个尝试）。
-/// 1. `KEY_FILE` 环境变量指定的路径
+/// 候选私钥路径，按优先级返回（存在性由调用方逐个尝试）。
+/// 路径可以是**文件或目录**：
+/// 1. `KEY_FILE` 环境变量（文件或目录，目录则扫描其中内容合法的文件）
 /// 2. docker secrets 约定路径 `/run/secrets/id_ed25519`
-/// 3. 工作目录 `id_ed25519`（上游行为）
+/// 3. `/run/secrets` 目录本身 —— 挂载时**不必改名成 id_ed25519**，
+///    目录内任何"base64 解出 64 字节"的文件都会被认作私钥（按文件名排序取首个）
+/// 4. 工作目录 `id_ed25519`（上游行为）
 fn candidate_key_files() -> Vec<std::path::PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(path) = std::env::var(KEY_FILE_ENV) {
@@ -184,12 +189,35 @@ fn candidate_key_files() -> Vec<std::path::PathBuf> {
     }
     candidates.push(std::path::Path::new(DOCKER_SECRET_DIR)
         .join(PRIVATE_KEY_FILE));
+    candidates.push(std::path::PathBuf::from(DOCKER_SECRET_DIR));
     candidates.push(std::path::PathBuf::from(PRIVATE_KEY_FILE));
     candidates
 }
 
-/// 从指定路径读私钥；不存在或不可解析返回 None。
-fn load_sk_from_path(path: &std::path::Path) -> Option<sign::SecretKey> {
+/// 从路径加载私钥；不存在或不可解析返回 None。
+/// 目录会被展开：按文件名排序逐个尝试，第一个内容合法（base64 → 64 字节）的
+/// 文件胜出。这样挂载成 `/run/secrets/id`、`/run/secrets/wedesk.key` 等
+/// 任意名字都能识别，不必拘泥于 `id_ed25519` 这个文件名。
+fn load_sk_from_path(path: &std::path::Path) -> Option<(std::path::PathBuf, sign::SecretKey)> {
+    if path.is_dir() {
+        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(path)
+            .ok()?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_file())
+            .collect();
+        entries.sort();
+        for p in entries {
+            if let Some(secret) = load_sk_from_file(&p) {
+                return Some((p, secret));
+            }
+        }
+        return None;
+    }
+    load_sk_from_file(path).map(|secret| (path.to_path_buf(), secret))
+}
+
+/// 从单个文件读私钥；不存在或不可解析返回 None。
+fn load_sk_from_file(path: &std::path::Path) -> Option<sign::SecretKey> {
     let contents = std::fs::read_to_string(path).ok()?;
     let raw = base64::decode(contents.trim()).ok()?;
     // sodiumoxide 的 from_slice 返回 Option（长度不符时为 None），

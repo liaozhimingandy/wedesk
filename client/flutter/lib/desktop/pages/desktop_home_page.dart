@@ -284,17 +284,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           },
         ),
       buildTip(context),
-      FutureBuilder<Widget>(
-        future: Future.value(
-            Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
-        builder: (_, data) {
-          if (data.hasData) {
-            return data.data!;
-          } else {
-            return const Offstage();
-          }
-        },
-      ),
+      // 普通(非 incoming-only)桌面路径直接用 Obx 渲染帮助卡。上游的
+      // FutureBuilder(Future.value(Obx(...))) 只为 incoming-only 窗口在
+      // 拿到数据后重新测量尺寸服务；在这里每次 rebuild 都新建 Future 并
+      // 反复挂/卸 GetX Obx，纯属风险源。
+      Obx(() => buildHelpCards(stateGlobal.updateUrl.value)),
     ];
   }
 

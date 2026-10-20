@@ -266,7 +266,7 @@ derive_db() {
   fi
   case "$PG_PASSWORD" in
     ""|changeme|postgres|rustdesk|password|123456)
-      warn "PG_PASSWORD 还是弱口令（'$PG_PASSWORD'）。密钥也托管在这个库里，等于把服务端私钥的访问权限交了出去 —— 生产环境必须改掉。"
+      warn "PG_PASSWORD 还是弱口令（'$PG_PASSWORD'）。这个库里存着全部设备台账与连接审计，弱口令等于把数据交出去 —— 生产环境必须改掉。（密钥自 2.7 节改造后已不进库）"
       ;;
   esac
 }

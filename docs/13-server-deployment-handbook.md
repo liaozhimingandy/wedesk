@@ -156,7 +156,7 @@ server/data/
 ├── id_ed25519        # 私钥 —— 重启不重新生成；丢了 = 重新生成 + 重新注入 RS_PUB_KEY + 重新分发所有客户端
 ├── id_ed25519.pub    # 公钥 —— rdctl.py key 打印的值，对应客户端 custom.toml 的 RS_PUB_KEY
 ├── db_v2.sqlite3     # peer 注册表（仅 SQLite 后端时）：只有一张 peer 表
-├── blacklist.txt     # hbbr 黑名单（可选，每行一个 IP，命中即断开）
+├── blacklist.txt     # hbbr 黑名单（可选；配了库时以 relay_access_list 表为准）
 └── blocklist.txt     # hbbr 封禁名单（可选，命中即拒绝）
 ```
 
@@ -519,7 +519,7 @@ python migrate-sqlite-to-pg.py ../data/db_v2.sqlite3 --out migration.sql
 docker compose exec -T postgres psql -U rustdesk -d rustdesk < migration.sql
 ```
 
-已知限制：hbbr 不碰数据库；换 PG 解决的是"ID 台账统一管理"，
+已知限制：hbbr 只读写名单那一张表（且可降级为文件）；换 PG 解决的是"ID 台账统一管理"，
 **不是**"谁连了谁"的审计；PG 后端仍是单实例设计，不等于高可用。
 
 ### 3.5 用 `docker run` 启动（hbbs / hbbr 可分离部署）
@@ -660,9 +660,10 @@ docker run -d --name rd-hbbr --restart unless-stopped \
 
 要点：
 
-- 放行 **5188（TCP）**，需要 WebSocket 中继再加 **5190（TCP）**；hbbr 不碰数据库，
-  那个 `-v` 只为与 compose 行为一致
-  （密钥目录同源），它自己不写任何状态；
+- 放行 **5188（TCP）**，需要 WebSocket 中继再加 **5190（TCP）**；hbbr 只在
+  "名单持久化"一件事上用数据库（配了 `DB_TYPE`/`DB_URL` 才连，
+  连不上就退回文件模式继续转发），那个 `-v` 只为与 compose 行为一致
+  （密钥目录同源）；
 - 端口用**命令行 `-p`**，不要用环境变量 `PORT`——源码里环境变量 `PORT`
   会被 +1 之后再使用，写 `PORT=5188` 它去监听 5189，正好撞上 hbbs 的 WebSocket 端口；
 - 中继压力大的时候就**再加一台跑同样的命令**，然后把新 IP 追加进 hbbs 的 `-r`
@@ -1037,9 +1038,11 @@ Postgres 连接串…` 之类的提示。跑中继必须在命令**末尾显式�
 docker run ... <镜像> hbbr -p 5188
 ```
 
-反过来验证：hbbr（中继）**完全不碰数据库**，就算给它挂上 `DB_*`/`PG_*`
-配置也只会打一行"hbbr 不使用数据库，忽略配置"的 info 然后正常跑。如果你
-在一个容器里同时看到数据库提示，那它跑的一定是 hbbs，不是 hbbr。
+反过来验证：hbbr（中继）**只用数据库存名单**（`relay_access_list` 一张表），
+不会去写 ID 台账与审计表。挂着 `DB_*`/`PG_*` 配置时它会打一行
+"hbbr 只用它持久化黑名单 / 阻断名单"的 info 然后正常跑；没配这些变量则
+完全不连库。如果你在一个容器里看到"ID 注册服务器"或 peer 表相关的日志，
+那它跑的一定是 hbbs，不是 hbbr。
 
 **Q：`connection_log` 会一直涨吗**
 

@@ -190,8 +190,11 @@ class _RemotePageState extends State<RemotePage>
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
-      _ffi.dialogManager
-          .showLoading(translate('Connecting...'), onCancel: closeConnection);
+      // 文案随连接阶段变化（正在接入服务器 / 正在尝试 P2P 直连 /
+      // 正在通过中继连接 / 正在建立加密通道），不再是干巴巴一句"正在连接"。
+      _ffi.dialogManager.showLoading(translate('Connecting...'),
+          onCancel: closeConnection,
+          dynamicText: () => connectionProgressText(widget.id));
     });
     WakelockManager.enable(_uniqueKey);
 

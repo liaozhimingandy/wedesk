@@ -304,6 +304,29 @@ HBBR_PORT=9101          # 建议 = HBBS_PORT + 1（客户端兜底推导依赖�
 
 **解法**（仅 Linux）：`docker-compose.yml` 里换成 `network_mode: "host"`，能拿到真实来源 IP。
 
+### 重启 hbbr 之后黑名单失效了
+
+**原因**：只有当 hbbr **没连上数据库**时才会这样 —— 那种情况下名单退回
+文件模式，而上游的文件模式只在启动时读一次。
+
+**排查**：
+
+```bash
+docker compose logs rd-hbbr | grep -E "名单|数据库"
+#   连接数据库失败，名单退回文件模式 → 修 DB_URL / PG 连通性
+#   未配置数据库 → 补 DB_TYPE / DB_URL 或接受文件模式
+```
+
+**确认已落库**：
+
+```bash
+docker compose exec -T postgres psql -U rustdesk -d rustdesk \
+  -c "select kind, ip, note, created_at from relay_access_list order by created_at;"
+```
+
+> 已经配好库的话，`blacklist.txt` 里的老条目会在启动时自动迁移进库一次
+> （只在库为空时执行），不需要手工导。
+
 ---
 
 ## 五、运行时类

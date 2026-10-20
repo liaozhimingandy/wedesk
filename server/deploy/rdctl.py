@@ -356,12 +356,20 @@ def cmd_ports(args):
 # db_type()，也有"看数据实际落在哪"的 probe_*()，doctor 会把两者交叉比对。
 PG_TYPES = ("postgres", "postgresql", "pg")
 
-# 服务端在库里维护的三张表。doctor 会逐张核对，缺一张就说明
+# 服务端在库里维护的表。doctor 会逐张核对，缺一张就说明
 # 「镜像没带新代码」或「连的根本不是预期的那个库」—— 这两种都极难从日志看出来。
 PG_TABLES = {
     "peer": "ID / 设备台账",
     "server_config": "密钥托管（id_ed25519）",
     "connection_log": "连接审计",
+    "relay_nodes": "中继节点登记与健康",
+}
+
+# 可选表：只有 hbbr 连了库才会建（名单持久化）。
+# 缺了**不报警** —— 没给 hbbr 配数据库、或只跑单台中继的部署本就不会建它，
+# 报警只会让 doctor 每次都喊狼来了。
+PG_OPTIONAL_TABLES = {
+    "relay_access_list": "hbbr 的黑名单 / 阻断名单",
 }
 
 
@@ -1040,6 +1048,12 @@ def cmd_doctor(args):
                     else:
                         w(f"缺少表 {name}（{desc}）",
                           "镜像是旧版本？重新 build；或 DB_URL 指向的库不对")
+                for name, desc in PG_OPTIONAL_TABLES.items():
+                    if name in tables:
+                        info(f"表 {name} 存在（{desc}）")
+                    else:
+                        print(f"    表 {name} 不存在（{desc}）—— "
+                              "hbbr 没连库时属正常，名单会退回文件模式")
 
             # --- 旧版密钥托管残留与审计是否在工作 --------------------------
             if tables and "server_config" in tables:

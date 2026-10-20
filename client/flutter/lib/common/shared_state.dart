@@ -74,6 +74,51 @@ class CurrentDisplayState {
   static RxInt find(String id) => Get.find<RxInt>(tag: tag(id));
 }
 
+/// 连接建立过程的**阶段进度**（"正在接入服务器" → "正在尝试 P2P 直连"
+/// → 必要时"正在通过中继连接" → "正在建立加密通道"）。
+///
+/// 数据源是 Rust 侧 `connection_stage` 事件（见 `client/src/client.rs` 的
+/// `set_connection_stage`）。它存在的理由：连接过程在跨网打洞失败回退中继时
+/// 可能要十几秒，这段时间界面上只有一个"正在连接…"，用户既不知道卡在哪，
+/// 也分不清是"慢"还是"坏了"。
+class ConnectionProgress {
+  final Rx<String> _stage = ''.obs;
+  final Rx<String> _detail = ''.obs;
+
+  Rx<String> get stage => _stage;
+  Rx<String> get detail => _detail;
+
+  void set(String stage, String detail) {
+    _stage.value = stage;
+    _detail.value = detail;
+  }
+
+  void reset() => set('', '');
+}
+
+class ConnectionProgressState {
+  static String tag(String id) => 'connection_progress_$id';
+
+  static void init(String id) {
+    final key = tag(id);
+    if (!Get.isRegistered<ConnectionProgress>(tag: key)) {
+      Get.put<ConnectionProgress>(ConnectionProgress(), tag: key);
+    } else {
+      Get.find<ConnectionProgress>(tag: key).reset();
+    }
+  }
+
+  static void delete(String id) {
+    final key = tag(id);
+    if (Get.isRegistered<ConnectionProgress>(tag: key)) {
+      Get.delete<ConnectionProgress>(tag: key);
+    }
+  }
+
+  static ConnectionProgress find(String id) =>
+      Get.find<ConnectionProgress>(tag: tag(id));
+}
+
 class ConnectionType {
   final Rx<String> _secure = kInvalidValueStr.obs;
   final Rx<String> _direct = kInvalidValueStr.obs;
@@ -364,5 +409,6 @@ removeSharedStates(String id) {
   FingerprintState.delete(id);
   PeerBoolOption.delete(id, kOptionZoomCursor);
   UnreadChatCountState.delete(id);
+  ConnectionProgressState.delete(id);
   if (isMobile) ConnectionTypeState.delete(id);
 }

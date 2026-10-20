@@ -751,6 +751,17 @@ impl InvokeUiSession for FlutterHandler {
         );
     }
 
+    /// 连接阶段的进度提示。与 `connection_ready` 分开：后者只在连接**建成**
+    /// 时来一次，前者贯穿整个过程（接入服务器 → 打洞 → 可能转中继 → 握手），
+    /// 让界面上的"正在连接…"能说出此刻到底在做什么。
+    fn set_connection_stage(&self, stage: &str, detail: &str) {
+        self.push_event(
+            "connection_stage",
+            &[("stage", stage), ("detail", detail)],
+            &[],
+        );
+    }
+
     fn set_fingerprint(&self, fingerprint: String) {
         self.push_event("fingerprint", &[("fingerprint", &fingerprint)], &[]);
     }

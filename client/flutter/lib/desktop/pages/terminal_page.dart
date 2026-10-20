@@ -120,8 +120,9 @@ class _TerminalPageState extends State<TerminalPage>
 
       if (!isExistingConnection) {
         // First terminal - show loading dialog, wait for onReady
-        _ffi.dialogManager
-            .showLoading(translate('Connecting...'), onCancel: closeConnection);
+        _ffi.dialogManager.showLoading(translate('Connecting...'),
+            onCancel: closeConnection,
+            dynamicText: () => connectionProgressText(widget.id));
       } else {
         // Additional terminal - connection already established
         // Open the terminal directly

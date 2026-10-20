@@ -203,8 +203,20 @@ services:
     environment:
       - RUST_LOG=${RUST_LOG:-warn}
       # 健康检查 HTTP 端口（GET /health，默认 = 中继主端口+4）。与下面
-      # ports 映射保持一致；设 0 可关闭。hbbr 不碰数据库，探针只报自身存活。
+      # ports 映射保持一致；设 0 可关闭。hbbr 不连业务库，探针只报自身存活。
       - HEALTH_PORT=5192
+      # --- 名单持久化 -----------------------------------------------------
+      # hbbr 只在一件事上用数据库：把黑名单 / 阻断名单存下来。
+      # 上游把它们放在内存里、重启即丢 —— 而 IP 封禁恰恰最需要跨重启保留。
+      # 不配这几项也能正常跑（退回 blacklist.txt / blocklist.txt 文件模式），
+      # 配了就落库，并且每 ACCESS_RELOAD_SECS 秒重载一次，多台 hbbr 共享同一份。
+      - DB_TYPE=${DB_TYPE:-postgres}
+      - DB_URL=${DB_URL:-postgres://${PG_USER:-rustdesk}:${PG_PASSWORD:-changeme}@postgres:5432/${PG_DB:-rustdesk}}
+      # 连接失败只试 1 次：中继的可用性优先，数据库挂了就退回文件模式继续转发，
+      # 绝不能为了一张名单把整条中继链路拖住 30 秒。
+      - DB_CONNECT_RETRIES=${HBBR_DB_RETRIES:-1}
+      # 名单从数据库重载的间隔（秒）；设 0 关闭周期性重载（只在启动时读一次）。
+      - ACCESS_RELOAD_SECS=${ACCESS_RELOAD_SECS:-60}
     volumes:
       - ./data:/root
     ports:

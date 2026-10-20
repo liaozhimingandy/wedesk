@@ -121,8 +121,9 @@ class _ViewCameraPageState extends State<ViewCameraPage>
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
-      _ffi.dialogManager
-          .showLoading(translate('Connecting...'), onCancel: closeConnection);
+      _ffi.dialogManager.showLoading(translate('Connecting...'),
+          onCancel: closeConnection,
+          dynamicText: () => connectionProgressText(widget.id));
     });
     WakelockManager.enable(_uniqueKey);
 

@@ -135,11 +135,13 @@ server/data/
 ├── id_ed25519        # 私钥 —— 丢了所有客户端要重配
 ├── id_ed25519.pub    # 公钥
 ├── db_v2.sqlite3     # peer 注册表（仅 SQLite 后端时存在）
-├── blacklist.txt     # hbbr 黑名单（可选，每行一个 IP，命中即断开）
-└── blocklist.txt     # hbbr 封禁名单（可选，命中即拒绝）
+├── blacklist.txt     # hbbr 黑名单（可选，每行一个 IP，命中后限速）
+└── blocklist.txt     # hbbr 阻断名单（可选，命中即断开）
 ```
 
-> **默认后端是 PostgreSQL**，上面这个目录里通常只有密钥文件与名单文件。
+> **默认后端是 PostgreSQL**：名单会落进 `relay_access_list` 表，
+> 上面这两个文件只在**没给 hbbr 配数据库**时才用（hbbr 会自动把老文件内容
+> 迁移进库一次）。维护方式见 [11 运维手册](11-server-ops.md) 的 6.2 节。
 > `db_v2.sqlite3` 只在显式设了 `DB_TYPE=sqlite` 时才出现。
 > 连接审计记在 PG 的 `connection_log` 表里（SQLite 后端下不记录）。
 > 详见 [12 · 服务端数据统一存 PostgreSQL](12-postgres-backend.md)。

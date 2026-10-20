@@ -1724,6 +1724,8 @@ pub trait InvokeUiSession: Send + Sync + Clone + 'static + Sized + Default {
     fn close_success(&self);
     fn update_quality_status(&self, qs: QualityStatus);
     fn set_connection_type(&self, is_secured: bool, direct: bool, stream_type: &str);
+    /// 连接建立过程的阶段提示。默认空实现，只有关心进度的 UI 需要覆盖。
+    fn set_connection_stage(&self, _stage: &str, _detail: &str) {}
     fn set_fingerprint(&self, fingerprint: String);
     fn job_error(&self, id: i32, err: String, file_num: i32);
     fn job_done(&self, id: i32, file_num: i32);
@@ -1819,6 +1821,13 @@ impl<T: InvokeUiSession> Interface for Session<T> {
 
     fn set_multiple_windows_session(&self, sessions: Vec<WindowsSession>) {
         self.ui_handler.set_multiple_windows_session(sessions);
+    }
+
+    // 必须显式转发：trait 里给了默认空实现，而 `Session` 对 handler 的
+    // 方法解析走的是 Deref —— 不重写的话，这里的调用会命中空实现，
+    // 提示就永远发不出去（这类"静默失效"最难查，因为它不报错）。
+    fn set_connection_stage(&self, stage: &str, detail: &str) {
+        self.ui_handler.set_connection_stage(stage, detail);
     }
 
     fn handle_peer_info(&self, mut pi: PeerInfo) {

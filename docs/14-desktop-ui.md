@@ -201,6 +201,34 @@ WeCard(
 其余语言（en 等）没有对应条目时会**回退显示英文 key**，这是上游 `translate()`
 的既有行为；要补齐就往对应 `src/lang/*.rs` 里加同样的 key。
 
+### 连接过程的阶段提示（2026-10 新增）
+
+连接时那个"正在连接..."的加载弹窗，文案会**随阶段实时变化**：
+
+| 阶段（Rust 侧 `stage`） | 界面显示 | detail 补充 |
+|---|---|---|
+| `rendezvous` | 正在接入注册服务器... | 注册服务器地址 |
+| `punching` | 正在尝试 P2P 直连...(UDP+TCP) | 本次打洞用到的传输 |
+| `relay` | 正在通过中继服务器连接... | 中继服务器地址 |
+| `handshake` | 正在建立加密通道... | 链路类型 |
+| `connected` | 连接已建立 | 链路类型 |
+
+链路打通之后，画面左上角的 `ConnectionTypeBadge` 会常驻显示
+**P2P 直连** / **中继转发**（绿点 / 琥珀点，未加密再加一个红色断锁图标）。
+
+改动涉及三处，别只改一处：
+
+1. Rust 埋点：`client/src/client.rs` 的 `set_connection_stage(...)`
+   （`Interface` trait 里有默认空实现，`Session<T>` 里显式转发给 handler）；
+2. 事件分发：`flutter/lib/models/model.dart` 处理 `connection_stage`；
+3. 文案：`flutter/lib/common.dart` 的 `connectionStageText()` +
+   `src/lang/cn.rs` / `tw.rs` 的对应词条。
+
+> ⚠️ 加载弹窗那段用了 `Obx` 才能跟着事件刷新，而 **Obx 在 build 期间一个
+> observable 都没读到会直接抛异常**（release 下是整窗灰白）。所以取状态
+> 必须走 `connectionProgressOf(id)` —— 它保证一定返回一个 Rx（没有就惰性建），
+> 千万不要图省事写成"没注册就直接 return 文案"。
+
 ---
 
 ## 五、还没做的部分（下一步）

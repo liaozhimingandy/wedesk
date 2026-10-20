@@ -840,6 +840,9 @@ impl Client {
         // into_inner() once the stream is adopted into a connection attempt.
         let mut webrtc_offerer = webrtc_offerer.map(OffererGuard::new);
         let mut start = Instant::now();
+        // "正在接入注册服务器" —— 这一步卡住基本就是 5187 不通 / 端口没放行，
+        // 以前界面上只能看到"正在连接"，用户无从区分是服务器不可达还是对端离线。
+        interface.set_connection_stage("rendezvous", &rendezvous_server);
         let mut socket = connect_tcp(&*rendezvous_server, CONNECT_TIMEOUT).await;
         debug_assert!(!servers.contains(&rendezvous_server));
         let rtt = start.elapsed();
@@ -1001,6 +1004,9 @@ impl Client {
                 my_addr,
                 peer
             );
+            // "正在尝试 P2P 直连" —— punch_type 告诉用户这次用哪些传输在打洞
+            // （UDP+TCP+WebRTC…），全都没有时会显示"正在通过中继连接"。
+            interface.set_connection_stage("punching", &punch_type);
             socket.send(&msg_out).await?;
             // below timeout should not bigger than hbbs's connection timeout.
             let attempt_deadline = Instant::now() + Duration::from_millis((i * 3000) as u64);
@@ -1073,6 +1079,9 @@ impl Client {
                             start.elapsed(),
                             rr.relay_server
                         );
+                        // 打洞没成，转中继。这一步说出来很重要：很多用户以为
+                        // "连上了=P2P"，画面卡顿时不知道该去查中继带宽。
+                        interface.set_connection_stage("relay", &rr.relay_server);
                         start = Instant::now();
                         let mut connect_futures = Vec::new();
                         if let Some(s) = ipv6.0 {
@@ -1568,6 +1577,8 @@ impl Client {
         // preferred outcome, not a violation.
         if (interface.is_force_relay() && typ != "WebRTC") || conn.is_err() {
             if !relay_server.is_empty() {
+                // 直连/打洞这一轮没成，主动申请中继兜底。
+                interface.set_connection_stage("relay", relay_server);
                 let switch_code = interface.get_switch_code();
                 conn = Self::request_relay(
                     peer_id,
@@ -1597,6 +1608,9 @@ impl Client {
             start.elapsed(),
             punch_type
         );
+        // "正在建立加密通道 / 验证身份" —— 直连或中继的链路已经通了，接下来是
+        // 密钥协商与（需要时）密码校验；卡在这里通常是密码错误或版本不匹配。
+        interface.set_connection_stage("handshake", typ);
         let res = Self::secure_connection(peer_id, signed_id_pk.clone(), key, &mut conn).await;
         let pk: Option<Vec<u8>> = match res {
             Ok(pk) => pk,
@@ -4977,6 +4991,19 @@ pub trait Interface: Send + Clone + 'static + Sized {
     fn update_direct(&self, direct: Option<bool>) {
         self.get_lch().write().unwrap().direct = direct;
     }
+
+    /// 上报"连接建立到哪一步了"，让 UI 能显示进度而不是只有一个转圈。
+    ///
+    /// 连接过程在最好情况下也要几百毫秒，跨运营商打洞失败回退中继时可能要
+    /// 十几秒 —— 这段时间里界面上只有一个"正在连接..."，用户既不知道卡在哪，
+    /// 也没法判断是"慢"还是"坏了"（后者常常直接被当成软件有问题）。
+    ///
+    /// `stage` 是稳定枚举（`rendezvous` / `punching` / `relay` /
+    /// `handshake` / `connected`），由 UI 侧翻译成文案；`detail` 是补充说明
+    /// （例如本次尝试的打洞方式 "UDP+TCP"、中继服务器地址），可为空。
+    ///
+    /// 默认空实现：命令行调用与无界面场景不需要，也不该被强制实现。
+    fn set_connection_stage(&self, _stage: &str, _detail: &str) {}
 
     fn update_received(&self, received: bool) {
         self.get_lch().write().unwrap().received = received;

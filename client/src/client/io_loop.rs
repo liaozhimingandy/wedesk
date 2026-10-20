@@ -215,6 +215,11 @@ impl<T: InvokeUiSession> Remote<T> {
                 } else {
                     stream_type
                 };
+                // 收尾阶段：告诉 UI"已经连上了，走的是直连还是中继"，
+                // 进度提示到此为止，随后由画面首帧接管。
+                // （放在 set_connection_type 之前：那行带尾随注释，
+                //   紧跟其后再加注释会把 rustfmt 逼出很怪的缩进。）
+                self.handler.set_connection_stage("connected", stream_type);
                 self.handler
                     .set_connection_type(is_secured, direct, stream_type); // flutter -> connection_ready
                 if !is_secured

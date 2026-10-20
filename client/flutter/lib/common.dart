@@ -8,6 +8,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/formatter/id_formatter.dart';
+import 'package:flutter_hbb/common/shared_state.dart';
 import 'package:flutter_hbb/desktop/widgets/refresh_wrapper.dart';
 import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
 import 'package:flutter_hbb/main.dart';
@@ -891,7 +892,8 @@ class OverlayDialogManager {
       {bool clickMaskDismiss = false,
       bool showCancel = true,
       VoidCallback? onCancel,
-      String? tag}) {
+      String? tag,
+      String Function()? dynamicText}) {
     if (tag == null) {
       tag = _tagCount.toString();
       _tagCount++;
@@ -904,6 +906,17 @@ class OverlayDialogManager {
         }
       }
 
+      // dynamicText 为空时**不能**套 Obx：Obx 在 build 期间读不到任何
+      // observable 会直接抛 "improper use of a GetX"（release 下表现为整窗
+      // 灰白）。所以只在确实有动态文案时才包 Obx。
+      final textWidget = dynamicText == null
+          ? Center(
+              child:
+                  Text(translate(text), style: const TextStyle(fontSize: 15)))
+          : Obx(() => Center(
+              child:
+                  Text(dynamicText(), style: const TextStyle(fontSize: 15))));
+
       return CustomAlertDialog(
         content: Container(
             constraints: const BoxConstraints(maxWidth: 240),
@@ -914,9 +927,7 @@ class OverlayDialogManager {
                   const SizedBox(height: 30),
                   const Center(child: CircularProgressIndicator()),
                   const SizedBox(height: 20),
-                  Center(
-                      child: Text(translate(text),
-                          style: const TextStyle(fontSize: 15))),
+                  textWidget,
                   const SizedBox(height: 20),
                   Offstage(
                       offstage: !showCancel,
@@ -1607,6 +1618,61 @@ String translate(String name) {
     return name.split(': ').map((x) => translate(x)).join(': ');
   }
   return platformFFI.translate(name, localeName);
+}
+
+/// 把 Rust 侧上报的连接阶段翻译成界面文案。
+///
+/// 阶段是稳定枚举（`rendezvous` / `punching` / `relay` / `handshake` /
+/// `connected`），由 `client/src/client.rs::set_connection_stage` 推送。
+/// 翻译集中在这里，避免同一个阶段在不同页面翻出不同说法。
+/// `detail` 是补充说明（本次打洞用到的传输，或中继服务器地址）。
+String connectionStageText(String stage, String detail) {
+  final d = detail.trim();
+  switch (stage) {
+    case 'rendezvous':
+      return translate('Connecting to the rendezvous server...');
+    case 'punching':
+      final base = translate('Trying P2P direct connection...');
+      return d.isEmpty ? base : '$base($d)';
+    case 'relay':
+      return translate('Connecting via relay server...');
+    case 'handshake':
+      return translate('Establishing secure channel...');
+    case 'connected':
+      return translate('Connection established');
+    default:
+      return translate('Connecting...');
+  }
+}
+
+/// 取（必要时先建）某个会话的连接进度状态。
+///
+/// 这个函数存在的唯一理由是**保证调用方一定读到一个 Rx**。
+/// GetX 的 `Obx` 在 build 期间一个 observable 都没读到会直接抛
+/// "improper use of a GetX"（release 下表现为整窗灰白），而加载弹窗
+/// 往往先于任何 `connection_stage` 事件出现 —— 那时状态还没注册，
+/// 直接 `return 文案` 就会踩中这条。所以宁可惰性建一个空实例。
+/// 会话已随窗口销毁（GetX 正在拆）时同理，退回一个临时实例。
+ConnectionProgress connectionProgressOf(String id) {
+  try {
+    if (!Get.isRegistered<ConnectionProgress>(
+        tag: ConnectionProgressState.tag(id))) {
+      ConnectionProgressState.init(id);
+    }
+    return ConnectionProgressState.find(id);
+  } catch (_) {
+    return ConnectionProgress();
+  }
+}
+
+/// 某个会话当前的连接阶段文案；还没收到任何阶段时回落到"正在连接..."。
+String connectionProgressText(String id) {
+  final p = connectionProgressOf(id);
+  final stage = p.stage.value;
+  if (stage.isEmpty) {
+    return translate('Connecting...');
+  }
+  return connectionStageText(stage, p.detail.value);
 }
 
 // This function must be kept the same as the one in rust and sciter code.

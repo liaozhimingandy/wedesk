@@ -130,8 +130,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
-      gFFI.dialogManager
-          .showLoading(translate('Connecting...'), onCancel: closeConnection);
+      gFFI.dialogManager.showLoading(translate('Connecting...'),
+          onCancel: closeConnection,
+          dynamicText: () => connectionProgressText(widget.id));
     });
     WakelockManager.enable(_uniqueKey);
     _physicalFocusNode.requestFocus();

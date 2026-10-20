@@ -37,6 +37,14 @@ lazy_static::lazy_static! {
     static ref BLOCKLIST: RwLock<HashSet<String>> = Default::default();
 }
 
+/// 名单的存储后端：`None` 表示没配数据库，退回"文件 + 内存"的老行为。
+///
+/// 用 `Option<Database>` 而不是 `Database`：中继服务器本来就不需要数据库，
+/// 强制它连通只会在单机部署上凭空制造一个故障点。只有运维显式配了
+/// DB_TYPE/DB_URL/PG_* 时才启用落库。
+static DB: once_cell::sync::OnceCell<Option<crate::database::Database>> =
+    once_cell::sync::OnceCell::new();
+
 static DOWNGRADE_THRESHOLD_100: AtomicUsize = AtomicUsize::new(66); // 0.66
 static DOWNGRADE_START_CHECK: AtomicUsize = AtomicUsize::new(1_800_000); // in ms
 static LIMIT_SPEED: AtomicUsize = AtomicUsize::new(32 * 1024 * 1024); // in bit/s
@@ -52,36 +60,7 @@ pub async fn start_with_bind(
     key: &str,
 ) -> ResultType<()> {
     let key = get_server_sk(key)?;
-    if let Ok(mut file) = std::fs::File::open(BLACKLIST_FILE) {
-        let mut contents = String::new();
-        if file.read_to_string(&mut contents).is_ok() {
-            for x in contents.split('\n') {
-                if let Some(ip) = x.trim().split(' ').next() {
-                    BLACKLIST.write().await.insert(ip.to_owned());
-                }
-            }
-        }
-    }
-    log::info!(
-        "#blacklist({}): {}",
-        BLACKLIST_FILE,
-        BLACKLIST.read().await.len()
-    );
-    if let Ok(mut file) = std::fs::File::open(BLOCKLIST_FILE) {
-        let mut contents = String::new();
-        if file.read_to_string(&mut contents).is_ok() {
-            for x in contents.split('\n') {
-                if let Some(ip) = x.trim().split(' ').next() {
-                    BLOCKLIST.write().await.insert(ip.to_owned());
-                }
-            }
-        }
-    }
-    log::info!(
-        "#blocklist({}): {}",
-        BLOCKLIST_FILE,
-        BLOCKLIST.read().await.len()
-    );
+    init_access_lists().await;
     let port: u16 = port.parse()?;
     log::info!("Listening on tcp :{}", port);
     let port2 = port + 2;
@@ -108,6 +87,271 @@ pub async fn start_with_bind(
         res = main_task => res,
         res = listen_signal => res,
     )
+}
+
+// =============================================================================
+// 名单（黑名单 / 阻断名单）的持久化
+// =============================================================================
+//
+// 上游的行为有个很实际的缺陷：两份名单只在**启动时**从 blacklist.txt /
+// blocklist.txt 读一次，运行期 `blacklist-add` 的改动只落在内存里，
+// 容器重启即全部丢失。而封禁 IP 恰恰是最需要跨重启保留的东西 ——
+// 否则"重启"就等于一次全局解封，被封的地址只要等到重启就能重来。
+//
+// 现在的规则：
+//   1. 内存集合仍然是运行期真值（热路径每秒查一次，不能打库）；
+//   2. 配了数据库 → 落库，并在启动时把老文件里的条目一次性迁进去；
+//      另起一个后台任务周期重载，让多台 hbbr 共享同一份名单；
+//   3. 没配数据库 → 退回文件模式，但**补上写回**（上游没有），
+//      至少单机部署不会丢。
+//
+// 写库失败时**保留内存改动**并告警，而不是回滚：对一台正在扛流量的中继来说，
+// "封禁生效但重启会丢"远好过"拒绝生效"。
+// =============================================================================
+use crate::database::{ACCESS_KIND_BLACKLIST, ACCESS_KIND_BLOCKLIST};
+
+const ACCESS_KINDS: [&str; 2] = [ACCESS_KIND_BLACKLIST, ACCESS_KIND_BLOCKLIST];
+
+/// 名单种类 → 内存集合
+fn set_of(kind: &str) -> &'static RwLock<HashSet<String>> {
+    if kind == ACCESS_KIND_BLACKLIST {
+        &BLACKLIST
+    } else {
+        &BLOCKLIST
+    }
+}
+
+/// 名单种类 → 无数据库时使用的落盘文件
+fn file_of(kind: &str) -> &'static str {
+    if kind == ACCESS_KIND_BLACKLIST {
+        BLACKLIST_FILE
+    } else {
+        BLOCKLIST_FILE
+    }
+}
+
+fn db_handle() -> Option<&'static crate::database::Database> {
+    DB.get().and_then(|o| o.as_ref())
+}
+
+/// 从文件读入（无数据库模式，或数据库模式下的老部署迁移源）。
+async fn load_access_file(kind: &str) {
+    if let Ok(mut file) = std::fs::File::open(file_of(kind)) {
+        let mut contents = String::new();
+        if file.read_to_string(&mut contents).is_ok() {
+            for x in contents.split('\n') {
+                if let Some(ip) = x.trim().split(' ').next() {
+                    if !ip.is_empty() {
+                        set_of(kind).write().await.insert(ip.to_owned());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 无数据库模式下的写回：整份重写，保证文件与内存一致（含删除）。
+fn write_access_file(kind: &str, ips: &HashSet<String>) {
+    let mut list: Vec<&String> = ips.iter().collect();
+    list.sort();
+    let contents: String = list.iter().map(|ip| format!("{ip}\n")).collect();
+    if let Err(e) = std::fs::write(file_of(kind), contents) {
+        log::error!("写 {} 失败，名单只存在于内存：{e}", file_of(kind));
+    }
+}
+
+/// 尝试连接数据库。没配任何 DB_* 时返回 None（这是正常路径，不是错误）。
+async fn maybe_connect_db() -> Option<crate::database::Database> {
+    let keys = [
+        "DB_TYPE",
+        "DB_URL",
+        "PG_HOST",
+        "PG_USER",
+        "PG_PASSWORD",
+        "PG_DB",
+    ];
+    let configured: Vec<&str> = keys
+        .iter()
+        .filter(|k| !crate::common::get_arg(k).is_empty())
+        .cloned()
+        .collect();
+    if configured.is_empty() {
+        log::info!(
+            "未配置数据库（DB_TYPE/DB_URL/PG_*），名单退回文件模式：{} / {}",
+            BLACKLIST_FILE,
+            BLOCKLIST_FILE
+        );
+        return None;
+    }
+    let url = crate::database::resolve_db_url();
+    match crate::database::Database::new(&url).await {
+        Ok(db) => {
+            log::info!("名单持久化到数据库（后端 = {}）", db.backend_name());
+            Some(db)
+        }
+        Err(e) => {
+            // 不退出：中继的可用性优先于名单的持久化。
+            // 数据库挂了的时候让中继也跟着起不来，等于把一个次要功能
+            // 变成整条链路的单点故障。
+            log::error!(
+                "连接数据库失败，名单退回文件模式（运行期改动仍生效，但重启后丢失）：{e}"
+            );
+            None
+        }
+    }
+}
+
+/// 用数据库内容刷新内存集合。读取失败时保留现有内容，绝不清空 ——
+/// 一次查询抖动就把全网封禁解掉，后果比"晚一点看到新增条目"严重得多。
+async fn reload_access_lists() {
+    let db = match db_handle() {
+        Some(db) => db,
+        None => return,
+    };
+    for kind in ACCESS_KINDS {
+        match db.load_access_list(kind).await {
+            Ok(entries) => {
+                let set: HashSet<String> = entries.into_iter().map(|e| e.ip).collect();
+                *set_of(kind).write().await = set;
+            }
+            Err(e) => log::warn!("读取名单 {kind} 失败，保留现有内容：{e}"),
+        }
+    }
+}
+
+/// 老部署迁移：库里为空、文件里有内容时，把文件内容灌进库（只做一次）。
+async fn import_legacy_files() {
+    let db = match db_handle() {
+        Some(db) => db,
+        None => return,
+    };
+    for kind in ACCESS_KINDS {
+        let existing = match db.load_access_list(kind).await {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("迁移前读取名单 {kind} 失败，跳过迁移：{e}");
+                continue;
+            }
+        };
+        if !existing.is_empty() {
+            continue;
+        }
+        let ips: Vec<String> = set_of(kind).read().await.iter().cloned().collect();
+        if ips.is_empty() {
+            continue;
+        }
+        let mut ok = 0;
+        for ip in &ips {
+            match db.add_access_entry(kind, ip, "migrated from file").await {
+                Ok(()) => ok += 1,
+                Err(e) => log::warn!("迁移 {kind} 条目 {ip} 失败：{e}"),
+            }
+        }
+        if ok > 0 {
+            log::info!("已从 {} 迁 {ok} 条 {kind} 进数据库", file_of(kind));
+        }
+    }
+}
+
+/// 启动入口：先读文件（兼容老部署），再接库、重载、迁移，最后起后台刷新。
+async fn init_access_lists() {
+    for kind in ACCESS_KINDS {
+        load_access_file(kind).await;
+    }
+    let _ = DB.set(maybe_connect_db().await);
+    if db_handle().is_some() {
+        reload_access_lists().await;
+        import_legacy_files().await;
+        let secs: u64 = crate::common::get_arg_or("ACCESS_RELOAD_SECS", "60".to_owned())
+            .parse()
+            .unwrap_or(60);
+        if secs > 0 {
+            log::info!("名单每 {secs}s 从数据库重载一次（多实例共享同一份名单）");
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(secs)).await;
+                    reload_access_lists().await;
+                }
+            });
+        }
+    }
+    for kind in ACCESS_KINDS {
+        log::info!("#{kind}: {}", set_of(kind).read().await.len());
+    }
+}
+
+/// 新增一条。返回一段人类可读的告警（没有错误返回 None）。
+async fn access_add(kind: &str, ip: &str, note: &str) -> Option<String> {
+    set_of(kind).write().await.insert(ip.to_owned());
+    match db_handle() {
+        Some(db) => match db.add_access_entry(kind, ip, note).await {
+            Ok(()) => None,
+            Err(e) => Some(format!("（内存中已生效，但写库失败：{e}）")),
+        },
+        None => {
+            let ips = set_of(kind).read().await.clone();
+            write_access_file(kind, &ips);
+            None
+        }
+    }
+}
+
+/// 删除一条（`ip == "all"` 表示清空）。
+async fn access_remove(kind: &str, ip: &str) -> Option<String> {
+    if ip == "all" {
+        set_of(kind).write().await.clear();
+        return match db_handle() {
+            Some(db) => match db.clear_access_list(kind).await {
+                Ok(()) => None,
+                Err(e) => Some(format!("（内存中已清空，但清库失败：{e}）")),
+            },
+            None => {
+                write_access_file(kind, &HashSet::new());
+                None
+            }
+        };
+    }
+    set_of(kind).write().await.remove(ip);
+    match db_handle() {
+        Some(db) => match db.remove_access_entry(kind, ip).await {
+            Ok(()) => None,
+            Err(e) => Some(format!("（内存中已移除，但删库失败：{e}）")),
+        },
+        None => {
+            let ips = set_of(kind).read().await.clone();
+            write_access_file(kind, &ips);
+            None
+        }
+    }
+}
+
+/// 列出某个名单；`ip` 非空时改为判断是否存在。
+async fn access_list(kind: &str, ip: Option<&str>) -> String {
+    if let Some(ip) = ip {
+        return format!("{}\n", set_of(kind).read().await.contains(ip));
+    }
+    match db_handle() {
+        Some(db) => match db.load_access_list(kind).await {
+            Ok(entries) => entries
+                .into_iter()
+                .map(|e| {
+                    if e.note.is_empty() {
+                        format!("{}\t{}", e.ip, e.created_at)
+                    } else {
+                        format!("{}\t{}\t{}", e.ip, e.note, e.created_at)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+            Err(e) => format!("读取数据库失败：{e}\n"),
+        },
+        None => {
+            let mut list: Vec<String> = set_of(kind).read().await.iter().cloned().collect();
+            list.sort();
+            list.join("\n") + "\n"
+        }
+    }
 }
 
 fn check_params() {
@@ -187,59 +431,67 @@ async fn check_cmd(cmd: &str, limiter: Limiter) -> String {
                 "usage(u)"
             )
         }
+        // 名单三件套：add / remove / list。
+        // 与上游的两点差异：① 改动会落库（没配库就落文件），不再重启即丢；
+        // ② add 可以在 IP 后面带备注，list 会把备注与加入时间一起打出来 ——
+        //    十条 IP 里哪条是上周封的、为什么封的，光看 IP 是记不起来的。
         Some("blacklist-add" | "ba") => {
             if let Some(ip) = fds.next() {
+                let note: String = fds.collect::<Vec<_>>().join(" ");
                 for ip in ip.split('|') {
-                    BLACKLIST.write().await.insert(ip.to_owned());
+                    if let Some(warn) = access_add(ACCESS_KIND_BLACKLIST, ip, &note).await {
+                        let _ = writeln!(res, "{}", warn);
+                    }
                 }
             }
         }
         Some("blacklist-remove" | "br") => {
             if let Some(ip) = fds.next() {
                 if ip == "all" {
-                    BLACKLIST.write().await.clear();
+                    if let Some(warn) = access_remove(ACCESS_KIND_BLACKLIST, "all").await {
+                        let _ = writeln!(res, "{}", warn);
+                    }
                 } else {
                     for ip in ip.split('|') {
-                        BLACKLIST.write().await.remove(ip);
+                        if let Some(warn) = access_remove(ACCESS_KIND_BLACKLIST, ip).await {
+                            let _ = writeln!(res, "{}", warn);
+                        }
                     }
                 }
             }
         }
         Some("blacklist" | "b") => {
-            if let Some(ip) = fds.next() {
-                res = format!("{}\n", BLACKLIST.read().await.get(ip).is_some());
-            } else {
-                for ip in BLACKLIST.read().await.clone().into_iter() {
-                    let _ = writeln!(res, "{ip}");
-                }
-            }
+            let ip = fds.next();
+            res = access_list(ACCESS_KIND_BLACKLIST, ip).await;
         }
         Some("blocklist-add" | "Ba") => {
             if let Some(ip) = fds.next() {
+                let note: String = fds.collect::<Vec<_>>().join(" ");
                 for ip in ip.split('|') {
-                    BLOCKLIST.write().await.insert(ip.to_owned());
+                    if let Some(warn) = access_add(ACCESS_KIND_BLOCKLIST, ip, &note).await {
+                        let _ = writeln!(res, "{}", warn);
+                    }
                 }
             }
         }
         Some("blocklist-remove" | "Br") => {
             if let Some(ip) = fds.next() {
                 if ip == "all" {
-                    BLOCKLIST.write().await.clear();
+                    if let Some(warn) = access_remove(ACCESS_KIND_BLOCKLIST, "all").await {
+                        let _ = writeln!(res, "{}", warn);
+                    }
                 } else {
                     for ip in ip.split('|') {
-                        BLOCKLIST.write().await.remove(ip);
+                        if let Some(warn) = access_remove(ACCESS_KIND_BLOCKLIST, ip).await {
+                            let _ = writeln!(res, "{}", warn);
+                        }
                     }
                 }
             }
         }
         Some("blocklist" | "B") => {
-            if let Some(ip) = fds.next() {
-                res = format!("{}\n", BLOCKLIST.read().await.get(ip).is_some());
-            } else {
-                for ip in BLOCKLIST.read().await.clone().into_iter() {
-                    let _ = writeln!(res, "{ip}");
-                }
-            }
+            let ip = fds.next();
+            res = access_list(ACCESS_KIND_BLOCKLIST, ip).await;
         }
         Some("downgrade-threshold" | "dt") => {
             if let Some(v) = fds.next() {

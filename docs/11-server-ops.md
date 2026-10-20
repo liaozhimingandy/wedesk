@@ -74,9 +74,14 @@ command: hbbr -p 5188
 5190 (TCP)  ← 5188 + 2   WebSocket 中继（已 publish）
 ```
 
-hbbr 是**完全无状态**的：不读数据库、不读密钥、不认客户端身份。
+hbbr 是**近乎无状态**的：不读密钥、不认客户端身份，
 它只负责把一条 TCP 连接上的字节流搬到另一条上。
 所以它随时可以重启、扩容、甚至起多个实例，不影响在线连接以外的任何东西。
+
+唯一的例外是**名单**：配了数据库时，黑名单 / 阻断名单落在
+`relay_access_list` 表（见 6.2 节），并周期性重载 —— 这是多台中继
+能共享同一份封禁的原因。这个状态是"可读可丢"的：库连不上时 hbbr
+退回文件模式继续转发，不会因为一张名单拒绝启动。
 
 > ⚠️ `hbbr` 的环境变量 **`PORT` 会 +1 之后才使用**（历史包袱，见 `src/hbbr.rs`）。
 > 写 `PORT=5188` 它就去监听 **5189**，正好撞上 hbbs 的 WebSocket 端口。
@@ -468,17 +473,40 @@ cd server && python rdctl.py backup
 
 ### 6.2 黑名单 / 封禁名单
 
-`server/data/` 下建这两个文件，每行一个 IP，然后**重启 hbbr**：
+两份名单，区别要分清：
 
-```
-blacklist.txt    # 命中即断开
-blocklist.txt    # 命中即拒绝
-```
+| 名单 | 效果 |
+|---|---|
+| `blacklist`（黑名单） | 命中后被**限速**（走 `LIMIT_SPEED`），不拒绝连接 |
+| `blocklist`（阻断名单） | 命中后**直接断开**，最严格 |
 
-日志里 `#blacklist(blacklist.txt): N` 会告诉你加载了多少条。
-
-> ⚠️ 这两个名单只在 **hbbr（中继路径）** 上生效。
+> ⚠️ 两者只在 **hbbr（中继路径）** 上生效。
 > P2P 直连的流量根本不经过服务器，**名单对它无效**。
+
+#### 推荐方式：控制台命令（改动立即生效，且会持久化）
+
+```bash
+docker compose exec hbbr /usr/bin/rustdesk-utils 2>/dev/null || true   # 端口 5188 也是控制台
+# 标准做法：直接连控制台端口发一行命令
+printf 'blacklist-add 1.2.3.4 暴力破解\n' | nc <server> 5188
+printf 'blacklist 1.2.3.4\n'            | nc <server> 5188   # 查询是否存在
+printf 'blacklist\n'                     | nc <server> 5188   # 列出全部（含备注与加入时间）
+printf 'blacklist-remove 1.2.3.4\n'      | nc <server> 5188
+printf 'blocklist-add 5.6.7.8\n'         | nc <server> 5188
+```
+
+#### 落盘位置
+
+- **配了数据库（compose 默认）** → 落在 `relay_access_list` 表，重启不丢；
+  启动时若库为空而 `blacklist.txt` 有内容，会自动迁移进库一次。
+  多台 hbbr 会每 `ACCESS_RELOAD_SECS`（默认 60）秒重载一次，天然共享同一份名单。
+- **没配数据库** → 落在 `server/data/blacklist.txt` / `blocklist.txt`
+  （本次改动补上了写回；上游原本只在启动时读、运行期改动重启即丢）。
+
+启动日志里 `#blacklist: N` / `#blocklist: N` 会告诉你加载了多少条。
+
+> 数据库连不上时 hbbr **不会**拒绝启动，而是退回文件模式并打一条 error：
+> 中继的可用性优先于名单的持久化，绝不能为一张名单把整条转发链路拖住。
 
 ### 6.3 数据库里到底有什么
 

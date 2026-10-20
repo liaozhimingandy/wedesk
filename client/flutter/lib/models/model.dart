@@ -264,6 +264,14 @@ class FfiModel with ChangeNotifier {
     timerScreenshot?.cancel();
   }
 
+  /// 记录连接建立到哪一步（阶段文案由 [connectionStageText] 翻译）。
+  ///
+  /// 这里惰性 init：文件传输 / 终端等会话不像远程桌面那样在 tab 页里预先
+  /// 注册共享状态，等事件来了再建，省得每个入口都补一遍 init。
+  setConnectionStage(String peerId, String stage, String detail) {
+    connectionProgressOf(peerId).set(stage, detail);
+  }
+
   setConnectionType(
       String peerId, bool secure, bool direct, String streamType) {
     cachedPeerData.secure = secure;
@@ -347,6 +355,8 @@ class FfiModel with ChangeNotifier {
         setConnectionType(peerId, evt['secure'] == 'true',
             evt['direct'] == 'true', evt['stream_type'] ?? '');
         resetRestartReconnectState();
+      } else if (name == 'connection_stage') {
+        setConnectionStage(peerId, evt['stage'] ?? '', evt['detail'] ?? '');
       } else if (name == 'switch_display') {
         // switch display is kept for backward compatibility
         handleSwitchDisplay(evt, sessionId, peerId);

@@ -148,6 +148,30 @@ pub struct RelayNode {
     pub connections: i32,
 }
 
+// ---------------------------------------------------------------------------
+// relay_access_list：hbbr 的"名单"（黑名单 / 阻断名单）
+//
+// 上游把这两份名单放在**内存**里，只在启动时从 blacklist.txt / blocklist.txt
+// 读一次，运行期 `blacklist-add` 的改动**从不写回**——容器一重启就全部丢失，
+// 而 IP 封禁恰恰是最需要跨重启保留的东西（否则每次重启都是一次"封禁失效"，
+// 恶意 IP 只要等到容器重启就能重来）。
+//
+// 现在只要配了数据库就落库（hbbr 首次接入存储），没配库时退回原来的
+// 文件 + 内存行为，单容器部署不受影响。
+// ---------------------------------------------------------------------------
+/// 黑名单：命中后被限速（走 blacklist_limiter），不拒绝连接
+pub const ACCESS_KIND_BLACKLIST: &str = "blacklist";
+/// 阻断名单：命中后直接断开，最严格
+pub const ACCESS_KIND_BLOCKLIST: &str = "blocklist";
+
+/// 名单里的一行。`created_at` 只用于展示/排错（已按后端格式化成字符串）。
+#[derive(Debug, Clone)]
+pub struct AccessEntry {
+    pub ip: String,
+    pub note: String,
+    pub created_at: String,
+}
+
 #[async_trait]
 pub trait DbBackend: Send + Sync {
     /// 后端名字，仅用于启动日志
@@ -203,6 +227,16 @@ pub trait DbBackend: Send + Sync {
     ) -> ResultType<()>;
     /// 读出全部中继节点（含静态权重与最近一次健康）。
     async fn load_relay_nodes(&self) -> ResultType<Vec<RelayNode>>;
+
+    // --- relay_access_list：hbbr 名单（黑名单 / 阻断名单） ----------------
+    /// 读出某个名单的全部条目（按加入时间升序）。
+    async fn load_access_list(&self, kind: &str) -> ResultType<Vec<AccessEntry>>;
+    /// 加一条；已存在则只更新备注（幂等，重复 add 不会报错）。
+    async fn add_access_entry(&self, kind: &str, ip: &str, note: &str) -> ResultType<()>;
+    /// 删一条；不存在视为成功。
+    async fn remove_access_entry(&self, kind: &str, ip: &str) -> ResultType<()>;
+    /// 清空某个名单。
+    async fn clear_access_list(&self, kind: &str) -> ResultType<()>;
 }
 
 // =============================================================================
@@ -452,6 +486,63 @@ impl DbBackend for SqliteBackend {
             })
             .collect())
     }
+
+    // --- relay_access_list ------------------------------------------------
+
+    async fn load_access_list(&self, kind: &str) -> ResultType<Vec<AccessEntry>> {
+        let mut conn = self.pool.get().await?;
+        // created_at 统一 cast 成文本：SQLite 的 datetime 是动态类型，
+        // 直接解码成 String 在少数写法下会失败，cast 是最省心的取法。
+        let rows = sqlx::query(
+            "select ip, ifnull(note, '') as note, \
+             ifnull(cast(created_at as text), '') as created_at \
+             from relay_access_list where kind = ? order by created_at, ip",
+        )
+        .bind(kind)
+        .fetch_all(&mut *conn)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| AccessEntry {
+                ip: r.get("ip"),
+                note: r.get("note"),
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    async fn add_access_entry(&self, kind: &str, ip: &str, note: &str) -> ResultType<()> {
+        let mut conn = self.pool.get().await?;
+        sqlx::query(
+            "insert into relay_access_list(kind, ip, note) values(?, ?, ?)
+             on conflict(kind, ip) do update set note=excluded.note",
+        )
+        .bind(kind)
+        .bind(ip)
+        .bind(note)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    async fn remove_access_entry(&self, kind: &str, ip: &str) -> ResultType<()> {
+        let mut conn = self.pool.get().await?;
+        sqlx::query("delete from relay_access_list where kind = ? and ip = ?")
+            .bind(kind)
+            .bind(ip)
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    async fn clear_access_list(&self, kind: &str) -> ResultType<()> {
+        let mut conn = self.pool.get().await?;
+        sqlx::query("delete from relay_access_list where kind = ?")
+            .bind(kind)
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
 }
 
 /// SQLite 侧的 server_config / connection_log DDL。
@@ -484,6 +575,13 @@ const SQLITE_EXTRA_DDL: &[&str] = &[
            healthy     integer not null default 1,
            connections integer not null default 0,
            updated_at  datetime not null default(current_timestamp)
+       )"#,
+    r#"create table if not exists relay_access_list (
+           kind       varchar(16) not null,
+           ip         varchar(64) not null,
+           note       text,
+           created_at datetime not null default(current_timestamp),
+           primary key (kind, ip)
        )"#,
 ];
 
@@ -789,6 +887,59 @@ impl DbBackend for PgBackend {
             })
             .collect())
     }
+
+    // --- relay_access_list ------------------------------------------------
+
+    async fn load_access_list(&self, kind: &str) -> ResultType<Vec<AccessEntry>> {
+        // timestamptz 不能被解码成 String，用 to_char 在 SQL 侧转成文本：
+        // 这样两个后端返回给上层的类型完全一致，调用方不必区分。
+        let rows = sqlx::query(
+            r#"select ip, coalesce(note, '') as note,
+                      to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at
+               from relay_access_list where kind = $1 order by created_at, ip"#,
+        )
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| AccessEntry {
+                ip: r.get("ip"),
+                note: r.get("note"),
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    async fn add_access_entry(&self, kind: &str, ip: &str, note: &str) -> ResultType<()> {
+        sqlx::query(
+            r#"insert into relay_access_list(kind, ip, note) values($1, $2, $3)
+               on conflict (kind, ip) do update set note = excluded.note"#,
+        )
+        .bind(kind)
+        .bind(ip)
+        .bind(note)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn remove_access_entry(&self, kind: &str, ip: &str) -> ResultType<()> {
+        sqlx::query(r#"delete from relay_access_list where kind = $1 and ip = $2"#)
+            .bind(kind)
+            .bind(ip)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn clear_access_list(&self, kind: &str) -> ResultType<()> {
+        sqlx::query(r#"delete from relay_access_list where kind = $1"#)
+            .bind(kind)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 /// PostgreSQL 的 peer 表结构。类型承接 SQLite 版：
@@ -842,6 +993,13 @@ const PG_EXTRA_DDL: &[&str] = &[
            healthy     boolean not null default true,
            connections integer not null default 0,
            updated_at  timestamptz not null default now()
+       )"#,
+    r#"create table if not exists relay_access_list (
+           kind       varchar(16) not null,
+           ip         varchar(64) not null,
+           note       text,
+           created_at timestamptz not null default now(),
+           primary key (kind, ip)
        )"#,
 ];
 
@@ -1075,6 +1233,11 @@ impl Database {
         self.backend.name() == "postgres"
     }
 
+    /// 后端名字（"sqlite" / "postgres"），供启动日志与控制台使用。
+    pub fn backend_name(&self) -> &'static str {
+        self.backend.name()
+    }
+
     pub async fn get_config(&self, key: &str) -> ResultType<Option<String>> {
         self.backend.get_config(key).await
     }
@@ -1124,6 +1287,24 @@ impl Database {
     /// 读出全部中继节点（含静态权重与最近一次健康）。
     pub async fn load_relay_nodes(&self) -> ResultType<Vec<RelayNode>> {
         self.backend.load_relay_nodes().await
+    }
+
+    // --- relay_access_list：hbbr 名单 -------------------------------------
+
+    pub async fn load_access_list(&self, kind: &str) -> ResultType<Vec<AccessEntry>> {
+        self.backend.load_access_list(kind).await
+    }
+
+    pub async fn add_access_entry(&self, kind: &str, ip: &str, note: &str) -> ResultType<()> {
+        self.backend.add_access_entry(kind, ip, note).await
+    }
+
+    pub async fn remove_access_entry(&self, kind: &str, ip: &str) -> ResultType<()> {
+        self.backend.remove_access_entry(kind, ip).await
+    }
+
+    pub async fn clear_access_list(&self, kind: &str) -> ResultType<()> {
+        self.backend.clear_access_list(kind).await
     }
 }
 
@@ -1234,6 +1415,45 @@ mod tests {
         let (backend, addr) = plan("", "./db_v2.sqlite3");
         assert_eq!(backend, "sqlite");
         assert_eq!(addr, "./db_v2.sqlite3");
+    }
+
+    // -----------------------------------------------------------------------
+    // 名单（黑名单 / 阻断名单）落库：只用 SQLite 就能跑，不需要 Postgres。
+    //
+    // 这条用例锁的是"重复 add 幂等 + 删除不存在的条目不报错"——hbbr 的控制台
+    // 命令会被反复敲、也会被脚本批量重放，任何一个不幂等都会让脚本失败或
+    // 名单被意外清空。PG 侧走同一套 trait 与同样形状的 SQL，这里通过即等价覆盖。
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_sqlite_access_list_roundtrip() {
+        let file = "test_access_list.db";
+        let _ = std::fs::remove_file(file);
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let db = super::Database::new(file).await.unwrap();
+            let bl = super::ACCESS_KIND_BLACKLIST;
+            let bk = super::ACCESS_KIND_BLOCKLIST;
+
+            db.add_access_entry(bl, "1.2.3.4", "brute force").await.unwrap();
+            // 重复 add 必须幂等：不报错、不重复，只刷新备注
+            db.add_access_entry(bl, "1.2.3.4", "again").await.unwrap();
+            db.add_access_entry(bk, "5.6.7.8", "").await.unwrap();
+
+            let list = db.load_access_list(bl).await.unwrap();
+            assert_eq!(list.len(), 1, "重复 add 不应产生重复行，实际 {list:?}");
+            assert_eq!(list[0].ip, "1.2.3.4");
+            assert_eq!(list[0].note, "again", "重复 add 应更新备注");
+            assert!(!list[0].created_at.is_empty(), "created_at 应能取到");
+            assert_eq!(db.load_access_list(bk).await.unwrap().len(), 1);
+
+            db.remove_access_entry(bl, "1.2.3.4").await.unwrap();
+            assert!(db.load_access_list(bl).await.unwrap().is_empty());
+            // 删除不存在的条目：必须视为成功，否则批量脚本会中断
+            db.remove_access_entry(bl, "9.9.9.9").await.unwrap();
+
+            db.clear_access_list(bk).await.unwrap();
+            assert!(db.load_access_list(bk).await.unwrap().is_empty());
+        });
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]

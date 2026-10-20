@@ -77,6 +77,13 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Error", "错误"),
         ("Reset by the peer", "连接被对方关闭"),
         ("Connecting...", "正在连接..."),
+        // 连接过程的阶段提示（Rust 侧 connection_stage 事件驱动，见
+        // client/src/client.rs::set_connection_stage）
+        ("Connecting to the rendezvous server...", "正在接入注册服务器..."),
+        ("Trying P2P direct connection...", "正在尝试 P2P 直连..."),
+        ("Connecting via relay server...", "正在通过中继服务器连接..."),
+        ("Establishing secure channel...", "正在建立加密通道..."),
+        ("Connection established", "连接已建立"),
         ("Connection in progress. Please wait.", "正在进行连接，请稍候。"),
         ("Please try 1 minute later", "一分钟后再试"),
         ("Login Error", "登录错误"),

@@ -6,6 +6,14 @@ use hbb_common::{config::RELAY_PORT, log, ResultType};
 use relay_server::*;
 mod version;
 mod health;
+// hbbr 只在一件事上用到数据库：把黑名单 / 阻断名单持久化下来。
+// （上游把它们放在内存里、重启即丢 —— 而封禁恰恰最需要跨重启保留。）
+// 没配 DB_TYPE/DB_URL/PG_* 时完全不连库，行为与上游一致。
+// allow(dead_code)：database.rs 是 hbbs 与 hbbr 共用的同一份文件，hbbr 只用
+// 到其中名单那几个方法，其余（peer / 审计 / 中继节点）对它都是死代码 ——
+// 不加这条每次编 hbbr 都会刷十几条 dead_code 警告，把真正的告警淹掉。
+#[allow(dead_code)]
+mod database;
 
 fn main() -> ResultType<()> {
     let _logger = Logger::try_with_env_or_str("info")?
@@ -30,10 +38,10 @@ fn main() -> ResultType<()> {
             section.iter().for_each(|(k, v)| common::set_arg(k, v));
         }
     }
-    // hbbr（中继）完全不使用数据库。但镜像默认 CMD 是 hbbs，运维经常把
-    // 数据库配置挂在中继容器上、或 docker run 时忘写 hbbr 命令启动了 hbbs，
-    // 然后对着"DB_URL 未设置/DB_TYPE=postgres…"的日志困惑。这里主动出声：
-    // 检测到数据库相关配置就说明 hbbr 会忽略它们，并提示怎么确认自己是谁。
+    // hbbr 只在"名单持久化"一件事上用数据库（详见 relay_server.rs），
+    // 其余（ID 台账、审计）一概不碰。但镜像默认 CMD 是 hbbs，运维经常
+    // docker run 时忘写 hbbr 命令而启动了 hbbs，然后对着"DB_URL 未设置 /
+    // DB_TYPE=postgres…"的日志困惑。这里把两种可能一次说清。
     let db_keys = ["DB_TYPE", "DB_URL", "PG_HOST", "PG_USER", "PG_PASSWORD", "PG_DB"];
     let db_cfg: Vec<&str> = db_keys
         .iter()
@@ -42,9 +50,10 @@ fn main() -> ResultType<()> {
         .collect();
     if !db_cfg.is_empty() {
         log::info!(
-            "hbbr（中继服务器）不使用数据库，忽略配置: {}（它们只对 hbbs 生效）。\
-             如果你期望启动的是 hbbs（ID 注册服务器），请检查容器命令 —— \
-             docker run 不带命令时镜像默认启动 hbbs，跑中继必须显式指定 hbbr",
+            "检测到数据库配置 {}：hbbr 只用它持久化黑名单 / 阻断名单，\
+             不写 ID 台账与审计表。如果你期望启动的是 hbbs（ID 注册服务器），\
+             请检查容器命令 —— docker run 不带命令时镜像默认启动 hbbs，\
+             跑中继必须显式指定 hbbr",
             db_cfg.join(", ")
         );
     }

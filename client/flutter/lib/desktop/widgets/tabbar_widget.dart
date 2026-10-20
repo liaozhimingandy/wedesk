@@ -519,8 +519,15 @@ class _DesktopTabState extends State<DesktopTab>
   Widget build(BuildContext context) {
     return Column(children: [
       Obx(() {
-        if (widget.showTabBar &&
-            stateGlobal.showTabBar.isTrue &&
+        // NOTE: `stateGlobal.showTabBar.isTrue` must be evaluated FIRST.
+        // GetX's Obx throws ("improper use of a GetX has been detected") when
+        // no observable is read during the build — with the instance-level
+        // [widget.showTabBar] checked first, a `false` short-circuits the
+        // condition and no Rx is touched, which turned the redesigned main
+        // window (showTabBar: false) into a solid grey window on release
+        // builds.
+        if (stateGlobal.showTabBar.isTrue &&
+            widget.showTabBar &&
             !(kUseCompatibleUiMode && isHideSingleItem())) {
           final showBottomDivider = _showTabBarBottomDivider(tabType);
           return SizedBox(

@@ -567,6 +567,26 @@ cp -R "$APP" client/flutter/build/ios/ipa/Payload/Runner.app   # -R 保留 .app 
 `xcodebuild -exportArchive` 或第三方工具重签。这是无证书 CI 的标准产物形态，
 与上游 rustdesk 一致（上游的 iOS IPA 上传步骤也是注释掉的）。
 
+### 18. overlay port 的补丁必须随仓库入库，不能构建时联网下载
+
+`client/res/vcpkg/*` 是我们自己的 overlay port，补丁一律以文件形式**提交进仓库**，
+portfile 里只用 `PATCHES <文件名>`，不要用 `vcpkg_download_distfile` 去 GitHub 下。
+
+原因（2026-10-20 实际踩到）：`mfx-dispatch` 原先在构建时下载
+`https://github.com/lu-zero/mfx_dispatch/commit/<sha>.patch?full_index=1`，
+GitHub 对这类链接时不时返回 **503**，vcpkg 自带重试（3 次、无退避）全部失败后
+直接 halt，整条流水线挂掉。该补丁 2.8 KB、内容恒定，已本地化为
+`client/res/vcpkg/mfx-dispatch/fix-missing-cstdint-import.patch`
+（与官方下载件 SHA512 逐字节一致，并用 `git apply` 在 1.35.1 源码上实测通过）。
+
+两个配套注意点：
+
+- `.gitattributes` 已把 `*.patch` 钉成 `eol=lf`。补丁一旦带 CRLF，`git apply`
+  会报 "patch does not apply"（vcpkg 是加 `--ignore-whitespace` 打的，部分文件
+  能过、部分不能，属于时好时坏的坑）。
+- vcpkg install 步骤已整体重试 3 次：一轮构建里多个 port 各自去 GitHub 取源码，
+  任一瞬时故障都会整步骤失败；重试只重建失败的那个 port（其余走二进制缓存）。
+
 ---
 
 ## 四、上游工作流都去哪了
@@ -590,6 +610,7 @@ GitHub 只加载 `workflows/*.yml`，所以移过去 = 停用，纯做存档参�
 | preflight 报"服务器地址仍是官方默认值" | `build/client/custom.toml` 没改 | 填真实 `rendezvous_host` |
 | preflight 报"仍残留上游公司名" | 忘了跑 customize.py | `python build/client/customize.py` |
 | vcpkg 步骤卡住超 60 min | x-gha 缓存没生效 | 确认已导出 `ACTIONS_CACHE_URL`；或首次本来就会慢 |
+| vcpkg 报 `curl operation failed with response code 503` / `Download failed, halting portfile` | 该 port 在构建时联网下载文件，GitHub 瞬时拒绝 | 优先把文件随仓库入库（见[设计点 18](#18-overlay-port-的补丁必须随仓库入库不能构建时联网下载)）；流水线本身也会整体重试 3 次 |
 | `Patch flutter` 报 already applied | 换了 Flutter 版本 | 此补丁只适用于 3.24.5，脚本已做版本判断跳过 |
 | 构建成功但客户端连不上 | 公钥不匹配 | 核对 `build/client/custom.toml` 的 `key` 与 hbbs 的 `id_ed25519.pub` |
 | 首次构建后想改服务器 IP | 地址是编译期注入的 | 改 `custom.toml` 后重新构建（用户仍可在界面临时改服务器） |

@@ -622,10 +622,28 @@ jobs:
           ls -l vcpkg.json
           echo "VCPKG_DEFAULT_HOST_TRIPLET=$VCPKG_DEFAULT_HOST_TRIPLET"
           echo "VCPKG_DEFAULT_HOST_TRIPLET=$VCPKG_DEFAULT_HOST_TRIPLET" >> "$GITHUB_STEP_SUMMARY"
-          if ! "$VCPKG_ROOT/vcpkg" install \
-              --triplet ${{ env.VCPKG_TRIPLET }} \
-              --x-install-root="$VCPKG_ROOT/installed"; then
-            echo "===== vcpkg 失败，输出全部 buildtree 日志 ====="
+          # 整体重试 3 次：vcpkg 自己对单个下载只重试 3 次且无退避，而一整轮
+          # 构建里有 aom / libvpx / ffmpeg / mfx-dispatch 等多个 port 各自去
+          # GitHub 取源码，只要其中一个撞上瞬时 503 就会整步骤失败
+          # （2026-10-20 就是 mfx-dispatch 的补丁链接 503）。
+          # 重试的代价可控：已装好的包走 x-gha 二进制缓存，只会重建失败的那个。
+          vcpkg_attempt=1
+          vcpkg_ok=0
+          while [ "$vcpkg_attempt" -le 3 ]; do
+            if "$VCPKG_ROOT/vcpkg" install \
+                --triplet ${{ env.VCPKG_TRIPLET }} \
+                --x-install-root="$VCPKG_ROOT/installed"; then
+              vcpkg_ok=1
+              break
+            fi
+            if [ "$vcpkg_attempt" -lt 3 ]; then
+              echo "::warning::vcpkg install 第 ${vcpkg_attempt} 次失败，60 秒后重试（GitHub 下载多为瞬时故障）"
+              sleep 60
+            fi
+            vcpkg_attempt=$((vcpkg_attempt + 1))
+          done
+          if [ "$vcpkg_ok" != "1" ]; then
+            echo "===== vcpkg 失败（已重试 3 次），输出全部 buildtree 日志 ====="
             # buildtrees 可能压根没建（manifest 解析就失败时），
             # 所以先探一下再 find，别让兜底诊断自己变成报错的主角。
             if [ -d "$VCPKG_ROOT/buildtrees" ]; then

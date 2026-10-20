@@ -1,10 +1,10 @@
-vcpkg_download_distfile(
-    MISSING_CSTDINT_IMPORT_PATCH
-    URLS https://github.com/lu-zero/mfx_dispatch/commit/d6241243f85a0d947bdfe813006686a930edef24.patch?full_index=1
-    FILENAME fix-missing-cstdint-import-d6241243f85a0d947bdfe813006686a930edef24.patch
-    SHA512 5d2ffc4ec2ba0e5859d01d2e072f75436ebc3e62e0f6580b5bb8b9f82fe588e7558a46a1fdfa0297a782c0eeb8f50322258d0dd9e41d927cc9be496727b61e44
-)
-
+# 注意：早期版本这里用 vcpkg_download_distfile 从
+# https://github.com/lu-zero/mfx_dispatch/commit/d624124...patch?full_index=1
+# 现下载这个补丁 —— GitHub 时不时对这种 commit patch 链接返回 503
+# （2026-10-20 CI 构建因此失败：重试 3 次全部 503，vcpkg 直接 halt）。
+# 补丁只有 2.8 KB 且内容恒定，已改为随 overlay port 一起入库
+# （内容与官方下载件的 SHA512 5d2ffc4e...b61e44 逐字节一致），
+# 构建过程不再为它联网。
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO lu-zero/mfx_dispatch
@@ -15,7 +15,7 @@ vcpkg_from_github(
         fix-unresolved-symbol.patch
         fix-pkgconf.patch
         0003-upgrade-cmake-3.14.patch
-        ${MISSING_CSTDINT_IMPORT_PATCH}
+        fix-missing-cstdint-import.patch
 )
 
 if(VCPKG_TARGET_IS_WINDOWS AND NOT VCPKG_TARGET_IS_MINGW)

@@ -42,28 +42,27 @@
 
 ## 二、主界面改成了什么
 
-改造前：左栏是「标题 + 一条蓝竖线 + 只读输入框」的朴素排版，
-ID 只能**双击**复制，Tab 是纯图标，状态栏一行小字。
+布局参考 ToDesk：**左侧竖排导航 + 右侧主内容**，主内容从上到下是
+「允许控制本设备 → 设备代码卡 → 远程控制设备」。
 
 改造后（文件 → 职责）：
 
-| 文件 | 改动 |
+| 文件 | 职责 |
 |---|---|
-| `desktop/widgets/local_device_card.dart` | **新增**。本机设备卡：蓝色渐变卡头放 12 位设备码（4 位一组）+ 复制按钮 + 服务状态点与「启动服务」；下方临时密码行带**显示/隐藏、复制、刷新、修改**四个可见按钮 |
-| `desktop/widgets/connect_panel.dart` | **新增**。连接区：46px 高搜索框（搜索图标 + 自动补全 + 一键清除）+ 蓝色主按钮「远程控制」+「更多」下拉（文件传输/摄像头/终端/TCP 隧道）+ 快捷入口 |
-| `desktop/pages/desktop_home_page.dart` | 左栏宽 200 → **260**（12 位 ID 需要空间）；删除旧的 `buildIDBoard` / `buildPasswordBoard` / `buildPopupMenu`；提示文案降为次要说明；帮助卡换成圆角卡片，警告用琥珀色、其余用品牌蓝（原来是粉红渐变） |
-| `desktop/pages/connection_page.dart` | 接入 `ConnectPanel`；底部 `OnlineStatusWidget` 重做为状态条：状态点 + 文案 + 「启动服务」+ 自建服务器提示 + 活动会话数 |
-| `common/widgets/peer_tab_page.dart` | 桌面端 Tab 从纯图标改为**带文字的胶囊**（选中态品牌渐变），保留横向拖拽排序与右键显隐菜单；移动端维持原图标条 |
-| `common/widgets/peers_view.dart` | 桌面端空状态改为中性设备图标 + 说明 + 引导语；移动端不变 |
-| `common/widgets/peer_card.dart` | 平铺视图圆角 5 → 10，悬浮边框改用 `WeColors.brand` |
+| `desktop/widgets/side_menu.dart` | **新增**。左侧导航栏（宽 208）：Logo、「远程控制 / 设备列表」两个导航项（选中态品牌软底色 + 品牌字色）、底部「高级设置」入口（复用 `DesktopTabPage.onAddSetting`） |
+| `desktop/widgets/local_device_card.dart` | 本机设备区：**「允许控制本设备」开关**（映射 `stop-service` 选项）+ 服务状态 pill；下方浅灰卡片左列「设备代码」（12 位 4 位一组大号 + 复制）、右列「连接模式」（临时密码 + 显示/隐藏/复制/刷新/修改），中间竖分隔线 |
+| `desktop/widgets/connect_panel.dart` | 连接区：标题行「远程控制设备」+ 就绪状态 pill、46px 搜索框（搜索图标 + 自动补全 + 一键清除）+ 蓝色主按钮「连接」、**连接模式单选**（远程控制 / 文件传输，Enter 与按钮跟随所选模式）、四张功能卡片（文件传输 / 摄像头 / 终端 / TCP 隧道） |
+| `desktop/pages/connection_page.dart` | 承接 `navIndex`（0=远程控制页，1=设备列表页），内部 `IndexedStack` 切换、两页保活；`header` 参数用于在连接区上方注入设备卡/帮助卡；底部状态栏保留 |
+| `desktop/pages/desktop_home_page.dart` | 普通模式：`Row[WeSideMenu, Expanded(ConnectionPage)]`；`incoming-only` 小窗保留旧紧凑布局（设备卡在左栏），`header` 置空避免重复渲染；帮助卡（安装/macOS 权限警告）移入主内容滚动区 |
 
 **用户友好度的实际增量**（都是原来要靠猜的操作）：
 
+- 「允许控制本设备」**开关直接放在主界面**（原来只能去设置里停/启服务）；
 - 设备码、临时密码都有**显式复制按钮**（原来只有双击）；
 - 临时密码可**显示/隐藏**（原来永远明文且无法核验）；
-- 服务没起时卡头直接给「启动服务」按钮（原来要点进设置）；
 - 输入框有**清除按钮**和搜索图标，聚焦时高亮品牌色；
-- Tab 有文字，不再靠图标猜「最近 / 收藏 / 发现」；
+- 连接前可用**单选**切换「远程控制 / 文件传输」，二/三类入口升级为卡片；
+- 「设备列表」成为独立页面，最近会话/收藏/地址簿不再挤在连接区下面；
 - 状态栏能看到**当前有几个会话**。
 
 ---
@@ -94,15 +93,20 @@ WeCard(
 
 ## 四、新增文案
 
-界面新增了 6 条文案，已同时进 `client/src/lang/cn.rs` 与 `tw.rs`：
+界面新增了 12 条文案，已同时进 `client/src/lang/cn.rs` 与 `tw.rs`：
 
 | key | 中文 | 用途 |
 |---|---|---|
-| `Remote control` | 远程控制 | 连接区主按钮 |
+| `Allow remote control` | 允许控制本设备 | 设备卡开关行 |
+| `Device ID` | 设备代码 | 设备码标签 |
+| `Connection mode` | 连接模式 | 密码列标签 |
+| `Remote control device` | 远程控制设备 | 连接区标题 |
+| `Ready to connect` | 已准备好连接 | 连接区状态 pill |
+| `Device list` | 设备列表 | 侧边导航项 |
+| `Remote control` | 远程控制 | 侧边导航项 / 模式单选 |
 | `Copy` | 复制 | 设备码/密码复制按钮 |
 | `Show` / `Hide` | 显示 / 隐藏 | 密码显隐 |
 | `Active sessions` | 活动会话 | 状态栏会话计数 |
-| `remote_control_hint` | 输入对方的设备码即可发起远程协助… | 连接区副标题、空状态引导 |
 
 其余语言（en 等）没有对应条目时会**回退显示英文 key**，这是上游 `translate()`
 的既有行为；要补齐就往对应 `src/lang/*.rs` 里加同样的 key。
@@ -126,9 +130,15 @@ WeCard(
 
 ## 六、验证
 
-本机没有 Flutter/Dart SDK，**改完无法 `flutter analyze`**。目前可用的校验手段：
+本机装了 Flutter SDK（`C:\flutter`，3.24.5 / Dart 3.5.4，与 CI 的
+`FLUTTER_VERSION` 一致），**改完可以在本地 `dart analyze`**：
 
-1. 括号配平：去掉注释与字符串后统计 `{} () []` 是否成对（本次改动已全量跑过）；
-2. 符号核对：确认引用的 `WeColors.*` / `WeSpace.*` / `WeRadii.*` 在
-   `wedesign.dart` 里确有定义；
-3. 真编译交由 CI 的 `build-windows.yml` 完成 —— **推分支前确保这条流水线能过**。
+1. `cd client/flutter && flutter pub get`（会改 `pubspec.lock`，用完
+   `git checkout -- pubspec.lock` 还原）；
+2. `lib/generated_bridge.dart` 本机生成不了（codegen 要解析整个 Rust
+   workspace，webm 子模块指向 chromium.googlesource.com 被拦），放一个
+   `noSuchMethod` 桩顶替，分析时过滤掉 `RustdeskImpl` 的
+   `undefined_method` 噪音，用完删除；
+3. `dart analyze <改动的文件>`，git 必须在 PATH 里。
+
+仍要由 CI 的 `build-windows.yml` 做最终真编译确认。

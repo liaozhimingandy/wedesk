@@ -824,5 +824,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Active sessions", "活动会话"),
         ("remote_control_hint", "输入对方的设备码即可发起远程协助，也可以搜索已保存的设备。"),
         ("Copy", "复制"),
+        ("Allow remote control", "允许控制本设备"),
+        ("Device ID", "设备代码"),
+        ("Device list", "设备列表"),
+        ("Remote control device", "远程控制设备"),
+        ("Ready to connect", "已准备好连接"),
+        ("Connection mode", "连接模式"),
     ].iter().cloned().collect();
 }

@@ -185,7 +185,19 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
 
 /// Connection page for connecting to a remote peer.
 class ConnectionPage extends StatefulWidget {
-  const ConnectionPage({Key? key}) : super(key: key);
+  const ConnectionPage({
+    Key? key,
+    this.navIndex = 0,
+    this.header = const [],
+  }) : super(key: key);
+
+  /// 0 = remote control page, 1 = device list page. Switched with an
+  /// [IndexedStack] so both pages keep their state while navigating.
+  final int navIndex;
+
+  /// Widgets rendered above the connect panel on the remote control page
+  /// (the local device card, help cards, ...).
+  final List<Widget> header;
 
   @override
   State<ConnectionPage> createState() => _ConnectionPageState();
@@ -296,29 +308,37 @@ class _ConnectionPageState extends State<ConnectionPage>
     return Column(
       children: [
         Expanded(
-            child: Column(
-          children: [
-            Row(
-              children: [
-                Flexible(
-                  child: ConnectPanel(
-                    idController: _idController,
-                    idEditingController: _idEditingController,
-                    focusNode: _idFocusNode,
-                    idInputFocused: _idInputFocused,
-                    allPeersLoader: _allPeersLoader,
-                    onConnect: onConnect,
-                  ),
+          child: IndexedStack(
+            index: widget.navIndex == 1 ? 1 : 0,
+            children: [
+              SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(
+                    WeSpace.xl, WeSpace.l, WeSpace.xl, WeSpace.xl),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ...widget.header,
+                    if (widget.header.isNotEmpty)
+                      const SizedBox(height: WeSpace.l),
+                    ConnectPanel(
+                      idController: _idController,
+                      idEditingController: _idEditingController,
+                      focusNode: _idFocusNode,
+                      idInputFocused: _idInputFocused,
+                      allPeersLoader: _allPeersLoader,
+                      onConnect: onConnect,
+                    ),
+                  ],
                 ),
-              ],
-            ).marginOnly(top: 22),
-            const SizedBox(height: 12),
-            Divider().paddingOnly(right: 12),
-            Expanded(child: PeerTabPage()),
-          ],
-        ).paddingOnly(left: 12.0)),
-        if (!isOutgoingOnly) const Divider(height: 1),
-        if (!isOutgoingOnly) OnlineStatusWidget()
+              ),
+              PeerTabPage(),
+            ],
+          ),
+        ),
+        if (!isOutgoingOnly) ...[
+          const Divider(height: 1),
+          OnlineStatusWidget()
+        ],
       ],
     );
   }

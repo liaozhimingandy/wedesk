@@ -9,7 +9,9 @@ import 'package:flutter_hbb/common/widgets/custom_password.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/connection_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
+import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/local_device_card.dart';
+import 'package:flutter_hbb/desktop/widgets/side_menu.dart';
 import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
 import 'package:flutter_hbb/common/widgets/wedesign.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
@@ -53,17 +55,44 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   final GlobalKey _childKey = GlobalKey();
 
+  /// 0 = remote control page, 1 = device list page (sidebar navigation).
+  int _navIndex = 0;
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
     final isIncomingOnly = bind.isIncomingOnly();
+    if (isIncomingOnly) {
+      // The small "incoming only" window keeps the old compact layout.
+      return _buildBlock(
+          child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          buildLeftPane(context),
+          const VerticalDivider(width: 1),
+          Expanded(child: buildRightPane(context)),
+        ],
+      ));
+    }
     return _buildBlock(
         child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        buildLeftPane(context),
-        if (!isIncomingOnly) const VerticalDivider(width: 1),
-        if (!isIncomingOnly) Expanded(child: buildRightPane(context)),
+        WeSideMenu(
+          selectedIndex: _navIndex,
+          onSelect: (i) {
+            if (_navIndex != i) {
+              setState(() => _navIndex = i);
+            }
+          },
+          onSettings: bind.isDisableSettings()
+              ? null
+              : () {
+                  DesktopTabPage.onAddSetting();
+                },
+        ),
+        const VerticalDivider(width: 1),
+        Expanded(child: buildRightPane(context)),
       ],
     ));
   }
@@ -184,11 +213,49 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  buildRightPane(BuildContext context) {
+  Widget buildRightPane(BuildContext context) {
     return Container(
       color: Theme.of(context).scaffoldBackgroundColor,
-      child: ConnectionPage(),
+      child: ConnectionPage(
+        navIndex: _navIndex,
+        header: _buildContentHeader(context),
+      ),
     );
+  }
+
+  /// Widgets shown above the connect panel on the "remote control" page:
+  /// the local device card, the tip and the install / permission help cards.
+  List<Widget> _buildContentHeader(BuildContext context) {
+    if (bind.isIncomingOnly()) {
+      // The compact "incoming only" layout keeps the device card on its
+      // left pane, so the header must stay empty to avoid duplicates.
+      return const [];
+    }
+    final isOutgoingOnly = bind.isOutgoingOnly();
+    return [
+      if (!isOutgoingOnly)
+        LocalDeviceCard(
+          onSvcStatusChanged: () {
+            if (bind.isIncomingOnly() && isInHomePage()) {
+              Future.delayed(const Duration(milliseconds: 300), () {
+                _updateWindowSize();
+              });
+            }
+          },
+        ),
+      buildTip(context),
+      FutureBuilder<Widget>(
+        future: Future.value(
+            Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
+        builder: (_, data) {
+          if (data.hasData) {
+            return data.data!;
+          } else {
+            return const Offstage();
+          }
+        },
+      ),
+    ];
   }
 
   buildTip(BuildContext context) {

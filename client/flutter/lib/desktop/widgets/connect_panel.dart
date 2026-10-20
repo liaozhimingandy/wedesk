@@ -1,18 +1,15 @@
-// ToDesk style connect panel: one wide search field for the remote device
-// code with autocomplete, a dominant "remote control" action and small quick
-// entries for the secondary connection types.
+// ToDesk style connect section: a "remote control device" header with a
+// readiness pill, one wide search field for the remote device code with
+// autocomplete, a dominant "connect" action, connection mode radios and a
+// row of feature cards for the secondary connection types.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/formatter/id_formatter.dart';
 import 'package:flutter_hbb/common/widgets/autocomplete.dart';
-import 'package:flutter_hbb/common/widgets/connection_page_title.dart';
-import 'package:flutter_hbb/consts.dart';
-import 'package:flutter_hbb/desktop/widgets/material_mod_popup_menu.dart'
-    as mod_menu;
-import 'package:flutter_hbb/desktop/widgets/popup_menu.dart';
 import 'package:flutter_hbb/common/widgets/wedesign.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
+import 'package:flutter_hbb/models/state_model.dart';
 import 'package:get/get.dart';
 
 typedef ConnectCallback = void Function({
@@ -47,60 +44,201 @@ class ConnectPanel extends StatefulWidget {
 class _ConnectPanelState extends State<ConnectPanel> {
   // https://github.com/flutter/flutter/issues/157244
   Iterable<Peer> _autocompleteOpts = [];
-  final _menuOpen = false.obs;
-  Offset _menuOffset = Offset.zero;
+  bool _fileTransferMode = false;
 
   @override
   Widget build(BuildContext context) {
-    final colors = WeColors.of(context);
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 720),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          getConnectionPageTitle(context, false),
-          const SizedBox(height: WeSpace.xs),
-          Text(
-            translate('remote_control_hint'),
-            style: TextStyle(fontSize: 12.5, color: colors.textTertiary),
-          ),
-          const SizedBox(height: WeSpace.m),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Expanded(child: _buildSearchField(context)),
-              const SizedBox(width: WeSpace.m),
-              WePrimaryButton(
-                text: translate('Remote control'),
-                icon: Icons.desktop_windows_outlined,
-                height: 46,
-                width: 152,
-                onPressed: () => widget.onConnect(),
-              ),
-              const SizedBox(width: WeSpace.xs),
-              _buildMoreButton(context),
-            ],
-          ),
-          const SizedBox(height: WeSpace.xs),
-          Wrap(
-            crossAxisAlignment: WrapCrossAlignment.center,
-            spacing: WeSpace.xs,
-            children: [
-              _buildQuickAction(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader(context),
+        const SizedBox(height: WeSpace.l),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(child: _buildSearchField(context)),
+            const SizedBox(width: WeSpace.m),
+            WePrimaryButton(
+              text: translate('Connect'),
+              height: 46,
+              width: 128,
+              onPressed: () =>
+                  widget.onConnect(isFileTransfer: _fileTransferMode),
+            ),
+          ],
+        ),
+        const SizedBox(height: WeSpace.s),
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: WeSpace.xl,
+          children: [
+            _buildModeRadio(
+              context,
+              text: translate('Remote control'),
+              selected: !_fileTransferMode,
+              onTap: () => setState(() => _fileTransferMode = false),
+            ),
+            _buildModeRadio(
+              context,
+              text: translate('Transfer file'),
+              selected: _fileTransferMode,
+              onTap: () => setState(() => _fileTransferMode = true),
+            ),
+          ],
+        ),
+        const SizedBox(height: WeSpace.l),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: _buildFeatureCard(
                 context,
-                icon: Icons.swap_vert_circle_outlined,
-                text: translate('Transfer file'),
+                icon: Icons.folder_copy_outlined,
+                label: translate('Transfer file'),
                 onTap: () => widget.onConnect(isFileTransfer: true),
               ),
-              _buildQuickAction(
+            ),
+            const SizedBox(width: WeSpace.m),
+            Expanded(
+              child: _buildFeatureCard(
                 context,
                 icon: Icons.videocam_outlined,
-                text: translate('View camera'),
+                label: translate('View camera'),
                 onTap: () => widget.onConnect(isViewCamera: true),
               ),
+            ),
+            const SizedBox(width: WeSpace.m),
+            Expanded(
+              child: _buildFeatureCard(
+                context,
+                icon: Icons.terminal_outlined,
+                label: '${translate('Terminal')} (beta)',
+                onTap: () => widget.onConnect(isTerminal: true),
+              ),
+            ),
+            if (isDesktop) ...[
+              const SizedBox(width: WeSpace.m),
+              Expanded(
+                child: _buildFeatureCard(
+                  context,
+                  icon: Icons.swap_horiz_outlined,
+                  label: translate('TCP tunneling'),
+                  onTap: () => widget.onConnect(isTcpTunneling: true),
+                ),
+              ),
             ],
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSectionHeader(BuildContext context) {
+    final colors = WeColors.of(context);
+    final svcStoppedRx = _svcStoppedRx();
+    return Obx(() {
+      final svcStopped = svcStoppedRx?.value ?? false;
+      final status = stateGlobal.svcStatus.value;
+      final ready = !svcStopped && status == SvcStatus.ready;
+      final statusText = svcStopped
+          ? translate("Service is not running")
+          : status == SvcStatus.connecting
+              ? translate("connecting_status")
+              : status == SvcStatus.notReady
+                  ? translate("not_ready_status")
+                  : translate('Ready to connect');
+      return Row(
+        children: [
+          Text(
+            translate('Remote control device'),
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: colors.textPrimary,
+            ),
+          ),
+          const SizedBox(width: WeSpace.s),
+          WeStatusPill(
+            text: statusText,
+            color: ready ? colors.success : colors.warn,
           ),
         ],
+      );
+    });
+  }
+
+  Widget _buildModeRadio(
+    BuildContext context, {
+    required String text,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final colors = WeColors.of(context);
+    return InkWell(
+      borderRadius: WeRadii.smRadius,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              selected ? Icons.radio_button_checked : Icons.radio_button_off,
+              size: 18,
+              color: selected ? colors.brand : colors.textTertiary,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              text,
+              style: TextStyle(
+                fontSize: 13.5,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                color: selected ? colors.textPrimary : colors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFeatureCard(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    final colors = WeColors.of(context);
+    return InkWell(
+      borderRadius: WeRadii.mdRadius,
+      onTap: onTap,
+      child: Container(
+        height: 84,
+        decoration: BoxDecoration(
+          borderRadius: WeRadii.mdRadius,
+          color: colors.surfaceAlt,
+          border: Border.all(color: colors.border, width: 1),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 26, color: colors.brand),
+            const SizedBox(height: WeSpace.s),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: colors.textSecondary,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -253,7 +391,7 @@ class _ConnectPanelState extends State<ConnectPanel> {
             widget.idController.id = v;
           },
           onSubmitted: (_) {
-            widget.onConnect();
+            widget.onConnect(isFileTransfer: _fileTransferMode);
           },
         ).workaroundFreezeLinuxMint();
       },
@@ -317,90 +455,10 @@ class _ConnectPanelState extends State<ConnectPanel> {
     );
   }
 
-  Widget _buildMoreButton(BuildContext context) {
-    return Obx(
-      () => WeIconButton(
-        icon: _menuOpen.value
-            ? Icons.keyboard_arrow_up_rounded
-            : Icons.more_vert_rounded,
-        tooltip: translate('More'),
-        size: 34,
-        iconSize: 20,
-        active: _menuOpen.value,
-        onTapDown: (details) {
-          _menuOffset = details.globalPosition;
-        },
-        onTap: () async {
-          _menuOpen.value = true;
-          final x = _menuOffset.dx;
-          final y = _menuOffset.dy;
-          await mod_menu
-              .showMenu(
-            context: context,
-            position: RelativeRect.fromLTRB(x, y, x, y),
-            items: [
-              ('Transfer file', () => widget.onConnect(isFileTransfer: true)),
-              ('View camera', () => widget.onConnect(isViewCamera: true)),
-              (
-                '${translate('Terminal')} (beta)',
-                () => widget.onConnect(isTerminal: true)
-              ),
-              if (isDesktop)
-                (
-                  'TCP tunneling',
-                  () => widget.onConnect(isTcpTunneling: true)
-                ),
-            ]
-                .map((e) => MenuEntryButton<String>(
-                      childBuilder: (TextStyle? style) =>
-                          Text(translate(e.$1), style: style),
-                      proc: () => e.$2(),
-                      padding: EdgeInsets.symmetric(
-                          horizontal: kDesktopMenuPadding.left),
-                      dismissOnClicked: true,
-                    ))
-                .map((e) => e.build(
-                    context,
-                    const MenuConfig(
-                        commonColor: CustomPopupMenuTheme.commonColor,
-                        height: CustomPopupMenuTheme.height,
-                        dividerHeight: CustomPopupMenuTheme.dividerHeight)))
-                .expand((i) => i)
-                .toList(),
-            elevation: 8,
-          )
-              .then((_) {
-            _menuOpen.value = false;
-          });
-        },
-      ),
-    );
-  }
-
-  Widget _buildQuickAction(
-    BuildContext context, {
-    required IconData icon,
-    required String text,
-    required VoidCallback onTap,
-  }) {
-    final colors = WeColors.of(context);
-    return InkWell(
-      borderRadius: WeRadii.smRadius,
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 15, color: colors.textSecondary),
-            const SizedBox(width: 4),
-            Text(
-              text,
-              style: TextStyle(fontSize: 12.5, color: colors.textSecondary),
-            ),
-          ],
-        ),
-      ),
-    );
+  RxBool? _svcStoppedRx() {
+    if (!Get.isRegistered<RxBool>(tag: 'stop-service')) {
+      return null;
+    }
+    return Get.find<RxBool>(tag: 'stop-service');
   }
 }

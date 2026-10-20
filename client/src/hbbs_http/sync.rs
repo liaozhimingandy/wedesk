@@ -19,10 +19,22 @@ const TIME_HEARTBEAT: Duration = Duration::from_secs(15);
 const UPLOAD_SYSINFO_TIMEOUT: Duration = Duration::from_secs(120);
 const TIME_CONN: Duration = Duration::from_secs(3);
 
+// How many consecutive heartbeat failures before we stop trying.
+//
+// When only a custom rendezvous server is configured (no explicit
+// `api-server`), the client derives an API endpoint as rendezvous_port - 2
+// (5187 -> 5185) — see `common::get_api_server_`. A self-hosted hbbs does not
+// ship that API service, so every single heartbeat would time out and retry
+// forever, spamming the log every TIME_HEARTBEAT. After this many failures we
+// conclude there is no API service behind this server and go quiet.
+const HEARTBEAT_GIVE_UP: usize = 3;
+
 #[cfg(not(any(target_os = "ios")))]
 lazy_static::lazy_static! {
     static ref SENDER : Mutex<broadcast::Sender<Vec<i32>>> = Mutex::new(start_hbbs_sync());
     static ref PRO: Arc<Mutex<bool>> = Default::default();
+    // Consecutive heartbeat failures, see HEARTBEAT_GIVE_UP.
+    static ref HEARTBEAT_FAILS: Mutex<usize> = Mutex::new(0);
 }
 
 #[cfg(not(any(target_os = "ios")))]
@@ -244,7 +256,35 @@ async fn start_hbbs_sync_async() {
                 v["modified_at"] = json!(modified_at);
                 let response = crate::post_request(url.clone(), v.to_string(), "").await;
                 if let Err(err) = &response {
-                    hbb_common::throttled_log!(API_LOG_INTERVAL, warn, "Heartbeat failed: {err:?}");
+                    // Count consecutive failures; a self-hosted server has no
+                    // API service at rendezvous_port - 2, so don't retry it
+                    // for the whole lifetime of the process.
+                    let fails = {
+                        let mut g = HEARTBEAT_FAILS.lock().unwrap();
+                        if *g < usize::MAX {
+                            *g += 1;
+                        }
+                        *g
+                    };
+                    if fails <= HEARTBEAT_GIVE_UP {
+                        hbb_common::throttled_log!(
+                            API_LOG_INTERVAL,
+                            warn,
+                            "Heartbeat failed ({fails}/{HEARTBEAT_GIVE_UP}): {err:?}"
+                        );
+                    }
+                    if fails >= HEARTBEAT_GIVE_UP {
+                        log::info!(
+                            "heartbeat to {url} unreachable, giving up. \
+                             This is expected on self-hosted servers: the api-server is \
+                             derived as rendezvous_port-2 (5187 -> 5185) and no API \
+                             service listens there. Set an explicit api-server or turn \
+                             off device registration to silence it."
+                        );
+                        return;
+                    }
+                } else {
+                    *HEARTBEAT_FAILS.lock().unwrap() = 0;
                 }
                 if let Ok(s) = response {
                     if let Ok(mut rsp) = serde_json::from_str::<HashMap::<&str, Value>>(&s) {

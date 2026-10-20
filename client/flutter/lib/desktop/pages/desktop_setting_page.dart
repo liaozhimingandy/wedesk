@@ -2727,7 +2727,7 @@ class _AboutState extends State<_About> {
                       .marginSymmetric(vertical: 4.0)),
               InkWell(
                   onTap: () {
-                    launchUrlString('https://wedesk.alsoapp.com/privacy.html');
+                    launchUrlString('https://www.alsoapp.com/wedesk/privacy.html');
                   },
                   child: Text(
                     translate('Privacy Statement'),
@@ -2735,7 +2735,7 @@ class _AboutState extends State<_About> {
                   ).marginSymmetric(vertical: 4.0)),
               InkWell(
                   onTap: () {
-                    launchUrlString('https://wedesk.alsoapp.com');
+                    launchUrlString('https://www.alsoapp.com/wedesk');
                   },
                   child: Text(
                     translate('Website'),

@@ -18,7 +18,9 @@ class WeWindowTopBar extends StatelessWidget {
   /// Opens the settings window; hidden entirely when settings are disabled.
   final VoidCallback? onSettings;
 
-  static const _website = 'https://wedesk.alsoapp.com';
+  // 顶栏"快速开始/帮助"的落地页。与 custom.toml [brand] website 联动：
+  // customize.py 会在构建时把这里的值替换成配置里的官网地址。
+  static const _website = 'https://www.alsoapp.com/wedesk';
 
   @override
   Widget build(BuildContext context) {

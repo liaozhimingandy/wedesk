@@ -27,15 +27,15 @@ g_arpsystemcomponent = {
     },
     "Contact": {
         "msi": "ARPCONTACT",
-        "v": "https://wedesk.alsoapp.com",
+        "v": "https://www.alsoapp.com/wedesk",
     },
     "HelpLink": {
         "msi": "ARPHELPLINK",
-        "v": "https://wedesk.alsoapp.com",
+        "v": "https://www.alsoapp.com/wedesk",
     },
     "ReadMe": {
         "msi": "ARPREADME",
-        "v": "https://wedesk.alsoapp.com",
+        "v": "https://www.alsoapp.com/wedesk",
     },
 }
 

@@ -213,9 +213,9 @@ class _InstallPageBodyState extends State<_InstallPageBody>
                           InkWell(
                             hoverColor: Colors.transparent,
                             onTap: () => launchUrlString(
-                                'https://wedesk.alsoapp.com/privacy.html'),
+                                'https://www.alsoapp.com/wedesk/privacy.html'),
                             child: Tooltip(
-                              message: 'https://wedesk.alsoapp.com/privacy.html',
+                              message: 'https://www.alsoapp.com/wedesk/privacy.html',
                               child: Row(children: [
                                 Icon(Icons.launch_outlined, size: 16)
                                     .marginOnly(right: 5),

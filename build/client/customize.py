@@ -316,6 +316,12 @@ def build_rules(c: dict) -> "list[Rule]":
                 "launchUrlString('%s');" % base,
             ),
             Rule(
+                "顶栏 - 快速开始/帮助链接",
+                "flutter/lib/desktop/widgets/window_top_bar.dart",
+                "static const _website = 'https://rustdesk.com';",
+                "static const _website = '%s';" % base,
+            ),
+            Rule(
                 "关于页 - 隐私政策链接",
                 "flutter/lib/desktop/pages/desktop_setting_page.dart",
                 "launchUrlString('https://rustdesk.com/privacy.html');",

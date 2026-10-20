@@ -48,7 +48,10 @@ exe_name = "wedesk"
 company_name = "贵公司名称"
 
 # 官网域名，用于替换界面里的帮助/隐私政策链接
-website = "https://wedesk.alsoapp.com"
+# 相关链接统一指向 https://www.alsoapp.com/wedesk/ 下：
+#   官网/帮助  → https://www.alsoapp.com/wedesk
+#   隐私政策   → https://www.alsoapp.com/wedesk/privacy.html
+website = "https://www.alsoapp.com/wedesk"
 
 
 [advanced]

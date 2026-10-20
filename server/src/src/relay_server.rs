@@ -86,6 +86,11 @@ pub async fn start_with_bind(
     log::info!("Listening on tcp :{}", port);
     let port2 = port + 2;
     log::info!("Listening on websocket :{}", port2);
+    // 健康检查 HTTP 服务：默认主端口+4（5188 → 5192），--health-port/HEALTH_PORT
+    // 可覆盖，设 0 关闭。hbbr 不碰数据库，探针只报自身存活。
+    if let Some(hp) = crate::health::resolve_port("health-port", port + 4) {
+        crate::health::start(hp, "hbbr", None);
+    }
     let main_task = async move {
         loop {
             log::info!("Start");

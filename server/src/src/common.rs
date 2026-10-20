@@ -222,7 +222,9 @@ fn resolve_key_path(path: &Path) -> ResultType<PathBuf> {
 /// On Unix, restricts access from creation so another user cannot retain a readable descriptor.
 /// Follows dangling symlinks for configured key paths, but never overwrites an existing key.
 /// Writes after verifying Unix permissions; failures close and try to remove the new file.
-fn create_private_key_file(path: &str, contents: &[u8]) -> ResultType<()> {
+/// 原子地新建一个私钥文件（已存在则报错，绝不覆盖）。
+/// 供 `gen_sk` 生成新钥匙与 `server_key` 的旧库迁移共用。
+pub fn create_private_key_file(path: &str, contents: &[u8]) -> ResultType<()> {
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -394,33 +396,6 @@ pub fn gen_sk(wait: u64) -> ResultType<(String, Option<sign::SecretKey>)> {
     log::info!("Private/public key written to {}/{}", sk_file, pub_file);
     log::debug!("Public key: {}", pk);
     Ok((pk, Some(sk)))
-}
-
-/// 把一对密钥回写到本地文件（`id_ed25519` / `id_ed25519.pub`）。
-///
-/// 服务于密钥托管：钥匙来自数据库时，本地文件可能并不存在，
-/// 补一份副本能让 `rdctl.py key` 和既有运维脚本照常工作。
-///
-/// 两点取舍：
-/// - 走 `create_private_key_file`（内部 `create_new`），**已有私钥绝不覆盖**，
-///   所以本函数是幂等的，重启多少次都不会把正在用的钥匙换掉；
-/// - 任一步失败只告警、不返回错误：钥匙在数据库里才是权威来源，
-///   本地文件只是副本。数据目录只读、磁盘满等环境下 hbbs 仍应正常启动。
-///
-/// 注：只有 hbbs 会用到（hbbr 不走密钥托管路径），但 common.rs 是
-/// hbbs / hbbr 两个二进制共用的模块，所以在 hbbr 的编译单元里会命中
-/// dead_code 告警 —— 与文件里已有的 `now()` 一样加 allow 抑制。
-#[allow(dead_code)]
-pub fn mirror_key_to_files(pk: &str, sk: &sign::SecretKey) {
-    let sk_file = PRIVATE_KEY_FILE;
-    let pub_file = format!("{sk_file}.pub");
-    if let Err(err) = create_private_key_file(sk_file, base64::encode(sk).as_bytes()) {
-        log::warn!("密钥托管：写 {sk_file} 失败（钥匙已在库中，可忽略）：{err}");
-        return;
-    }
-    if let Err(err) = write_public_key(&pub_file, pk, false) {
-        log::warn!("密钥托管：写 {pub_file} 失败（钥匙已在库中，可忽略）：{err}");
-    }
 }
 
 #[cfg(unix)]

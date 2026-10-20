@@ -60,26 +60,20 @@ pub struct Peer {
 }
 
 // ---------------------------------------------------------------------------
-// server_config：服务端自身的键值状态（目前托管的是 id_ed25519 密钥对）
+// server_config：服务端自身的键值状态
 // ---------------------------------------------------------------------------
-/// 私钥在 `server_config` 表里的键名（值是 base64 后的 64 字节 ed25519 私钥）
+// 2026-10-20 起**不再托管密钥**：私钥/公钥改为只存文件（docker secrets
+// 标准挂载，见 server_key.rs），库中不再写入任何密钥材料。
+// 保留本表与常量只有两个用途：
+//   1. 旧版本升级上来的部署，库里还残留着私钥 —— 启动时 server_key
+//      会把它迁移回文件，然后调用 remove_config 把这三行删干净；
+//   2. 未来若有需要落库的"非敏感"键值状态，可复用这张表。
+/// 旧版私钥在 `server_config` 表里的键名（base64 后的 64 字节 ed25519 私钥）
 pub const CFG_PRIVATE_KEY: &str = "server.private_key";
-/// 公钥在 `server_config` 表里的键名（值可由私钥推导，存一份是为了便于检索与核对）
+/// 旧版公钥在 `server_config` 表里的键名（迁移时一并删除）
 pub const CFG_PUBLIC_KEY: &str = "server.public_key";
-/// 记录这把密钥最初是哪台实例写进去的（仅用于排障，格式 `hostname@unix秒`）
+/// 旧版密钥来源标记（迁移时一并删除）
 pub const CFG_KEY_ORIGIN: &str = "server.key_origin";
-
-/// 是否允许把密钥写进数据库。默认开；关掉则退回"只用文件"的上游行为。
-/// 生产上若接受不了"私钥进库"，把它设成 N，并务必把 ./data 纳入备份。
-pub fn key_hosting_enabled() -> bool {
-    !matches!(
-        crate::common::get_arg_or("DB_STORE_KEY", "Y".to_owned())
-            .trim()
-            .to_uppercase()
-            .as_str(),
-        "N" | "NO" | "0" | "FALSE"
-    )
-}
 
 // ---------------------------------------------------------------------------
 // connection_log：连接审计
@@ -175,16 +169,14 @@ pub trait DbBackend: Send + Sync {
         info: &str,
     ) -> ResultType<()>;
 
-    // --- server_config：键值对状态（密钥托管） ----------------------------
+    // --- server_config：键值对状态 ----------------------------------------
     /// 读一个配置项；不存在返回 Ok(None)。
+    /// （密钥已退出数据库，只剩旧版部署迁移时读取一次。）
     async fn get_config(&self, key: &str) -> ResultType<Option<String>>;
-    /// 写（upsert）一个配置项，已存在则覆盖。
-    async fn set_config(&self, key: &str, value: &str) -> ResultType<()>;
-    /// 仅当不存在时写入；返回是否真的写入（已存在返回 false）。
-    ///
-    /// 密钥托管用它保证"先启动者为准" —— 若允许覆盖，后启动的实例会把
-    /// 正在被客户端使用的钥匙换掉，表现为大面积"密钥不匹配"。
-    async fn put_config_if_absent(&self, key: &str, value: &str) -> ResultType<bool>;
+    /// 删除一个配置项（不存在视为成功）。旧版密钥迁移后清理用。
+    async fn remove_config(&self, key: &str) -> ResultType<()>;
+    /// 轻量探活（select 1），供健康检查使用。
+    async fn ping(&self) -> ResultType<()>;
 
     // --- connection_log：连接审计 ----------------------------------------
     /// 批量写入审计事件。
@@ -352,32 +344,19 @@ impl DbBackend for SqliteBackend {
         Ok(row.map(|r| r.get::<String, _>("value")))
     }
 
-    async fn set_config(&self, key: &str, value: &str) -> ResultType<()> {
+    async fn remove_config(&self, key: &str) -> ResultType<()> {
         let mut conn = self.pool.get().await?;
-        sqlx::query(
-            "insert into server_config(key, value, updated_at)
-             values(?, ?, current_timestamp)
-             on conflict(key) do update set value = excluded.value, updated_at = current_timestamp",
-        )
-        .bind(key)
-        .bind(value)
-        .execute(&mut *conn)
-        .await?;
+        sqlx::query("delete from server_config where key = ?")
+            .bind(key)
+            .execute(&mut *conn)
+            .await?;
         Ok(())
     }
 
-    async fn put_config_if_absent(&self, key: &str, value: &str) -> ResultType<bool> {
+    async fn ping(&self) -> ResultType<()> {
         let mut conn = self.pool.get().await?;
-        let res = sqlx::query(
-            "insert into server_config(key, value, updated_at)
-             values(?, ?, current_timestamp)
-             on conflict(key) do nothing",
-        )
-        .bind(key)
-        .bind(value)
-        .execute(&mut *conn)
-        .await?;
-        Ok(res.rows_affected() > 0)
+        sqlx::query("select 1").execute(&mut *conn).await?;
+        Ok(())
     }
 
     async fn insert_audit(&self, events: &[AuditEvent]) -> ResultType<()> {
@@ -702,30 +681,17 @@ impl DbBackend for PgBackend {
         Ok(row.map(|r| r.get::<String, _>("value")))
     }
 
-    async fn set_config(&self, key: &str, value: &str) -> ResultType<()> {
-        sqlx::query(
-            r#"insert into server_config(key, value, updated_at)
-               values($1, $2, now())
-               on conflict (key) do update set value = excluded.value, updated_at = now()"#,
-        )
-        .bind(key)
-        .bind(value)
-        .execute(&self.pool)
-        .await?;
+    async fn remove_config(&self, key: &str) -> ResultType<()> {
+        sqlx::query(r#"delete from server_config where key = $1"#)
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
-    async fn put_config_if_absent(&self, key: &str, value: &str) -> ResultType<bool> {
-        let res = sqlx::query(
-            r#"insert into server_config(key, value, updated_at)
-               values($1, $2, now())
-               on conflict (key) do nothing"#,
-        )
-        .bind(key)
-        .bind(value)
-        .execute(&self.pool)
-        .await?;
-        Ok(res.rows_affected() > 0)
+    async fn ping(&self) -> ResultType<()> {
+        sqlx::query("select 1").execute(&self.pool).await?;
+        Ok(())
     }
 
     async fn insert_audit(&self, events: &[AuditEvent]) -> ResultType<()> {
@@ -1113,12 +1079,13 @@ impl Database {
         self.backend.get_config(key).await
     }
 
-    pub async fn set_config(&self, key: &str, value: &str) -> ResultType<()> {
-        self.backend.set_config(key, value).await
+    pub async fn remove_config(&self, key: &str) -> ResultType<()> {
+        self.backend.remove_config(key).await
     }
 
-    pub async fn put_config_if_absent(&self, key: &str, value: &str) -> ResultType<bool> {
-        self.backend.put_config_if_absent(key, value).await
+    /// 数据库探活（select 1）；失败返回 false。健康检查用它判定 status。
+    pub async fn ping(&self) -> bool {
+        self.backend.ping().await.is_ok()
     }
 
     pub async fn insert_audit(&self, events: &[AuditEvent]) -> ResultType<()> {

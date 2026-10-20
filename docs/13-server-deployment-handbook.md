@@ -168,8 +168,8 @@ flowchart TB
 |---|---|---|
 | 启用方式 | 什么都不用改 | `DB_TYPE=sqlite` + `DB_URL=/root/db_v2.sqlite3` 两行一起改 |
 | 数据位置 | `server/deploy/pgdata/` | `server/data/db_v2.sqlite3` |
-| 库内表 | `peer` + `server_config` + `connection_log` + `relay_nodes` | 同上（表都会建，但密钥托管 / 审计仅 PG 生效；`relay_nodes` 两端都用，见 2.6） |
-| 密钥托管 | ✅ 多实例共享同一把钥匙 | ❌ 只用本地文件 |
+| 库内表 | `peer` + `connection_log` + `relay_nodes`（`server_config` 仅旧版升级残留，启动时自动清空） | 同上（审计仅 PG 生效；`relay_nodes` 两端都用，见 2.6） |
+| 密钥 | 只存文件（见 2.7），不进数据库 | 同左 |
 | 连接审计 | ✅ 异步批量落库 | ❌ 完全不记录 |
 | 存量迁移 | 从 SQLite 迁过来：`migrate-sqlite-to-pg.py` | — |
 | 编译期约束 | 运行时 `DB_URL` 才是 PG 连接串 | 构建期 `DATABASE_URL` 必须指向 sqlite 模板库，**两套变量不要混** |
@@ -288,6 +288,62 @@ RELAY_PROBE=1        # 默认 0 = 关闭；关闭时行为与 v1 完全一致，
 未启用时 `punch_hole` 仍按 v1 直接下发最优中继，连接照常建立——
 **协议骨架缺失不影响 v1 的可用性**。
 
+### 2.7 密钥管理：只存文件（docker secrets 标准），不进数据库
+
+**为什么改**（2026-10-20 起）：旧版本把私钥托管在 `server_config` 表里，
+意味着任何能读到这个库的人（DBA、备份文件、拖库攻击）都能拿到服务端
+私钥，进而伪造你的服务器签名。现改为 docker secrets 标准的文件挂载：
+
+```bash
+docker run ... \
+  -v /d/Git/secrets/id_ed25519:/run/secrets/id_ed25519:ro
+```
+
+文件内容与上游 `id_ed25519` 完全一致（64 字节私钥的 base64 文本）。
+
+**hbbs/hbbr 的私钥解析顺序**（先命中先用）：
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| 1 | `-k <base64私钥>` | 命令行显式指定，仅本次生效，不落盘 |
+| 2 | `KEY_FILE` 环境变量 | 显式指定任意容器内路径 |
+| 3 | `/run/secrets/id_ed25519` | docker secrets 标准挂载点 |
+| 4 | `./data/id_ed25519`（工作目录） | 上游行为，首次启动自动生成 |
+| 5 | 旧库一次性迁移 | `server_config` 里还留着旧版托管的私钥时，自动写回文件并**删除库中该行** |
+| 6 | 就地生成 | 以上都没有，只写文件（与上游一致） |
+
+要点：
+
+- **数据库中不再写入任何密钥材料**；`rdctl.py doctor` 会检查库里是否还有残留
+- 多实例共享同一套 ID = 所有实例挂载**同一个 secret 文件**
+- 公钥照旧用 `rdctl.py key` / `docker exec rd-hbbs cat /root/id_ed25519.pub` 查看
+- `/run/secrets` 挂载是只读的：hbbs 不会往旁边写 `.pub`（数据目录里已有的
+  `.pub` 不受影响），客户端要的 `RS_PUB_KEY` 用 `rdctl.py key` 取
+
+### 2.8 健康检查接口
+
+hbbs 与 hbbr 各自带一个轻量 HTTP 健康检查端点（零新依赖，容器内自实现）：
+
+| 服务 | 默认端口 | 探测内容 |
+|---|---|---|
+| hbbs | `5191`（= 主端口+4） | 进程存活 + **数据库 `select 1` 探活** |
+| hbbr | `5192`（= 中继端口+4） | 进程存活 |
+
+```bash
+curl http://<server>:5191/health
+# 200
+# {"service":"hbbs","status":"ok","version":"1.4.2","uptime_secs":86400,
+#  "timestamp":1760000000,"database":{"backend":"postgres","ok":true}}
+# 数据库探活失败 → 503，status 变 "degraded"
+```
+
+- 端口可用 `--health-port <N>` 或环境变量 `HEALTH_PORT` 覆盖，设 `0` 关闭
+- compose 已内置 `healthcheck`（busybox wget 每 30s 自检），`docker compose ps`
+  直接显示 `(healthy/unhealthy)`；`rd-hbbs` 异常时还会联动 `depends_on` 行为
+- 外部监控（Prometheus blackbox / 云拨测 / 负载均衡）直接拨这两个端口即可
+- 端口变量：`.env` 里 `HBBS_HEALTH_PORT` / `HBBR_HEALTH_PORT`；
+  改 `HBBS_PORT`/`HBBR_PORT` 时记得同步
+
 ---
 
 ## 三、服务端部署详解
@@ -362,8 +418,9 @@ docker compose up -d                           # 启动（含 PostgreSQL，默�
 | `DB_TYPE` / `DB_URL` | `postgres` / 留空（由 `PG_*` 推导） | 见 2.4 节。`DB_URL` 的含义随后端变化：sqlite 是容器内文件路径，postgres 是连接串 |
 | `MAX_DATABASE_CONNECTIONS` | 留空 | **刻意留空**：留空则 sqlite→1、postgres→8 各用合理默认；写死会迫使 SQLite 路径也用它，更容易撞 `database is locked` |
 | `DB_CONNECT_RETRIES` | 留空（=10） | 仅 postgres 生效。容器并发启动时 hbbs 常先于 PG 可用，不重试会 CrashLoop。设 1 恢复"立刻失败" |
-| `PG_IMAGE` / `PG_DB` / `PG_USER` / `PG_PASSWORD` | `postgres:16-alpine` / `rustdesk` / `rustdesk` / `changeme` | 默认生效（Postgres 容器随服务一起起）。**`PG_PASSWORD` 生产必须改** —— 私钥也托管在这个库里，留 changeme 等于把服务器私钥敞开 |
-| `DB_STORE_KEY` | `Y` | 密钥托管开关。设 `N` 退回"只用本地文件"的上游行为 |
+| `PG_IMAGE` / `PG_DB` / `PG_USER` / `PG_PASSWORD` | `postgres:16-alpine` / `rustdesk` / `rustdesk` / `changeme` | 默认生效（Postgres 容器随服务一起起）。**`PG_PASSWORD` 生产必须改** |
+| `KEY_FILE` | 留空 | 显式指定私钥文件路径（容器内）。留空则按 `KEY_FILE → /run/secrets/id_ed25519 → ./data/id_ed25519` 顺序自动探测，见 2.7 |
+| `HBBS_HEALTH_PORT` / `HBBR_HEALTH_PORT` | `5191` / `5192` | 健康检查 HTTP 端口（2.8 节），compose healthcheck 与外部监控都用它；设 0 关闭 |
 | `AUDIT_LOG` / `AUDIT_FLUSH_SECS` / `AUDIT_MAX_BUFFER` | `Y` / `5` / `20000` | 连接审计开关 / 刷盘间隔（秒）/ 缓冲上限 |
 | `RELAY_PROBE` | `0` | 混合探测开关（2.6 节）。`1` = hbbs 下发候选中继让两端 UDP 探测并回传。**需客户端支持，当前默认关闭**；设 0 时按服务端优选直接下发中继，旧客户端安全 |
 | `PG_MEM` / `PG_CPUS` | `512m` / `1.00` | PG 容器资源上限 |
@@ -675,7 +732,7 @@ docker rm -f rd-hbbs rd-hbbr                   # 只删容器，数据目录不�
 □ rdctl.py status 两个容器都 Up
 □ 从客户端所在网络（不是服务器本机）能连上 5187：
     Test-NetConnection -ComputerName <IP> -Port 5187
-□ hbbs 启动日志有 "Private key comes from id_ed25519"（说明密钥是复用不是新生成）
+□ hbbs 启动日志有 "服务端私钥来自文件"（说明密钥是复用不是新生成）
 □ relay-servers=[<RELAY_HOST>:5188] 是客户端能访问到的地址
 □ 备份已进计划任务（crontab / 任务计划程序），异地存一份
 
@@ -896,8 +953,9 @@ ID 撞了（虚拟机模板克隆 / 虚拟网卡 MAC 相同）。改用主机名
 
 **Q：重启后所有客户端公钥不匹配**
 
-`data/id_ed25519` 不在（被删/没挂载卷）。hbbs 日志里看不到
-`Private key comes from id_ed25519` 就是在重新生成。从备份恢复 `data/` 即可。
+私钥文件不在（被删/没挂载卷，`KEY_FILE`、`/run/secrets/id_ed25519`、
+`data/id_ed25519` 都没有）。hbbs 日志里看不到
+"服务端私钥来自文件" 就是在重新生成。从备份恢复 `data/` 即可。
 
 **Q：数据库能直接看吗**
 
@@ -930,9 +988,15 @@ hbbs 先于 PG 可用。默认 10 次 × 3 秒自动重试（`DB_CONNECT_RETRIES
 
 **Q：多台 hbbs 怎么共享同一套 ID**
 
-默认就行。密钥托管在 `server_config` 表里，所有实例读同一行，
-因此客户端拿到的服务端公钥始终一致。关键是**别**设 `DB_STORE_KEY=N`，
-也别给每台实例挂不同的数据目录去各自生成钥匙。
+让所有实例挂载**同一个私钥文件**（docker secrets 标准方式，见 2.7）：
+
+```
+-v /d/Git/secrets/id_ed25519:/run/secrets/id_ed25519:ro
+```
+
+所有实例读同一把私钥，客户端拿到的服务端公钥始终一致。
+2026-10-20 前的老版本靠 `server_config` 表共享；新版启动时会把库里的
+私钥自动迁出成文件并删除该行——**不要再依赖数据库共享密钥**。
 
 **Q：`connection_log` 会一直涨吗**
 

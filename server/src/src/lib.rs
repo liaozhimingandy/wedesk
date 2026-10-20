@@ -5,5 +5,6 @@ mod database;
 mod peer;
 mod version;
 mod server_key;
+pub mod health;
 
 pub mod audit;

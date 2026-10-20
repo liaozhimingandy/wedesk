@@ -167,6 +167,25 @@ impl RendezvousServer {
         let pm = PeerMap::new().await?;
         // 审计后台任务要持有自己的数据库句柄，必须在 pm 被 move 进 rs 之前注入
         crate::audit::start(pm.db.clone());
+        // 健康检查 HTTP 服务：默认主端口+4（5187 → 5191），--health-port/HEALTH_PORT
+        // 可覆盖，设 0 关闭。探针带数据库 select 1，库挂了返回 503/degraded。
+        if let Some(hp) = crate::health::resolve_port("health-port", (port + 4) as u16) {
+            let db = pm.db.clone();
+            let probe: crate::health::ProbeFn = Arc::new(move || {
+                let db = db.clone();
+                Box::pin(async move {
+                    let backend = if db.is_postgres() { "postgres" } else { "sqlite" };
+                    let ok = tokio::time::timeout(crate::health::PROBE_TIMEOUT, db.ping())
+                        .await
+                        .unwrap_or_else(|_| false);
+                    (
+                        format!(r#""database":{{"backend":"{backend}","ok":{ok}}}"#),
+                        ok,
+                    )
+                })
+            });
+            crate::health::start(hp, "hbbs", Some(probe));
+        }
         let (key, sk) = Self::get_server_sk(key, &pm.db).await?;
         let nat_port = port - 1;
         let ws_port = port + 2;

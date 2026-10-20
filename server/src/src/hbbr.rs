@@ -5,6 +5,7 @@ use flexi_logger::*;
 use hbb_common::{config::RELAY_PORT, ResultType};
 use relay_server::*;
 mod version;
+mod health;
 
 fn main() -> ResultType<()> {
     let _logger = Logger::try_with_env_or_str("info")?

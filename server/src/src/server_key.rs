@@ -1,41 +1,43 @@
 // =============================================================================
-// 服务端密钥（id_ed25519 / id_ed25519.pub）的解析与数据库托管
+// 服务端密钥（id_ed25519 / id_ed25519.pub）的解析 —— 只认文件，不碰数据库
 // =============================================================================
 //
 // 上游行为
 // --------
 // 上游把密钥当成**进程工作目录下的两个文件**：存在就用，不存在就生成。
-// 单机部署没问题，但下面两个场景会出事：
+// 单机部署没问题，但横向扩容 / 无状态容器场景下每台各生成一把私钥，
+// 客户端拿到的服务端公钥来回变，表现为"时好时坏、偶尔报密钥不匹配"。
 //
-//   1) 横向扩容 / 多实例：每台 hbbs 各自生成一把私钥，客户端拿到的服务端公钥
-//      来回变，表现为"时好时坏、偶尔报密钥不匹配"——极难定位。
-//   2) 无状态容器：数据目录只读或每次重建，密钥活不过重启，
-//      每重启一次全团队客户端就得重配一次。
+// 演进（2026-10-20 起）
+// --------------------
+// 曾用 PostgreSQL `server_config` 表托管密钥来解决多实例共享，但私钥进库
+// 意味着**任何能读这个库的人（DBA、备份、拖库）都能拿到服务端私钥**，
+// 进而可以签发任意客户端密钥。现改为 docker secrets 标准的文件挂载方式：
 //
-// 所以这里加一层数据库托管：钥匙存进 PostgreSQL 的 `server_config` 表，
-// 所有实例读同一行。
+//   docker run ... -v /d/Git/secrets/id_ed25519:/run/secrets/id_ed25519:ro
 //
 // 解析顺序（先命中先用）
 // ----------------------
-//   1. 命令行 `-k/--key` 给的 64 字节私钥 —— 最高优先级，且**覆盖**库中旧值
-//      （运维显式指定，意图明确，不留歧义）。
-//   2. 本地文件 `id_ed25519` —— 兼容既有部署，保证老 ID 不漂移；
-//      顺手回填数据库，让其他实例共用这一把。
-//   3. 数据库 `server_config.server.private_key` —— 多实例共享的关键路径。
-//   4. 都没有 → 就地生成，同时写文件与数据库。
+//   1. 命令行 `-k/--key` 给的 64 字节私钥 —— 最高优先级（不落盘，仅本次生效）。
+//   2. `KEY_FILE` 环境变量指定的私钥文件（显式声明，如 /run/secrets/id_ed25519）。
+//   3. docker secrets 约定路径 `/run/secrets/id_ed25519`（标准挂载点）。
+//   4. 工作目录 `id_ed25519`（上游行为，兼容既有部署）。
+//   5. 旧版数据库托管的一次性迁移：库里还有私钥 → 写回工作目录文件，
+//      随即**把密钥行从库里删除**。多实例共享请改用统一挂载同一 secret 文件。
+//   6. 都没有 → 就地生成（只写文件，与上游一致）。
 //
-// ⚠️ 安全权衡（说直白些）
-// ----------------------
-// 私钥进库意味着：**任何能读这个库的人都能拿到服务端私钥**，
-// 进而可以签发任意客户端密钥。所以一旦启用托管，PostgreSQL 的访问控制、
-// 账号权限、备份文件密级都必须按"服务端私钥"来对待，而不是普通业务库。
-// 接受不了就设 `DB_STORE_KEY=N` 退回纯文件模式 —— 代价是多实例无法共享钥匙。
+// 文件格式：与上游 `id_ed25519` 完全一致 —— 64 字节私钥的 base64 文本。
 // =============================================================================
 
 use crate::common::PRIVATE_KEY_FILE;
 use crate::database::{self, Database};
-use hbb_common::{allow_err, log, ResultType};
+use hbb_common::{log, ResultType};
 use sodiumoxide::crypto::sign;
+
+/// docker secrets 的标准挂载目录（容器内，只读挂载）。
+const DOCKER_SECRET_DIR: &str = "/run/secrets";
+/// 显式指定私钥文件路径的环境变量。
+pub const KEY_FILE_ENV: &str = "KEY_FILE";
 
 /// 密钥来自哪里。只用于启动日志，但对排障很值钱：
 /// "ID 突然全变了" 往往对应这里从 file 变成了 generated。
@@ -43,10 +45,10 @@ use sodiumoxide::crypto::sign;
 pub enum KeySource {
     /// 命令行 `-k/--key`
     Arg,
-    /// 本地文件 `id_ed25519`
+    /// 私钥文件（KEY_FILE / /run/secrets / 工作目录）
     File,
-    /// 数据库 `server_config` 表
-    Database,
+    /// 旧版数据库托管迁移而来（已从库中删除）
+    Migrated,
     /// 本次新生成
     Generated,
 }
@@ -55,8 +57,8 @@ impl KeySource {
     pub fn as_str(self) -> &'static str {
         match self {
             KeySource::Arg => "命令行 -k",
-            KeySource::File => "本地文件 id_ed25519",
-            KeySource::Database => "数据库 server_config",
+            KeySource::File => "私钥文件",
+            KeySource::Migrated => "旧库迁移（已从数据库删除）",
             KeySource::Generated => "本次新生成",
         }
     }
@@ -71,17 +73,12 @@ pub struct ServerKey {
     pub source: KeySource,
 }
 
-/// 数据库托管是否启用：后端是 PostgreSQL 且 `DB_STORE_KEY` 未被关掉。
-fn hosting_on(db: &Database) -> bool {
-    db.is_postgres() && database::key_hosting_enabled()
-}
-
 /// 解析服务端密钥。`key_arg` 即 `hbbs -k` 的值（未指定时上游传 `-`）。
 ///
-/// 与上游 `get_server_sk` 的语义保持一致，只在其上叠加数据库托管。
+/// 与上游 `get_server_sk` 的语义保持一致，只在其上叠加文件路径扩展与
+/// 旧库一次性迁移。**全程不向数据库写入任何密钥材料。**
 pub async fn resolve(key_arg: &str, db: &Database) -> ResultType<ServerKey> {
     let mut key = key_arg.to_owned();
-    let db_on = hosting_on(db);
 
     // ---- 1) `-k` 给的是完整私钥 -----------------------------------------
     if let Ok(raw) = base64::decode(key.trim()) {
@@ -92,10 +89,6 @@ pub async fn resolve(key_arg: &str, db: &Database) -> ResultType<ServerKey> {
             let mut tmp = [0u8; sign::SECRETKEYBYTES];
             tmp[..].copy_from_slice(&raw);
             let secret = sign::SecretKey(tmp);
-            if db_on {
-                // 显式指定的钥匙意图明确，允许覆盖库中旧值
-                overwrite(db, &secret).await;
-            }
             return Ok(ServerKey {
                 pk: key,
                 sk: Some(secret),
@@ -118,44 +111,41 @@ pub async fn resolve(key_arg: &str, db: &Database) -> ResultType<ServerKey> {
     // 是否把找到的公钥写回 key（"" 时不写，"-" / "_" 时写）
     let want_pk_as_license = !key.is_empty();
 
-    // ---- 2) 本地文件优先（兼容既有部署） --------------------------------
-    if let Some(secret) = load_from_file() {
-        log::info!("服务端私钥来自本地文件 id_ed25519");
-        let pk = base64::encode(secret.public_key());
-        if db_on {
-            // 回填，让其他实例共用这把钥匙（已存在则不动）
-            put_if_absent(db, &secret).await;
-        }
-        return Ok(ServerKey {
-            pk: if want_pk_as_license { pk } else { String::new() },
-            sk: Some(secret),
-            source: KeySource::File,
-        });
-    }
-
-    // ---- 3) 数据库 -------------------------------------------------------
-    if db_on {
-        match load_from_db(db).await {
-            Ok(Some(secret)) => {
-                log::info!("服务端私钥来自数据库（多实例共享同一套 ID）");
-                let pk = base64::encode(secret.public_key());
-                // 走到这里说明文件不存在（否则第 2 步就命中了），
-                // 补一份本地副本让 rdctl.py key 与既有脚本照常工作。
-                crate::common::mirror_key_to_files(&pk, &secret);
-                return Ok(ServerKey {
-                    pk: if want_pk_as_license { pk } else { String::new() },
-                    sk: Some(secret),
-                    source: KeySource::Database,
-                });
-            }
-            Ok(None) => {}
-            Err(err) => log::warn!("读取数据库私钥失败，回退到文件/生成：{err}"),
+    // ---- 2/3/4) 依次尝试候选私钥文件 -------------------------------------
+    for candidate in candidate_key_files() {
+        if let Some(secret) = load_sk_from_path(&candidate) {
+            log::info!("服务端私钥来自文件 {}", candidate.display());
+            return Ok(ServerKey {
+                pk: if want_pk_as_license {
+                    base64::encode(secret.public_key())
+                } else {
+                    String::new()
+                },
+                sk: Some(secret),
+                source: KeySource::File,
+            });
         }
     }
 
-    // ---- 4) 生成，然后同时落到文件与数据库 ------------------------------
+    // ---- 5) 旧版数据库托管的一次性迁移 -----------------------------------
+    // 老版本把私钥存进了 server_config 表；升级后库里可能还留着。
+    // 读出来写回工作目录文件，然后立刻从库里删掉 —— 库里不再保存任何密钥。
+    match migrate_from_db(db).await {
+        Ok(Some(secret)) => {
+            let pk = base64::encode(secret.public_key());
+            return Ok(ServerKey {
+                pk: if want_pk_as_license { pk } else { String::new() },
+                sk: Some(secret),
+                source: KeySource::Migrated,
+            });
+        }
+        Ok(None) => {}
+        Err(err) => log::warn!("读取旧版数据库密钥失败，跳过迁移：{err}"),
+    }
+
+    // ---- 6) 生成，只落文件 ------------------------------------------------
     let (pk, sk) = crate::common::gen_sk(0)?;
-    let mut secret = match sk {
+    let sk = match sk {
         Some(s) => s,
         None => {
             // 上游 gen_sk 恒返回 Some；走到这里说明上游行为变了，
@@ -168,108 +158,96 @@ pub async fn resolve(key_arg: &str, db: &Database) -> ResultType<ServerKey> {
             });
         }
     };
-
-    if db_on {
-        put_if_absent(db, &secret).await;
-        // 并发启动：多台实例可能同时各自生成一把钥匙。必须回读"赢家"
-        // 那把，否则本实例会用一把没人认的孤儿钥匙 —— 表现为
-        // "同一个客户端在不同实例上 ID 不一致"。
-        if let Ok(Some(winner)) = load_from_db(db).await {
-            secret = winner;
-        }
-    }
-
     let pk_out = if want_pk_as_license {
-        base64::encode(secret.public_key())
+        base64::encode(sk.public_key())
     } else {
         String::new()
     };
     Ok(ServerKey {
         pk: pk_out,
-        sk: Some(secret),
+        sk: Some(sk),
         source: KeySource::Generated,
     })
 }
 
-/// 从本地文件 `id_ed25519` 读私钥；不存在或不可解析返回 None。
-fn load_from_file() -> Option<sign::SecretKey> {
-    let contents = std::fs::read_to_string(PRIVATE_KEY_FILE).ok()?;
+/// 候选私钥文件，按优先级返回（存在性由调用方逐个尝试）。
+/// 1. `KEY_FILE` 环境变量指定的路径
+/// 2. docker secrets 约定路径 `/run/secrets/id_ed25519`
+/// 3. 工作目录 `id_ed25519`（上游行为）
+fn candidate_key_files() -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var(KEY_FILE_ENV) {
+        let path = path.trim().to_owned();
+        if !path.is_empty() {
+            candidates.push(std::path::PathBuf::from(path));
+        }
+    }
+    candidates.push(std::path::Path::new(DOCKER_SECRET_DIR)
+        .join(PRIVATE_KEY_FILE));
+    candidates.push(std::path::PathBuf::from(PRIVATE_KEY_FILE));
+    candidates
+}
+
+/// 从指定路径读私钥；不存在或不可解析返回 None。
+fn load_sk_from_path(path: &std::path::Path) -> Option<sign::SecretKey> {
+    let contents = std::fs::read_to_string(path).ok()?;
     let raw = base64::decode(contents.trim()).ok()?;
     // sodiumoxide 的 from_slice 返回 Option（长度不符时为 None），
     // 不是 Result —— 这里不要加 .ok()。
     sign::SecretKey::from_slice(&raw)
 }
 
-/// 从数据库读私钥；不存在返回 Ok(None)。
-async fn load_from_db(db: &Database) -> ResultType<Option<sign::SecretKey>> {
+/// 旧版数据库托管的一次性迁移。
+///
+/// - 库里没有私钥 → Ok(None)，安静返回；
+/// - 有 → 写回工作目录 `id_ed25519`（绝不覆盖已有文件），写成功后
+///   **把私钥/公钥/来源三行全部从 server_config 删除**；
+/// - 文件写不进去（只读 fs 等）→ 仍在内存里用这把钥匙，但**不删库**，
+///   留给下次有写权限时再迁移。
+async fn migrate_from_db(db: &Database) -> ResultType<Option<sign::SecretKey>> {
     let Some(value) = db.get_config(database::CFG_PRIVATE_KEY).await? else {
         return Ok(None);
     };
-    let raw = match base64::decode(value.trim()) {
-        Ok(raw) => raw,
-        Err(err) => {
-            log::error!("数据库中的私钥不是合法 base64，已忽略：{err}");
+    let secret = match base64::decode(value.trim())
+        .ok()
+        .and_then(|raw| sign::SecretKey::from_slice(&raw))
+    {
+        Some(secret) => secret,
+        None => {
+            log::error!("数据库中的旧私钥不是合法的 64 字节 base64，已忽略并从库中清除");
+            // 内容已经损坏，留着也是垃圾数据，顺手清掉
+            let _ = db.remove_config(database::CFG_PRIVATE_KEY).await;
             return Ok(None);
         }
     };
-    match sign::SecretKey::from_slice(&raw) {
-        Some(secret) => Ok(Some(secret)),
-        None => {
+    let pk = base64::encode(secret.public_key());
+    log::warn!(
+        "检测到旧版密钥托管：私钥仍在数据库 server_config 表中，开始迁移到文件（迁移完成后将删除库中密钥）"
+    );
+    match crate::common::create_private_key_file(
+        PRIVATE_KEY_FILE,
+        base64::encode(&secret).as_bytes(),
+    ) {
+        Ok(()) => {
+            log::info!("私钥已迁移到本地文件 {PRIVATE_KEY_FILE}");
+            for cfg in [
+                database::CFG_PRIVATE_KEY,
+                database::CFG_PUBLIC_KEY,
+                database::CFG_KEY_ORIGIN,
+            ] {
+                if let Err(err) = db.remove_config(cfg).await {
+                    log::error!("从数据库删除密钥行 {cfg} 失败，请手动清理：{err}");
+                }
+            }
+            log::warn!("数据库中的密钥已删除；此后私钥只存于文件，请按 docker secrets 方式管理");
+        }
+        Err(err) => {
             log::error!(
-                "数据库中的私钥长度不是 {} 字节，已忽略",
-                sign::SECRETKEYBYTES
+                "私钥写回文件 {PRIVATE_KEY_FILE} 失败（{err}）。\
+                 本次启动继续使用该密钥，但数据库中的副本暂不删除，下次启动重试迁移"
             );
-            Ok(None)
         }
     }
-}
-
-/// 把私钥（以及由它推导出的公钥）写进数据库，**已存在则不动**。
-///
-/// 写失败只告警：钥匙在库里是"共享能力"，不是本次启动的必要条件。
-async fn put_if_absent(db: &Database, secret: &sign::SecretKey) {
-    let pk = base64::encode(secret.public_key());
-    let sk_b64 = base64::encode(secret);
-    match db
-        .put_config_if_absent(database::CFG_PRIVATE_KEY, &sk_b64)
-        .await
-    {
-        Ok(true) => {
-            // 公钥/来源只是私钥的冗余副本，覆盖无风险，方便运维直接查库核对
-            allow_err!(db.set_config(database::CFG_PUBLIC_KEY, &pk).await);
-            allow_err!(db.set_config(database::CFG_KEY_ORIGIN, &origin()).await);
-            log::info!("服务端密钥已托管到数据库");
-        }
-        Ok(false) => {
-            log::debug!("数据库中已存在服务端密钥，未覆盖");
-        }
-        Err(err) => log::warn!("服务端密钥写入数据库失败（不影响本次启动）：{err}"),
-    }
-}
-
-/// 强制覆盖数据库中的密钥（`-k` 显式指定时使用）。
-async fn overwrite(db: &Database, secret: &sign::SecretKey) {
-    let pk = base64::encode(secret.public_key());
-    let sk_b64 = base64::encode(secret);
-    if let Err(err) = db.set_config(database::CFG_PRIVATE_KEY, &sk_b64).await {
-        log::warn!("服务端密钥覆盖数据库失败（不影响本次启动）：{err}");
-        return;
-    }
-    allow_err!(db.set_config(database::CFG_PUBLIC_KEY, &pk).await);
-    allow_err!(db.set_config(database::CFG_KEY_ORIGIN, &origin()).await);
-    log::info!("服务端密钥已覆盖写入数据库（来自 -k）");
-}
-
-/// 钥匙来源标记，形如 `hostname@1700000000`。
-///
-/// 用 `fallible::hostname()` 而不是 `hostname()`：后者在取不到主机名时
-/// 内部直接 panic。密钥托管只是记账用途，不该因为一次 hostname 查询失败
-/// 就把整个 hbbs 带崩。
-fn origin() -> String {
-    let host = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_owned());
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
-    format!("{host}@{ts}")
+    log::info!("服务端公钥: {pk}");
+    Ok(Some(secret))
 }

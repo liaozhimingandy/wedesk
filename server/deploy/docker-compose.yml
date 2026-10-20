@@ -78,9 +78,14 @@ services:
       #
       # 库内共三张表，启动时自动建（幂等），无需手工初始化：
       #   peer           ID / 设备台账（ID、uuid、公钥、备注、注册信息、状态）
-      #   server_config  服务端自身状态 —— 托管 id_ed25519 密钥对
+      #   server_config  旧版密钥托管残留（升级后启动时会自动迁出并清空）
       #   connection_log 连接审计 —— 谁连了谁、时间、走中继还是 P2P
-      - DB_STORE_KEY=${DB_STORE_KEY:-Y}
+      #
+      # ⚠️ 密钥已退出数据库（2026-10-20 起）：私钥只从文件读取，避免随库泄露。
+      #    docker secrets 标准方式挂载（内容 = 64 字节私钥的 base64，同 id_ed25519）：
+      #      - /d/Git/secrets/id_ed25519:/run/secrets/id_ed25519:ro
+      #    多实例共享同一套 ID：所有实例挂载同一个 secret 文件即可。
+      #    也可用 KEY_FILE 环境变量显式指定任意路径。
       - AUDIT_LOG=${AUDIT_LOG:-Y}
       - AUDIT_FLUSH_SECS=${AUDIT_FLUSH_SECS:-5}
       - AUDIT_MAX_BUFFER=${AUDIT_MAX_BUFFER:-20000}
@@ -95,9 +100,16 @@ services:
       # 默认 warn 而非 info：hbbs 在 info 级别下每注册/心跳都落一行日志，
       # 长期运行的磁盘写入与格式化开销是可观测的，而排障时临时调高即可。
       - RUST_LOG=${RUST_LOG:-warn}
+      # 健康检查 HTTP 端口（GET /health）。与上面的 ports 映射保持一致；
+      # 设 0 可关闭。探针会顺带 select 1 探数据库，库挂了回 503。
+      - HEALTH_PORT=${HBBS_HEALTH_PORT:-5191}
     volumes:
       # 密钥(id_ed25519 / id_ed25519.pub)与 SQLite 数据库落在此目录，务必定期备份
       - ./data:/root
+      # 密钥改由 docker secrets 标准方式挂载（只读），库中不再保存密钥。
+      # 把宿主机的私钥文件挂进 /run/secrets/ 即可被自动识别；注释掉下面这行
+      # 则回退为 ./data/id_ed25519（工作目录文件，首次启动自动生成）。
+      # - /d/Git/secrets/id_ed25519:/run/secrets/id_ed25519:ro
     ports:
       # 5186 / 5187 是客户端真正要连的三个口子（5186 TCP、5187 TCP + UDP）。
       # 5187 同时用 TCP 与 UDP，Docker 里 "5187:5187" 只 publish TCP，
@@ -106,6 +118,11 @@ services:
       - "${HBBS_NAT_PORT:-5186}:${HBBS_NAT_PORT:-5186}"   # NAT 类型探测 (TCP) = P-1
       - "${HBBS_PORT:-5187}:${HBBS_PORT:-5187}"           # 注册/心跳 + TCP 打洞 (TCP)
       - "${HBBS_PORT:-5187}:${HBBS_PORT:-5187}/udp"       # 注册 + 心跳 (UDP)
+      #
+      # 5191 = hbbs 健康检查 HTTP（GET /health，默认 = 主端口+4）。
+      # 容器内 healthcheck 用它自检；外部监控（Prometheus blackbox / 拨测 /
+      # 负载均衡探针）也从这里拿 JSON 状态。改 HBBS_PORT 时同步改 HBBS_HEALTH_PORT。
+      - "${HBBS_HEALTH_PORT:-5191}:${HBBS_HEALTH_PORT:-5191}"
       #
       # 5189 = hbbs 的 WebSocket 端口，【刻意没有 publish】。
       # 注意它不是"没开"：容器内 hbbs 进程始终在 5189 上监听，只是外部摸不到。
@@ -125,6 +142,16 @@ services:
     restart: unless-stopped
     networks:
       - rd-net
+    # --- 健康自检 ---------------------------------------------------------
+    # 每 30s 在容器内 curl 一次 /health：200 视为 healthy，503/超时视为
+    # unhealthy（连续 3 次）。busybox wget 对 5xx 返回非 0，正好当探针。
+    # `docker compose ps` 的 STATUS 列会显示 (healthy/unhealthy)。
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${HBBS_HEALTH_PORT:-5191}/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     # --- 资源上限 ---------------------------------------------------------
     # hbbs 只做 ID 注册、心跳与打洞协调，不转发画面数据，实测常驻 10-40 MB。
     # 给 256 MB 是留足余量又能在异常时快速触发重启，而不是把宿主机拖垮。
@@ -152,16 +179,27 @@ services:
     command: hbbr -p ${HBBR_PORT:-5188}
     environment:
       - RUST_LOG=${RUST_LOG:-warn}
+      # 健康检查 HTTP 端口（GET /health，默认 = 中继主端口+4）。与下面
+      # ports 映射保持一致；设 0 可关闭。hbbr 不碰数据库，探针只报自身存活。
+      - HEALTH_PORT=${HBBR_HEALTH_PORT:-5192}
     volumes:
       - ./data:/root
     ports:
       - "${HBBR_PORT:-5188}:${HBBR_PORT:-5188}"      # 中继主端口 (TCP)
+      - "${HBBR_HEALTH_PORT:-5192}:${HBBR_HEALTH_PORT:-5192}"  # 健康检查 HTTP
       #
       # 5190 = hbbr 的 WebSocket 中继端口（= 5188+2），同样刻意不 publish，
       # 原因与 hbbs 的 5189 相同 —— 信任 X-Real-IP / X-Forwarded-For 且不做校验。
     restart: unless-stopped
     networks:
       - rd-net
+    # --- 健康自检（与 hbbs 同款；hbbr 不连库，探针只报自身存活） ----------
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${HBBR_HEALTH_PORT:-5192}/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     # --- 资源上限 ---------------------------------------------------------
     # hbbr 转发画面数据，内存占用随并发会话数线性增长（每路约几 MB 缓冲）。
     # 512 MB 足够支撑数十路并发中继；内存不是它的瓶颈，带宽才是

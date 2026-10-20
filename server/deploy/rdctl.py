@@ -354,8 +354,8 @@ def _enabled(name, default=True):
 
 
 def key_hosting_enabled():
-    """密钥托管开关。SQLite 后端下恒为 False（服务端也是这个语义）。"""
-    return is_pg() and _enabled("DB_STORE_KEY")
+    """已废弃：密钥自 2026-10-20 起只存文件，不再进数据库。保留占位防止误用。"""
+    return False
 
 
 def audit_enabled():
@@ -404,7 +404,7 @@ def probe_pg_tables():
 
 
 def probe_pg_key_hosted():
-    """密钥是否已托管进 server_config；查不到返回 None"""
+    """旧版托管在 server_config 里的私钥行数（0 = 已迁出/无残留）；查不到返回 None"""
     return probe_pg_scalar(
         "select count(*) from server_config where key = 'server.private_key';"
     )
@@ -1010,21 +1010,17 @@ def cmd_doctor(args):
                         w(f"缺少表 {name}（{desc}）",
                           "镜像是旧版本？重新 build；或 DB_URL 指向的库不对")
 
-            # --- 密钥托管与审计是否真的在工作 ----------------------------
+            # --- 旧版密钥托管残留与审计是否在工作 --------------------------
             if tables and "server_config" in tables:
-                if key_hosting_enabled():
-                    n = probe_pg_key_hosted()
-                    if n is None:
-                        w("密钥托管已开启，但查不到 server_config 的内容")
-                    elif n == 0:
-                        w("密钥托管已开启，但库里还没有私钥 —— 多实例下每台会各生成一把，"
-                          "客户端 ID 会来回变",
-                          "启动一次 hbbs 让它写库；确认 DB_STORE_KEY 没被设成 N")
-                    else:
-                        info("密钥已托管在数据库（多实例共享同一套 ID）")
+                n = probe_pg_key_hosted()
+                if n is None:
+                    w("查不到 server_config 的内容")
+                elif n == 0:
+                    info("数据库中无密钥残留（密钥只存文件，符合 docker secrets 规范）")
                 else:
-                    print("    密钥托管已关闭（DB_STORE_KEY=N）：钥匙只用本地文件，"
-                          "多实例无法共享")
+                    w("库里还残留旧版托管的私钥（server.private_key）",
+                      "新版 hbbs 启动时会自动迁出到文件并删除该行；"
+                      "也可手动执行 delete from server_config; 清掉")
 
             if tables and "connection_log" in tables:
                 if audit_enabled():

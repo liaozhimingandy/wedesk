@@ -1340,6 +1340,19 @@ pub fn session_add(
         bail!("same session id is found");
     }
 
+    // 软限制：限制本机同时向外的远程连接数，防止恶意脚本大量并发连接耗尽中继资源。
+    // 默认上限 20，可用环境变量 MAX_REMOTE_SESSIONS 覆盖；设为 0 表示不限制。
+    let max_sessions = std::env::var("MAX_REMOTE_SESSIONS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(20);
+    if max_sessions != 0 && sessions::get_sessions().len() >= max_sessions {
+        bail!(
+            "已达到本机最大并发连接数限制（{}），无法再发起新的远程连接",
+            max_sessions
+        );
+    }
+
     LocalConfig::set_remote_id(&id);
 
     let mut preset_password = password.clone();

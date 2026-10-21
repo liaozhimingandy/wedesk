@@ -35,6 +35,21 @@ lazy_static::lazy_static! {
     static ref USAGE: RwLock<HashMap<String, Usage>> = Default::default();
     static ref BLACKLIST: RwLock<HashSet<String>> = Default::default();
     static ref BLOCKLIST: RwLock<HashSet<String>> = Default::default();
+    // 单台被控设备（按 rf.id）当前的并发中继数。配对建立时 +1，中继结束时 -1。
+    // 用于限制单设备被中继占用的并发连接，防恶意连接耗尽中继资源。
+    static ref RELAY_CONN_PER_ID: std::sync::Mutex<HashMap<String, usize>> =
+        std::sync::Mutex::new(HashMap::new());
+}
+
+/// 单台被控设备允许的最大并发中继数。
+///
+/// 默认 20；环境变量 `MAX_RELAY_CONNECTIONS_PER_ID` 可覆盖；设为 0 表示不限制。
+/// 这是服务端硬限制（客户端还有一层软上限 MAX_REMOTE_SESSIONS）。
+fn max_relay_connections_per_id() -> usize {
+    crate::common::get_arg_or("MAX_RELAY_CONNECTIONS_PER_ID", "20".to_owned())
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(20)
 }
 
 /// 名单的存储后端：`None` 表示没配数据库，退回"文件 + 内存"的老行为。
@@ -846,6 +861,26 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
                     let mut peer = PEERS.lock().await.remove(&rf.uuid);
                     if let Some(peer) = peer.as_mut() {
                         log::info!("Relayrequest {} from {} got paired", rf.uuid, addr);
+                        // 硬限制：单台被控设备（rf.id）的并发中继数，防止恶意连接耗尽中继资源。
+                        // 默认上限 20，环境变量 MAX_RELAY_CONNECTIONS_PER_ID 可覆盖，0 表示不限制。
+                        let id_key = if rf.id.is_empty() {
+                            rf.uuid.clone()
+                        } else {
+                            rf.id.clone()
+                        };
+                        let per_id_limit = max_relay_connections_per_id();
+                        if per_id_limit != 0 {
+                            let mut counts = RELAY_CONN_PER_ID.lock().unwrap();
+                            let n = counts.entry(id_key.clone()).or_insert(0);
+                            if *n >= per_id_limit {
+                                log::warn!(
+                                    "拒绝中继配对 {}：被控设备 {} 并发中继已达上限 {}",
+                                    rf.uuid, id_key, per_id_limit
+                                );
+                                return;
+                            }
+                            *n += 1;
+                        }
                         let id = format!("{}:{}", addr.ip(), addr.port());
                         USAGE.write().await.insert(id.clone(), Default::default());
                         if !stream.is_ws() && !peer.is_ws() {
@@ -858,6 +893,15 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
                             log::info!("Relay of {} closed: {}", addr, err);
                         } else {
                             log::info!("Relay of {} closed", addr);
+                        }
+                        if per_id_limit != 0 {
+                            let mut counts = RELAY_CONN_PER_ID.lock().unwrap();
+                            if let Some(n) = counts.get_mut(&id_key) {
+                                *n -= 1;
+                                if *n == 0 {
+                                    counts.remove(&id_key);
+                                }
+                            }
                         }
                         USAGE.write().await.remove(&id);
                     } else {

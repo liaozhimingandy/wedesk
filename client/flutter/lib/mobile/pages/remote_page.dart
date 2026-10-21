@@ -102,6 +102,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   final FocusNode _mobileFocusNode = FocusNode();
   final FocusNode _physicalFocusNode = FocusNode();
   var _showEdit = false; // use soft keyboard
+  bool _landscape = false; // 用户通过工具栏「旋转」按钮强制的横屏状态
 
   Worker? _waylandKeyboardGateWorker;
   bool _waylandKeyboardGateInitialized = false;
@@ -121,6 +122,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    // 远程控制会话默认锁定竖屏，仅通过工具栏「旋转」按钮手动切换横屏，
+    // 不随传感器自动旋转（避免手持角度误触导致画面跟着转）。
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     gFFI.ffiModel.updateEventListener(sessionId, widget.id);
     gFFI.start(
       widget.id,
@@ -213,6 +217,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     gFFI.dialogManager.dismissAll();
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
         overlays: SystemUiOverlay.values);
+    // 退出会话时复位方向锁定，恢复系统默认（随传感器）。
+    await SystemChrome.setPreferredOrientations([]);
     WakelockManager.disable(_uniqueKey);
     await keyboardSubscription.cancel();
     removeSharedStates(widget.id);
@@ -601,6 +607,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     );
   }
 
+  void _toggleOrientation() {
+    setState(() => _landscape = !_landscape);
+    if (_landscape) {
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    } else {
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+      ]);
+    }
+  }
+
   Widget getBottomAppBar() {
     final ffiModel = Provider.of<FfiModel>(context);
     return BottomAppBar(
@@ -677,6 +697,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                   ))
                         ]) +
                   [
+                    IconButton(
+                      color: _landscape ? Colors.amber : Colors.white,
+                      icon: Icon(Icons.screen_rotation),
+                      tooltip: translate('Rotate screen'),
+                      onPressed: _toggleOrientation,
+                    ),
                     IconButton(
                       color: Colors.white,
                       icon: Icon(Icons.more_vert),

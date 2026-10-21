@@ -13,7 +13,7 @@
 | 平台 | 产物 | 签名状态 | 能直接用来 |
 |---|---|---|---|
 | Windows x64 | `wedesk-<V>-windows-x64-portable.zip` | 无代码签名 | 测试 ✅ |
-| Windows x64 | `wedesk-<V>-windows-x64.msi`（可选开关） | 无代码签名 | 测试 / 域控批量部署 ✅ |
+| Windows x64 | `wedesk-<V>-windows-x64.msi`（push/标签默认构建，手动触发可取消） | 无代码签名 | 测试 / 域控批量部署 ✅ |
 | Android | `wedesk-<V>-android-<abi>.apk` ×3（arm64-v8a / armeabi-v7a / x86_64） | **debug 签名** | 直接安装 ✅（不能上架） |
 | Android | `wedesk-<V>-android.aab` | debug 签名 | 仅上传 Play 用 |
 | iOS | 未签名 IPA | 未签名 | 需开发者证书重签 |
@@ -45,7 +45,7 @@ GitHub 仓库页 → **Actions → Build Wedesk (Client + Server) → Run workfl
 |---|---|
 | `hwcodec` | 硬件编解码（NVENC/QSV/AMF）。关掉省 40+ 分钟，但被控端只能软件编码、CPU 显著变高。**测试画质/延迟就开着** |
 | `build_args` | 追加给 `client/build.py` 的参数，默认 `--vram`（显存编码） |
-| `build_msi` | 是否额外构建 MSI（慢，有失败保护） |
+| `build_msi` | 构建 MSI 安装包。**push 与标签默认构建**（慢，有失败保护：MSI 挂了不阻断便携版产物，但摘要会写"失败"并发 error 注解）；仅手动触发时取消勾选可跳过 |
 | `build_android` / `build_ios` / `build_macos` / `build_linux` | 按需裁剪。**只测 Windows+安卓就关掉 iOS/macOS/Linux**，macOS runner 分钟数是 Linux 的 10 倍 |
 | `company_name` / `website` | 临时覆盖 `build/client/custom.toml` 里的品牌值，留空则沿用 |
 
@@ -81,6 +81,12 @@ sha256sum -c SHA256SUMS.txt
 ### Windows
 
 - 便携版 zip 解压到**英文路径**直接运行 `wedesk.exe`，无需安装。
+- **安装版（MSI）**：push 与标签构建默认产出，artifact 名 `wedesk-windows-x64-msi`，
+  装后有开始菜单/桌面快捷方式与卸载入口，适合发给不想解压的人；
+  若摘要里 MSI 一行写的是"失败"，展开 Build MSI installer 步骤看日志。
+- 关于"wedesk.exe 图标空白"：在资源管理器里**先解压再看** —— 直接在 zip 预览
+  界面里所有 exe 都显示通用图标，这不是图标丢失。CI 已内置资源级校验
+  （exe 必须内嵌非空白图标，缺了直接让构建失败），不会再静默流出这种包。
 - 首次运行若报"缺少 VCRUNTIME/DLL"——换一台装过 VC++ 运行库的机器，
   或改用安装版；这是便携包的老问题，不是构建坏了。
 - 想验证"锁屏可控/无法控"的行为，见 [07-faq 第七章](07-faq.md)：

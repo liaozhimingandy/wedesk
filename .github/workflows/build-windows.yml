@@ -66,7 +66,7 @@ on:
         type: boolean
         default: false
       build_msi:
-        description: "额外构建 MSI 安装包（较慢，有 continue-on-error 保护，失败不阻断便携版）"
+        description: "构建 MSI 安装包（较慢，有 continue-on-error 保护，失败不阻断便携版；push/标签默认构建，仅手动触发时取消勾选可跳过）"
         type: boolean
         default: true
       build_android:
@@ -503,9 +503,14 @@ jobs:
     # 绝不能简写成 if: ${{ env.ENABLE_HWCODEC }}。
     env:
       ENABLE_HWCODEC: ${{ github.event_name != 'workflow_dispatch' || inputs.hwcodec == true }}
-      # 末尾的 || github.ref_type == 'tag'：发版时 Release 应该同时提供安装包形态，
-      # 而 tag push 的 event_name 是 push，不加这一项 MSI 会被静默跳过。
-      BUILD_MSI: ${{ github.event_name == 'workflow_dispatch' && inputs.build_msi == true || github.ref_type == 'tag' }}
+      # MSI 安装包默认就构建：push（main 或 tag）与手动触发都出安装包，
+      # 只有手动触发时取消勾选 build_msi 才跳过。
+      # 曾经的写法是「手动勾选 或 tag 才构建」，结果是每次 push 到 main 的
+      # 自动构建都不产 MSI —— 用户下载完 artifact 只看到便携版，而摘要里
+      # "MSI 安装包 | false" 又会被读成"这次没勾"而不是"默认就没有"。
+      # MSI 构建本身带 continue-on-error（失败不阻断便携版产物），
+      # 失败可见性由后面的「核对 MSI 产物」步骤保证。
+      BUILD_MSI: ${{ github.event_name != 'workflow_dispatch' || inputs.build_msi == true }}
 
     steps:
       # vcpkg 的 x-gha 二进制缓存后端需要这两个运行时变量，
@@ -804,6 +809,20 @@ jobs:
           cp -rf client/flutter/build/windows/x64/runner/Release/. ./rustdesk/
           ls -l ./rustdesk
 
+      # 图标缺失是"看得见但查不动"的问题：用户看到 wedesk.exe 是空白图标，
+      # 而构建日志里一个字都不会提（Runner.rc 编译成败只影响那一个目标文件）。
+      # 这里对产物做资源级校验：exe 必须内嵌【非空白】的 RT_GROUP_ICON/RT_ICON，
+      # 且内嵌位图要与仓库里的 app_icon.ico 对得上（对不上只警告）。
+      # 链路：Runner.rc 的 IDI_APP_ICON → runner/resources/app_icon.ico，
+      # 两者都在 git 里，换图标只需替换 app_icon.ico。
+      # 脚本本体见 build/common/check-exe-icon.py（纯标准库，本地可测）。
+      - name: 校验 wedesk.exe 图标
+        shell: bash
+        run: |
+          python build/common/check-exe-icon.py \
+            client/flutter/build/windows/x64/runner/Release/wedesk.exe \
+            client/flutter/windows/runner/resources/app_icon.ico
+
       - name: Bundle usbmmidd (virtual monitor driver)
         shell: bash
         run: |
@@ -843,22 +862,45 @@ jobs:
           path: rustdesk
           retention-days: 14
 
+      # MSI 链条（与上游 rustdesk CI 同款，2026-10-22 逐行核对过）：
+      #   preprocess.py 生成 Package/Resources/icon.ico（源是 client/res/icon.ico）、
+      #   改写 License.rtf 与组件 GUID，并执行 wedesk.exe --version/--build-date
+      #   取版本号（core_main.rs 对这两个参数有专门分支，打印后直接退出）；
+      #   nuget restore 还原 CustomActions 的 packages.config（WixToolset.DUtil /
+      #   WcaUtil，native）与 Package.wixproj 的 PackageReference；
+      #   msbuild 链接产出 Package.msi。
+      # --app-name 必须与便携版里的 exe 名一致（windows/CMakeLists.txt 的
+      # BINARY_NAME，即 custom.toml 的 exe_name）。WiX 的 File 元素按
+      # "$(var.Product).exe" 引用主程序，对不上会直接打包失败。
+      #
+      # 逐个查 $LASTEXITCODE 不是洁癖：PowerShell 对原生命令的非零退出
+      # 【不抛异常】，preprocess.py 挂了脚本也会继续往下跑，最后以一个
+      # 看不懂的 msbuild 错误收场。
       - name: Build MSI installer (optional)
+        id: msi-build
         if: ${{ env.BUILD_MSI == 'true' }}
         continue-on-error: true
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           Push-Location client/res/msi
-          # --app-name 必须与便携版里的 exe 名一致（windows/CMakeLists.txt 的
-          # BINARY_NAME，即 custom.toml 的 exe_name）。WiX 的 File 元素按
-          # "$(var.Product).exe" 引用主程序，对不上会直接打包失败。
-          python preprocess.py --arp --app-name wedesk -d ../../../rustdesk
-          nuget restore msi.sln
-          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
-          $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1
-          Pop-Location
-          New-Item -ItemType Directory -Force -Path ./msi-out | Out-Null
-          Move-Item $msi.FullName ./msi-out/wedesk-x64.msi -Force
+          try {
+            python preprocess.py --arp --app-name wedesk -d ../../../rustdesk
+            if ($LASTEXITCODE -ne 0) { throw "preprocess.py 失败（exit $LASTEXITCODE）—— 它负责生成 Resources/icon.ico、改写 License.rtf 与组件 GUID、并从 wedesk.exe --version/--build-date 取版本号" }
+            nuget restore msi.sln
+            if ($LASTEXITCODE -ne 0) { throw "nuget restore 失败（exit $LASTEXITCODE）—— CustomActions 的 packages.config 或 WiX 4 扩展包没还原" }
+            msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
+            if ($LASTEXITCODE -ne 0) { throw "msbuild 失败（exit $LASTEXITCODE）—— WiX 4 SDK 解析或链接问题" }
+            $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $msi) { throw "msbuild 退出 0 但没找到 Package.msi —— WiX 输出目录结构可能变了" }
+            Pop-Location
+            New-Item -ItemType Directory -Force -Path ./msi-out | Out-Null
+            Move-Item $msi.FullName ./msi-out/wedesk-x64.msi -Force
+            Write-Output "OK: MSI 构建成功 -> ./msi-out/wedesk-x64.msi"
+          } catch {
+            Pop-Location -ErrorAction SilentlyContinue
+            throw
+          }
 
       - name: Upload MSI
         if: ${{ env.BUILD_MSI == 'true' }}
@@ -868,6 +910,22 @@ jobs:
           name: wedesk-windows-x64-msi
           path: ./msi-out
           retention-days: 14
+
+      # MSI 构建步骤带 continue-on-error（设计意图：失败不阻断便携版产物），
+      # 但绝不意味着可以静默 —— 这里显式核对产物，缺了就发 error 注解并把
+      # 真实结果写进摘要。此前摘要只会复读 BUILD_MSI=true，用户按摘要去找
+      # artifact 却找不到，反过头来怀疑整条流水线。
+      - name: 核对 MSI 产物
+        if: ${{ !cancelled() && env.BUILD_MSI == 'true' }}
+        shell: bash
+        run: |
+          if [ -f ./msi-out/wedesk-x64.msi ]; then
+            echo "MSI_RESULT=成功" >> "$GITHUB_ENV"
+            ls -lh ./msi-out/wedesk-x64.msi
+          else
+            echo "MSI_RESULT=失败" >> "$GITHUB_ENV"
+            echo "::error::MSI 安装包构建失败（未阻断便携版产物）。展开 Build MSI installer 步骤看日志；常见原因：preprocess.py 取版本号失败、nuget restore 没还原 WiX 4 SDK、msbuild 平台配置不匹配。"
+          fi
 
       # 把"这次到底产出了什么"摊开写进摘要。
       # 上面修过的静默降级说明了一件事：流水线可能全绿，但产物不是想要的
@@ -885,14 +943,20 @@ jobs:
             echo "|---|---|"
             echo "| 触发方式 | \`${{ github.event_name }}\` |"
             echo "| 硬件编解码 hwcodec | ${{ env.ENABLE_HWCODEC }} |"
-            echo "| MSI 安装包 | ${{ env.BUILD_MSI }} |"
+            if [ "${{ env.BUILD_MSI }}" = "true" ]; then
+              echo "| MSI 安装包 | ${MSI_RESULT:-未构建（步骤未执行）} |"
+            else
+              echo "| MSI 安装包 | 未启用（手动触发时取消了 build_msi） |"
+            fi
             echo "| vcpkg host triplet | \`${{ env.ENABLE_HWCODEC == 'true' && 'x64-windows-static' || 'x64-windows' }}\` |"
             echo ""
             echo "### 产物 —— 在本页底部 Artifacts 区域，保留 14 天"
             echo ""
             echo "- **wedesk-windows-x64** — 便携版，解压即可运行"
-            if [ "${{ env.BUILD_MSI }}" = "true" ]; then
+            if [ "${MSI_RESULT:-}" = "成功" ]; then
               echo "- **wedesk-windows-x64-msi** — MSI 安装包"
+            elif [ "${{ env.BUILD_MSI }}" = "true" ]; then
+              echo "- MSI 构建失败（见上方 error 注解与 Build MSI installer 日志）"
             else
               echo "- MSI 未构建（本次未启用 build_msi）"
             fi
@@ -955,6 +1019,25 @@ jobs:
           large-packages: false
           docker-images: true
           swap-storage: false
+
+      # 镜像预置的 NDK 是死重，理由同 build-android-apk：setup-ndk 把
+      # ${{ env.NDK_VERSION }} 装进 runner 工具缓存（link-to-sdk 默认 false），
+      # 预置的各版本一个都用不上，却各占 2-3 GB。本 job 的磁盘大头是
+      # vcpkg 为当前 ABI 编 ffmpeg/aom/libvpx 的 buildtrees + cargo target，
+      # 能挤出一 GB是一 GB。
+      - name: 清理镜像预置的 Android NDK
+        shell: bash
+        run: |
+          SDK=/usr/local/lib/android/sdk
+          if [ -d "$SDK/ndk" ]; then
+            echo "删除镜像预置 NDK：$SDK/ndk"
+            du -sh "$SDK/ndk" 2>/dev/null || true
+            sudo rm -rf "$SDK/ndk"
+          else
+            echo "镜像没有预置 NDK 目录，跳过"
+          fi
+          echo "清理后磁盘："
+          df -h / || true
 
       # 上游 flutter-build.yml 的 build-rustdesk-android 有这一步，我们之前没有 ——
       # 这是安卓 job 与上游最实质的差异之一。runner 镜像自带 cmake / ninja /
@@ -1152,6 +1235,8 @@ jobs:
           source build/common/emit-error-lines.sh
           ABI="${{ matrix.job.abi }}"
           LOG="$RUNNER_TEMP/ndk-$ABI.log"
+          echo "构建前磁盘："
+          df -h / || true
           cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
           # 必须在 client/ 里跑：ndk_*.sh 里的 cargo 需要本目录的 Cargo.toml。
           # 产物因此落在 client/target/<triple>/release/ —— 不是仓库根的 target/。
@@ -1159,6 +1244,7 @@ jobs:
           if ! (cd client && bash ./flutter/${{ matrix.job.ndk-script }}) 2>&1 | tee "$LOG"; then
             emit_error_lines "$LOG" "cargo-ndk:$ABI" 20
             emit_log_tail "$LOG" "cargo-ndk:$ABI-tail" 30
+            echo "::error::cargo-ndk 构建失败（$ABI）。剩余磁盘：$(df -h / 2>/dev/null | tail -1 | tr -s ' ')"
             exit 1
           fi
           # 显式校验 .so 真的生成了：cargo 退出 0 但产物不在，后面的 Gradle
@@ -1198,6 +1284,43 @@ jobs:
       VERSION: ""
 
     steps:
+      # 磁盘是本 job 的硬约束，而且失败方式很难看：flutter build apk 要跑 Gradle，
+      # 而 app/build.gradle 在【配置阶段】就会执行 cargo metadata（定位
+      # rustls-platform-verifier 的 maven 目录），把整个依赖树的源码拉进
+      # ~/.cargo/registry；再叠加 Gradle transforms、Flutter SDK、pub cache、
+      # setup-ndk 的 NDK，默认镜像的余量不够 —— 2026-10-22 实测在 transforms
+      # 阶段报 "No space left on device"，连 step summary 都写不进去。
+      # tool-cache: false —— flutter-action 把 SDK 装在 /opt/hostedtoolcache，
+      # 动了它整个 job 报废；android: false / large-packages: false ——
+      # Android SDK（licenses、platforms、build-tools）是构建依赖，不能删。
+      - name: 释放磁盘空间
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      # 镜像预置的 NDK 是死重：setup-ndk 把 r28c 装进 runner 工具缓存
+      # （link-to-sdk 默认 false，不落 SDK 目录），预置的几个版本一个都用不上，
+      # 却各占 2-3 GB。
+      - name: 清理镜像预置的 Android NDK
+        shell: bash
+        run: |
+          SDK=/usr/local/lib/android/sdk
+          if [ -d "$SDK/ndk" ]; then
+            echo "删除镜像预置 NDK：$SDK/ndk"
+            du -sh "$SDK/ndk" 2>/dev/null || true
+            sudo rm -rf "$SDK/ndk"
+          else
+            echo "镜像没有预置 NDK 目录，跳过"
+          fi
+          echo "清理后磁盘："
+          df -h / || true
+
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -1334,6 +1457,10 @@ jobs:
           set -eo pipefail
           source build/common/emit-error-lines.sh
           LOG="$RUNNER_TEMP/flutter-android.log"
+          # 磁盘诊断：这一步是整条流水线 Gradle 压力最大的地方，撑爆过盘。
+          # 撑爆时报的是 transforms 目录建不出来，和"没空间"三个字离得很远。
+          echo "构建前磁盘："
+          df -h / || true
           JNI=client/flutter/android/app/src/main/jniLibs
           # 实际拿到了哪些 .so，就只编哪些 ABI —— 避免产出"装得上但一运行就
           # 报找不到 librustdesk.so"的包，这种问题只能等用户在手机上发现。
@@ -1371,11 +1498,13 @@ jobs:
           if ! (cd client/flutter && flutter build apk --release --split-per-abi --target-platform "$PLATFORMS") 2>&1 | tee "$LOG"; then
             emit_error_lines "$LOG" "flutter:apk" 20
             emit_log_tail "$LOG" "flutter:apk-tail" 30
+            echo "::error::flutter build apk 失败。剩余磁盘：$(df -h / 2>/dev/null | tail -1 | tr -s ' ')"
             exit 1
           fi
           if ! (cd client/flutter && flutter build appbundle --release --target-platform "$PLATFORMS") 2>&1 | tee "$LOG"; then
             emit_error_lines "$LOG" "flutter:aab" 20
             emit_log_tail "$LOG" "flutter:aab-tail" 30
+            echo "::error::flutter build appbundle 失败。剩余磁盘：$(df -h / 2>/dev/null | tail -1 | tr -s ' ')"
             exit 1
           fi
 

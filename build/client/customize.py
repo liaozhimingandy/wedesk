@@ -210,21 +210,43 @@ def build_rules(c: dict) -> "list[Rule]":
     if api_server:
         # 管理后台（admin FastAPI）地址：注入为编译期常量，get_api_server_
         # 优先采用它，不再按 rendezvous 端口-2 推导。
-        # 锚点选 RENDEZVOUS_PORT —— 唯一且不被其它规则改写。
+        #
+        # 幂等设计（源码里可能已存在该常量，重复插入会 E0428）：
+        #   规则 A（正则）：常量已存在 → 只更新值；
+        #   规则 B（精确）：常量不存在 → 插入。锚点用"RS_PUB_KEY 行紧接
+        #     RENDEZVOUS_PORT 行"——常量一旦存在，这个组合就不成立，
+        #     两条规则天然互斥，不会重复插入。
         rules.append(
-            Rule(
+            Rule.regex(
                 "管理后台地址（client 的 /api/* 上报目标，custom.toml server.api_server）",
                 "libs/hbb_common/src/config.rs",
-                "pub const RENDEZVOUS_PORT: i32 = 21116;",
-                'pub const CUSTOM_API_SERVER: &str = "%s";\n\npub const RENDEZVOUS_PORT: i32 = 21116;'
-                % api_server,
+                r'pub const CUSTOM_API_SERVER: &str = "[^"]*";',
+                'pub const CUSTOM_API_SERVER: &str = "%s";' % api_server,
             )
         )
+        api_doc = (
+            "/// 管理后台（admin FastAPI）地址。非空时 get_api_server_ 直接采用它，\n"
+            "/// 不再按 rendezvous 端口-2 推导。由 build/client/customize.py 依据\n"
+            "/// custom.toml 的 server.api_server 注入；留空则保持端口推导行为。\n"
+        )
+        rules.append(
+            Rule(
+                "管理后台地址插入（const 尚不存在时；已存在则由上面的规则只更新值）",
+                "libs/hbb_common/src/config.rs",
+                'pub const RS_PUB_KEY: &str = "%s";\n\npub const RENDEZVOUS_PORT: i32 = 21116;'
+                % key,
+                'pub const RS_PUB_KEY: &str = "%s";\n\n%spub const CUSTOM_API_SERVER: &str = "%s";\n\npub const RENDEZVOUS_PORT: i32 = 21116;'
+                % (key, api_doc, api_server),
+            )
+        )
+        # common.rs 的生效开关同样要做幂等：注入后旧锚点（api 检查紧接
+        # let s0）不再成立，重复跑也只会命中"已是目标值"分支。
         rules.append(
             Rule(
                 "管理后台地址生效（get_api_server_ 优先采用 CUSTOM_API_SERVER）",
                 "src/common.rs",
-                "    let s0 = get_custom_rendezvous_server(custom);",
+                "    if !api.is_empty() {\n        return api.to_owned();\n    }\n    let s0 = get_custom_rendezvous_server(custom);",
+                "    if !api.is_empty() {\n        return api.to_owned();\n    }\n"
                 "    // 编译期注入的定制管理后台地址优先于端口推导\n"
                 "    // （见 hbb_common config::CUSTOM_API_SERVER，由 customize.py 写入）。\n"
                 "    if !config::CUSTOM_API_SERVER.is_empty() {\n"

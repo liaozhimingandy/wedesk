@@ -5633,8 +5633,20 @@ impl Connection {
         if self.portable.is_installed || !self.is_remote() || !self.keyboard {
             return;
         }
+        // If the current process is already elevated (e.g. launched as
+        // administrator), bring up the portable service ourselves so the user is
+        // never asked to click "elevate" again. Input injection on Windows
+        // requires the elevated helper process; when we already hold admin
+        // rights we can start it directly without a UAC prompt.
+        let elevated = crate::platform::is_elevated(None).unwrap_or(false);
+        if !portable_client::running() && elevated {
+            allow_err!(portable_client::start_portable_service(
+                portable_client::StartPara::Direct
+            ));
+        }
         let running = portable_client::running();
-        let show_elevation = !running;
+        // Hide the elevation prompt when we have already taken care of it.
+        let show_elevation = !running && !elevated;
         self.send_to_cm(ipc::Data::DataPortableService(
             ipc::DataPortableService::CmShowElevation(show_elevation),
         ));

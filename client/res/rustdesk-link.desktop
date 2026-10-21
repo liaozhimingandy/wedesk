@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=WeDesk
 NoDisplay=true
-MimeType=x-scheme-handler/rustdesk;
+MimeType=x-scheme-handler/wedesk;
 TryExec=rustdesk
 Exec=rustdesk %u
 Icon=rustdesk

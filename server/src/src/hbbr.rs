@@ -29,7 +29,7 @@ fn main() -> ResultType<()> {
     );
     let matches = App::new("hbbr")
         .version(version::VERSION)
-        .author("Purslane Ltd. <info@rustdesk.com>")
+        .author("www.alsoapp.com")
         .about("RustDesk Relay Server")
         .args_from_usage(&args)
         .get_matches();

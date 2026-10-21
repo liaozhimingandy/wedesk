@@ -23,10 +23,18 @@ RustDesk 默认连官方服务器 rs-ny.rustdesk.com。团队私有化部署必�
       RENDEZVOUS_SERVERS  服务器兜底地址
       RS_PUB_KEY          服务器公钥
       APP_NAME            应用名 ← Flutter UI 通过 mainGetAppNameSync() 动态读取，改一处全局生效
+      ORG                 macOS 配置目录组织段（com.alsoapp）
   src/common.rs
       get_api_server_ 的官方兜底域名 admin.rustdesk.com（置空以杜绝外发请求）
   Cargo.toml / Runner.rc / strings.xml / desktop_setting_page.dart / common.dart / install_page.dart
       公司名、版权、产品名、官网与隐私政策链接
+  brand.package_name（全平台包名/Bundle ID）
+      Android build.gradle + 3 份 AndroidManifest + kotlin 包声明/import；
+      iOS/macOS pbxproj + Info.plist + xcconfig + exportOptions；
+      Linux CMakeLists；Cargo bundle identifier；macOS launchd 标签前缀与
+      privileges_scripts 模板；manual_update 常量与测试。
+      kotlin 源码目录名随包名迁移（com/carriez/flutter_hbb → com/alsoapp/wedesk），
+      目录迁移后 glob 规则仍能命中。
 
 用法
 ----
@@ -146,7 +154,7 @@ if os.environ.get("NO_COLOR") is None:
 class Rule:
     """一条替换规则"""
 
-    def __init__(self, note, relpath, old, new, required=False, count=None, residual=None):
+    def __init__(self, note, relpath, old, new, required=False, count=None, residual=None, relglob=False):
         self.note = note
         self.relpath = relpath
         self.old = old
@@ -159,10 +167,15 @@ class Rule:
         # 填了本字段后，n==0 时改查它还在不在：不在 → 按已命中处理；
         # 还在却没匹配上 → 才是真正的没命中（比如源码格式变了）。
         self.residual = residual
+        # relglob：relpath 按 glob 模式展开，对每个命中文件套用同一条规则。
+        # 包名定制要覆盖整个 kotlin 源码目录，而目录名本身随包名变化
+        # （com/carriez/flutter_hbb → com/alsoapp/wedesk），写死路径的话，
+        # 在迁移过的树里会全部落空报"文件不存在"。
+        self.relglob = relglob
 
     @staticmethod
-    def regex(note, relpath, pattern, repl, required=False, residual=None):
-        r = Rule(note, relpath, pattern, repl, required, residual=residual)
+    def regex(note, relpath, pattern, repl, required=False, residual=None, relglob=False):
+        r = Rule(note, relpath, pattern, repl, required, residual=residual, relglob=relglob)
         r.is_regex = True
         return r
 
@@ -182,6 +195,7 @@ def build_rules(c: dict) -> "list[Rule]":
     company = brand.get("company_name", "").strip()
     website = brand.get("website", "").strip()
     exe = brand.get("exe_name", app_name.lower()).strip() or "remotedesk"
+    pkg = brand.get("package_name", "").strip()
 
     rules: list[Rule] = []
 
@@ -265,6 +279,68 @@ def build_rules(c: dict) -> "list[Rule]":
                 % app_name,
             )
         )
+        rules.append(
+            Rule.regex(
+                "macOS .app 名（必须与 APP_NAME 一致：更新流程与 daemon/agent "
+                "plist 都按 /Applications/{APP_NAME}.app 寻址，correct_app_name "
+                "会把模板里的 RustDesk 改写成 APP_NAME）",
+                "flutter/macos/Runner/Configs/AppInfo.xcconfig",
+                r"PRODUCT_NAME = [^\n]*",
+                "PRODUCT_NAME = %s" % app_name,
+            )
+        )
+        # ---- 深链 scheme ---------------------------------------------------
+        # 客户端生成分享链接用 get_uri_prefix() = "{APP_NAME 小写}://"，
+        # 各平台的 scheme 注册必须与它一致，否则 wedesk:// 链接点了没反应。
+        # 上游注册的是 rustdesk，属于"链接生成端已改名、接收端没改"的隐性断裂。
+        rules += [
+            Rule.regex(
+                "Android 深链 scheme 注册",
+                "flutter/android/app/src/main/AndroidManifest.xml",
+                r'<data android:scheme="[^"]*" />',
+                '<data android:scheme="%s" />' % app_name.lower(),
+            ),
+            Rule.regex(
+                "iOS 深链 scheme 注册",
+                "flutter/ios/Runner/Info.plist",
+                r'(<key>CFBundleURLSchemes</key>\s*<array>\s*<string>)[^<]*(</string>)',
+                r"\g<1>%s\g<2>" % app_name.lower(),
+            ),
+            Rule.regex(
+                "macOS 深链 scheme 注册",
+                "flutter/macos/Runner/Info.plist",
+                r'(<key>CFBundleURLSchemes</key>\s*<array>\s*<string>)[^<]*(</string>)',
+                r"\g<1>%s\g<2>" % app_name.lower(),
+            ),
+            Rule.regex(
+                "Linux 桌面入口 scheme handler",
+                "res/rustdesk-link.desktop",
+                r"x-scheme-handler/[^;]*;",
+                "x-scheme-handler/%s;" % app_name.lower(),
+            ),
+            # Dart 侧：web 初始链接规范化时拼的占位 scheme（urlLinkToCmdArgs
+            # 只解析 authority/path，scheme 仅是让字符串可解析），以及两处
+            # 日志/三处注释里的链接示例。proto 文件里的同名注释不动 ——
+            # 那是协议文档，与上游保持一致更重要。
+            Rule.regex(
+                "Dart 深链占位 scheme（home_page 的 fakelink）",
+                "flutter/lib/mobile/pages/home_page.dart",
+                r'(fakelink = ")[a-zA-Z]+://',
+                r"\g<1>%s://" % app_name.lower(),
+            ),
+            Rule.regex(
+                "Dart 深链拒绝日志（config/password 两处）",
+                "flutter/lib/common.dart",
+                r"(Ignore )[a-z]+://(config|password)( because)",
+                r"\g<1>%s://\g<2>\g<3>" % app_name.lower(),
+            ),
+            Rule.regex(
+                "Dart 深链注释示例（connect-id 三种形态）",
+                "flutter/lib/common.dart",
+                r"(// )[a-z]+://(<connect-id>)",
+                r"\g<1>%s://\g<2>" % app_name.lower(),
+            ),
+        ]
 
     # ------------------------------------------------------- 隐私：断开发送
     # get_api_server_ 的最后兜底是官方 admin.rustdesk.com。定制客户端没有官方
@@ -313,6 +389,46 @@ def build_rules(c: dict) -> "list[Rule]":
                 "Purslane Tech Pte. Ltd.",
                 company,
             ),
+            # macOS 原生 About 面板的版权行（Info.plist 的
+            # NSHumanReadableCopyright 读 $(PRODUCT_COPYRIGHT)）。
+            Rule.regex(
+                "macOS About 面板 - 版权行",
+                "flutter/macos/Runner/Configs/AppInfo.xcconfig",
+                r"PRODUCT_COPYRIGHT = Copyright © \d{4} [^\n]*",
+                "PRODUCT_COPYRIGHT = Copyright © %d %s. All rights reserved."
+                % (2026, company),
+            ),
+            # 便携版打包器的版权行。
+            Rule.regex(
+                "便携版 winres - 版权行",
+                "libs/portable/Cargo.toml",
+                r'LegalCopyright = "Copyright © \d{4} [^"]*"',
+                'LegalCopyright = "Copyright © %d %s. All rights reserved."'
+                % (2026, company),
+            ),
+            # MSI 在"程序和功能"里显示的制造商。CI 只传 --app-name，
+            # 不传 --manufacturer，默认值会原样进安装包。
+            Rule.regex(
+                "MSI - 制造商（--manufacturer 默认值）",
+                "res/msi/preprocess.py",
+                r'(default=")[^"]*(",\n\s*help="The app manufacturer)',
+                r"\g<1>%s\g<2>" % company,
+            ),
+            # hbbs/hbbr --help 顶部的作者行（clap 的 .author()）。
+            # server/ 在 --source（client/）之外，路径要跳一级；纯上游
+            # 客户端树里这两个文件不存在，规则报"文件不存在"仅警告。
+            Rule.regex(
+                "服务端 hbbs --help 作者行",
+                "../server/src/src/common.rs",
+                r'\.author\("[^"]*"\)',
+                '.author("%s")' % company,
+            ),
+            Rule.regex(
+                "服务端 hbbr --help 作者行",
+                "../server/src/src/hbbr.rs",
+                r'\.author\("[^"]*"\)',
+                '.author("%s")' % company,
+            ),
         ]
 
     if app_name:
@@ -346,6 +462,21 @@ def build_rules(c: dict) -> "list[Rule]":
                 "flutter/android/app/src/main/res/values/strings.xml",
                 '<string name="app_name">RustDesk</string>',
                 '<string name="app_name">%s</string>' % app_name,
+            ),
+            # 便携版打包器（client/libs/portable）自带的 Windows 版本资源，
+            # 由它自己的 build.rs + winres 读取。CI 的便携产物就是它产的，
+            # 不改则文件属性里仍是 RustDesk。
+            Rule.regex(
+                "便携版 winres - 产品名",
+                "libs/portable/Cargo.toml",
+                r'ProductName = "[^"]*"',
+                'ProductName = "%s"' % app_name,
+            ),
+            Rule.regex(
+                "便携版 winres - 文件描述",
+                "libs/portable/Cargo.toml",
+                r'FileDescription = "[^"]*"',
+                'FileDescription = "%s Remote Desktop"' % app_name,
             ),
         ]
 
@@ -427,6 +558,289 @@ def build_rules(c: dict) -> "list[Rule]":
             ),
         ]
 
+    # ------------------------------------------------------- 包名 / Bundle ID
+    #
+    # 上游把 com.carriez.*（RustDesk 作者的个人域名）写死在各平台工程文件里，
+    # fork 之后必须全量换成自己的包名，否则：
+    #   Android 应用市场 / iOS App Store 认 applicationId / bundle id 为唯一
+    #   标识，包名不对 = 上架不了、更新不互通；
+    #   macOS 的 ORG 决定配置目录（~/Library/Preferences/<org>.<app>），
+    #   launchd 标签决定开机项与卸载残留，改不动等于权限对话框反复弹。
+    #
+    # 写法上一律用"匹配任意当前值"的正则而不是写死 com.carriez.*：这样
+    # 反复跑、改配置重跑都幂等（命中但无变化 → 记"已是目标值"）。
+    # 两个例外只能认旧值，用 residual 兜底：
+    #   - kotlin 的 package 行：同目录下 KeyboardKeyEventMapper.kt 是
+    #     package hbb（protobuf 生成类所在包），不能跟着改，所以正则锚定旧包名；
+    #   - ffi.kt 的 import 行：同上。
+    if pkg:
+        # ORG = 包名去掉最后一段（com.alsoapp.wedesk -> com.alsoapp），
+        # macOS ProjectDirs 用它拼配置目录；launchd 标签前缀也用它。
+        org = pkg.rsplit(".", 1)[0] if "." in pkg else pkg
+        rules += [
+            # ---- Android ----------------------------------------------------
+            Rule.regex(
+                "Android applicationId / namespace（build.gradle 两处）",
+                "flutter/android/app/build.gradle",
+                r'(applicationId|namespace) "[^"]*"',
+                r'\g<1> "%s"' % pkg,
+            ),
+            Rule.regex(
+                "AndroidManifest package 属性（main）",
+                "flutter/android/app/src/main/AndroidManifest.xml",
+                r'package="[^"]*"',
+                'package="%s"' % pkg,
+            ),
+            Rule.regex(
+                "AndroidManifest package 属性（debug）",
+                "flutter/android/app/src/debug/AndroidManifest.xml",
+                r'package="[^"]*"',
+                'package="%s"' % pkg,
+            ),
+            Rule.regex(
+                "AndroidManifest package 属性（profile）",
+                "flutter/android/app/src/profile/AndroidManifest.xml",
+                r'package="[^"]*"',
+                'package="%s"' % pkg,
+            ),
+            Rule.regex(
+                "开机广播 action 名（与 BootReceiver.DEBUG_BOOT_COMPLETED 同值）",
+                "flutter/android/app/src/main/AndroidManifest.xml",
+                r'<action android:name="[^"]*DEBUG_BOOT_COMPLETED" />',
+                '<action android:name="%s.DEBUG_BOOT_COMPLETED" />' % pkg,
+            ),
+            # kotlin 源码目录随包名迁移（com/carriez/flutter_hbb ->
+            # com/alsoapp/wedesk），只有 glob 能在两种布局下都找到文件。
+            # 目录名与 package 声明不一致 Kotlin 也能编译，但保持一致更稳。
+            Rule.regex(
+                "kotlin 包声明（glob 覆盖整个源码目录）",
+                "flutter/android/app/src/main/kotlin/com/*/*/*.kt",
+                r"(?m)^package com\.carriez\.flutter_hbb$",
+                "package %s" % pkg,
+                residual="com.carriez.flutter_hbb",
+                relglob=True,
+            ),
+            Rule.regex(
+                "BootReceiver 的 DEBUG_BOOT_COMPLETED 常量",
+                "flutter/android/app/src/main/kotlin/com/*/*/BootReceiver.kt",
+                r'(?m)^const val DEBUG_BOOT_COMPLETED = "[^"]*"$',
+                'const val DEBUG_BOOT_COMPLETED = "%s.DEBUG_BOOT_COMPLETED"' % pkg,
+                relglob=True,
+            ),
+            Rule.regex(
+                "ffi.kt 对 RdClipboardManager 的 import",
+                "flutter/android/app/src/main/kotlin/ffi.kt",
+                r"(?m)^import com\.carriez\.flutter_hbb\.RdClipboardManager$",
+                "import %s.RdClipboardManager" % pkg,
+                residual="com.carriez.flutter_hbb",
+            ),
+            # ---- iOS ---------------------------------------------------------
+            Rule.regex(
+                "iOS PRODUCT_BUNDLE_IDENTIFIER（Debug/Release/Profile 三处）",
+                "flutter/ios/Runner.xcodeproj/project.pbxproj",
+                r"PRODUCT_BUNDLE_IDENTIFIER = [^;]*;",
+                "PRODUCT_BUNDLE_IDENTIFIER = %s;" % pkg,
+            ),
+            Rule.regex(
+                "iOS CFBundleURLName",
+                "flutter/ios/Runner/Info.plist",
+                r"(<key>CFBundleURLName</key>\s*<string>)[^<]*(</string>)",
+                r"\g<1>%s\g<2>" % pkg,
+            ),
+            Rule.regex(
+                "iOS exportOptions 的 bundle id 键（profile 名要在 Apple "
+                "Developer 后台建同名的，脚本管不了）",
+                "flutter/ios/exportOptions.plist",
+                r"(<key>)com\.[A-Za-z0-9_.]+(</key>)",
+                r"\g<1>%s\g<2>" % pkg,
+            ),
+            # ---- macOS -------------------------------------------------------
+            Rule.regex(
+                "macOS PRODUCT_BUNDLE_IDENTIFIER（Debug/Release/Profile 三处）",
+                "flutter/macos/Runner.xcodeproj/project.pbxproj",
+                r"PRODUCT_BUNDLE_IDENTIFIER = [^;]*;",
+                "PRODUCT_BUNDLE_IDENTIFIER = %s;" % pkg,
+            ),
+            Rule.regex(
+                "macOS CFBundleURLName",
+                "flutter/macos/Runner/Info.plist",
+                r"(<key>CFBundleURLName</key>\s*<string>)[^<]*(</string>)",
+                r"\g<1>%s\g<2>" % pkg,
+            ),
+            Rule.regex(
+                "macOS AppInfo.xcconfig 的 bundle id",
+                "flutter/macos/Runner/Configs/AppInfo.xcconfig",
+                r"PRODUCT_BUNDLE_IDENTIFIER = [^\n]*",
+                "PRODUCT_BUNDLE_IDENTIFIER = %s" % pkg,
+            ),
+            # ---- Linux -------------------------------------------------------
+            Rule.regex(
+                "Linux GTK APPLICATION_ID（桌面入口/WMClass 之外的正式标识）",
+                "flutter/linux/CMakeLists.txt",
+                r'set\(APPLICATION_ID "[^"]*"\)',
+                'set(APPLICATION_ID "%s")' % pkg,
+            ),
+            # ---- Rust --------------------------------------------------------
+            Rule.regex(
+                "Cargo bundle identifier",
+                "Cargo.toml",
+                r'identifier = "[^"]*"',
+                'identifier = "%s"' % pkg,
+            ),
+            # cargo 自带 bin（rustdesk/naming/service）的 Windows 版本资源，
+            # 由 build.rs 的 winres 读取；Flutter 那个 exe 用的是 Runner.rc，
+            # 两处都要改，否则文件属性里仍是 RustDesk。
+            # OriginalFilename 保持 rustdesk.exe 不动 —— 它就是 cargo bin 的真名。
+            Rule.regex(
+                "Cargo winres - 产品名",
+                "Cargo.toml",
+                r'ProductName = "[^"]*"',
+                'ProductName = "%s"' % app_name,
+            ),
+            Rule.regex(
+                "Cargo winres - 文件描述",
+                "Cargo.toml",
+                r'FileDescription = "[^"]*"',
+                'FileDescription = "%s Remote Desktop"' % app_name,
+            ),
+            Rule.regex(
+                "hbb_common ORG（macOS 配置目录，client 侧）",
+                "libs/hbb_common/src/config.rs",
+                r'pub static ref ORG: RwLock<String> = RwLock::new\("[^"]*"\.to_owned\(\)\);',
+                'pub static ref ORG: RwLock<String> = RwLock::new("%s".to_owned());' % org,
+            ),
+            Rule.regex(
+                # 本仓库 server/ 下有一份内联 fork 的 hbb_common（服务端自用），
+                # 路径相对 --source（client/）要跳到仓库根；纯上游客户端树里
+                # 这个文件不存在，规则会报"文件不存在"（非必需，仅警告）。
+                "hbb_common ORG（macOS 配置目录，server 内联 fork 侧）",
+                "../server/src/libs/hbb_common/src/config.rs",
+                r'pub static ref ORG: RwLock<String> = RwLock::new\("[^"]*"\.to_owned\(\)\);',
+                'pub static ref ORG: RwLock<String> = RwLock::new("%s".to_owned());' % org,
+            ),
+            Rule.regex(
+                "correct_app_name 的模板 bundle id 替换源（与 plist 模板同值）",
+                "src/platform/macos.rs",
+                r's\.replace\("[^"]*", &bundleid\)',
+                's.replace("%s", &bundleid)' % pkg,
+            ),
+            # launchd 标签前缀：write_plists / root-update / 回滚脚本里共 6 处
+            # （daemon/agent × plist 路径 × 标签）。模板里的 RustDesk 字样由
+            # correct_app_name 在运行时改写成 APP_NAME，这里只换组织段。
+            # 注意 org 已含 "com." 前缀，替换串里不要再拼一次。
+            Rule.regex(
+                "launchd 标签/plist 路径前缀（com.<org>.{App}_{service,server}）",
+                "src/platform/macos.rs",
+                r"com\.[A-Za-z0-9_]+(\.\{\}_(?:service|server))",
+                r"%s\g<1>" % org,
+            ),
+            Rule.regex(
+                "macos.rs 单测：已安装 app 的 bundle id",
+                "src/platform/macos.rs",
+                r'info\("com\.[^"]*"\)',
+                'info("%s")' % pkg,
+            ),
+            Rule.regex(
+                "macos.rs 单测：(bundle_id, accepted) 用例",
+                "src/platform/macos.rs",
+                r'\("com\.[^"]*", true\)',
+                '("%s", true)' % pkg,
+            ),
+            Rule.regex(
+                "macos.rs 里 tccutil 注释的 bundle id",
+                "src/platform/macos.rs",
+                r"(tccutil reset All )com\.[A-Za-z0-9_.]+",
+                r"\g<1>%s" % pkg,
+            ),
+            Rule.regex(
+                "common.rs 注释里的 XPC 服务名",
+                "src/common.rs",
+                r"(XPC_SERVICE_NAME=)com\.[A-Za-z0-9_.]+",
+                r"\g<1>%s.%s_server" % (org, app_name),
+            ),
+            Rule.regex(
+                "daemon.plist 标签",
+                "src/platform/privileges_scripts/daemon.plist",
+                r"com\.[A-Za-z0-9_]+\.RustDesk_(service|server)",
+                r"%s.RustDesk_\g<1>" % org,
+            ),
+            Rule.regex(
+                "daemon.plist AssociatedBundleIdentifiers",
+                "src/platform/privileges_scripts/daemon.plist",
+                r"(<key>AssociatedBundleIdentifiers</key>\s*<string>)[^<]*(</string>)",
+                r"\g<1>%s\g<2>" % pkg,
+            ),
+            Rule.regex(
+                "agent.plist 标签",
+                "src/platform/privileges_scripts/agent.plist",
+                r"com\.[A-Za-z0-9_]+\.RustDesk_(service|server)",
+                r"%s.RustDesk_\g<1>" % org,
+            ),
+            Rule.regex(
+                "agent.plist AssociatedBundleIdentifiers",
+                "src/platform/privileges_scripts/agent.plist",
+                r"(<key>AssociatedBundleIdentifiers</key>\s*<string>)[^<]*(</string>)",
+                r"\g<1>%s\g<2>" % pkg,
+            ),
+            Rule.regex(
+                "install.scpt 的 launchd 路径与标签",
+                "src/platform/privileges_scripts/install.scpt",
+                r"com\.[A-Za-z0-9_]+\.RustDesk_(service|server)",
+                r"%s.RustDesk_\g<1>" % org,
+            ),
+            Rule.regex(
+                # 与 Label 规则同一风格：模板里保留 RustDesk 字样，运行时由
+                # correct_app_name 改写成 APP_NAME（com.alsoapp.WeDesk/），
+                # 与 ProjectDirs 实际 Preferences 目录一致。
+                "install.scpt 的 Preferences 目录（须与 ProjectDirs 实际路径一致）",
+                "src/platform/privileges_scripts/install.scpt",
+                r"com\.[A-Za-z0-9_]+\.RustDesk/",
+                r"%s.RustDesk/" % org,
+            ),
+            Rule.regex(
+                "uninstall.scpt 的 launchd 路径",
+                "src/platform/privileges_scripts/uninstall.scpt",
+                r"com\.[A-Za-z0-9_]+\.RustDesk_(service|server)",
+                r"%s.RustDesk_\g<1>" % org,
+            ),
+            Rule.regex(
+                "update.scpt 的 launchd 路径与标签",
+                "src/platform/privileges_scripts/update.scpt",
+                r"com\.[A-Za-z0-9_]+\.RustDesk_(service|server)",
+                r"%s.RustDesk_\g<1>" % org,
+            ),
+            Rule.regex(
+                "manual_update 的公版 bundle id 常量（定制客户端走实际 bundle id）",
+                "src/manual_update.rs",
+                r'const PUBLIC_MACOS_BUNDLE_ID: &str = "[^"]*";',
+                'const PUBLIC_MACOS_BUNDLE_ID: &str = "%s";' % pkg,
+            ),
+            # 单测 resolves_public_and_custom_update_package_identity 三类字面量：
+            #   1. 公版用例是一对（期望值 + 实参），必须成对替换，只换一边断言就挂；
+            #   2. 实参行单独一条，覆盖 (false, ...) 那个用例；
+            #   3. com.example.* 是"任意自定义 id 原样返回"的对照用例，两条规则
+            #      都用 (?!example) 负向断言避开 —— 早期版本没加，把对照用例
+            #      改成了同一个 id，测试直接失败。
+            Rule.regex(
+                "manual_update 单测：公版用例的期望值 + 实参（成对）",
+                "src/manual_update.rs",
+                r'"com\.(?!example)[^"]*",(\s*\n\s*expected_update_package_id\(true, Some\(")com\.(?!example)[^"]*(")',
+                r'"%s",\g<1>%s\g<2>' % (pkg, pkg),
+            ),
+            Rule.regex(
+                "manual_update 单测：expected_update_package_id 的 bundle id 实参",
+                "src/manual_update.rs",
+                r'expected_update_package_id\((true|false), Some\("com\.(?!example)[^"]*"\.to_owned\(\)\)\)',
+                r'expected_update_package_id(\g<1>, Some("%s".to_owned()))' % pkg,
+            ),
+            Rule.regex(
+                "macOS 更新脚本测试的 bundle id",
+                "res/update/test_macos_update_scripts.py",
+                r'bundle_id = "[^"]*"',
+                'bundle_id = "%s"' % pkg,
+            ),
+        ]
+
     # ------------------------------------------------- ASCII 品牌名（英文场合）
     #
     # app_name 是给用户看的产品名，可以是中文。但有几处必须是 ASCII 或文件名安全的：
@@ -494,6 +908,9 @@ def apply_rules(root: Path, rules, dry_run=False, prev_state=None):
     它的作用是让脚本可以反复调整：每条精确匹配规则除了认上游原始值，
     也认"上次写进去的那个值"，于是把公司名从 A 改成 B 时能正确找到 A。
     没有它，第二次改配置就会满屏"未找到目标字符串"。
+
+    relglob 规则的 relpath 是 glob 模式，对每个命中文件套用同一条规则
+    （包名定制的 kotlin 目录迁移后路径会变，只有 glob 能找到文件）。
     """
     prev_state = prev_state or {}
     hit, miss = [], []
@@ -502,64 +919,83 @@ def apply_rules(root: Path, rules, dry_run=False, prev_state=None):
     originals: dict[Path, str] = {}   # 磁盘上的原样，用来判断到底变没变
 
     for r in rules:
-        fp = root / r.relpath
-        if not fp.exists():
-            miss.append((r, "文件不存在"))
-            continue
         if r.new == r.old:
             continue
 
-        text = cache.get(fp)
-        if text is None:
-            text = fp.read_text(encoding="utf-8", errors="surrogateescape")
-            cache[fp] = text
-            originals[fp] = text
-
-        key = "%s|%s" % (r.relpath, r.note)
-
-        if r.is_regex:
-            new_text, n = re.subn(r.old, r.new, text)
+        # 目标文件列表：glob 规则展开成多个，普通规则就是单个文件
+        if r.relglob:
+            fps = sorted(root.glob(r.relpath))
+            if not fps:
+                miss.append((r, "无匹配文件: %s" % r.relpath))
+                continue
         else:
-            # 依次尝试：上游原始值 -> 上次注入的值。
-            candidates = [r.old]
-            prev = prev_state.get(key)
-            if prev and prev not in candidates:
-                candidates.append(prev)
+            fp = root / r.relpath
+            if not fp.exists():
+                miss.append((r, "文件不存在"))
+                continue
+            fps = [fp]
 
-            new_text, n = text, 0
-            for cand in candidates:
-                c = text.count(cand)
-                if c:
-                    new_text, n = text.replace(cand, r.new), c
+        changed = 0   # 真正让内容发生变化的替换次数
+        matched = 0   # 匹配到旧值的次数（含"替换后一字未变"的幂等命中）
+        for fp in fps:
+            text = cache.get(fp)
+            if text is None:
+                text = fp.read_text(encoding="utf-8", errors="surrogateescape")
+                cache[fp] = text
+                originals[fp] = text
+
+            key = "%s|%s" % (r.relpath, r.note)
+
+            if r.is_regex:
+                new_text, n = re.subn(r.old, r.new, text)
+            else:
+                # 依次尝试：上游原始值 -> 上次注入的值。
+                candidates = [r.old]
+                prev = prev_state.get(key)
+                if prev and prev not in candidates:
+                    candidates.append(prev)
+
+                new_text, n = text, 0
+                for cand in candidates:
+                    c = text.count(cand)
+                    if c:
+                        new_text, n = text.replace(cand, r.new), c
+                        break
+
+            # 正则规则会"匹配成功但替换后内容一字未变"——例如版权行的年份和
+            # 公司名都没动。这时应算已命中，否则每次都假报"待修改 N 项"，
+            # 真实运行还会白白生成 .rd.bak 备份并重写文件。
+            if n and new_text == text:
+                matched += n
+                continue
+
+            if n == 0:
+                # 幂等保护：匹配不到旧值，但新值已经在了 —— 说明这条之前注入过。
+                # 这种情况不算失败，否则重跑脚本（比如只改公司名）会满屏报"未命中"，
+                # 而且会误触发下面的 required 失败退出。
+                if not r.is_regex and r.new and r.new in text:
+                    matched += 1
+                elif r.is_regex and r.residual and r.residual not in text:
+                    # 正则匹配不到、且它要消灭的东西也找不到了 —— 同样是早已生效。
+                    matched += 1
+                else:
+                    miss.append((r, "未找到目标字符串（源码版本可能已变更）"))
                     break
+                continue
+
+            cache[fp] = new_text
+            changed += n
+            matched += n
 
         # 只要本条规则有明确目标值就记入状态，包括"值已在源码里、本次没动"
         # 的情况 —— 这样下次改配置时仍能认出它。
         if r.new:
             new_state[key] = r.new
-
-        # 正则规则会"匹配成功但替换后内容一字未变"——例如版权行的年份和
-        # 公司名都没动。这时应算已命中，否则每次都假报"待修改 N 项"，
-        # 真实运行还会白白生成 .rd.bak 备份并重写文件。
-        if n and new_text == text:
+        if changed:
+            hit.append((r, changed))
+        elif matched:
             hit.append((r, 0))
-            continue
-
-        if n == 0:
-            # 幂等保护：匹配不到旧值，但新值已经在了 —— 说明这条之前注入过。
-            # 这种情况不算失败，否则重跑脚本（比如只改公司名）会满屏报"未命中"，
-            # 而且会误触发下面的 required 失败退出。
-            if not r.is_regex and r.new and r.new in text:
-                hit.append((r, 0))
-            elif r.is_regex and r.residual and r.residual not in text:
-                # 正则匹配不到、且它要消灭的东西也找不到了 —— 同样是早已生效。
-                hit.append((r, 0))
-            else:
-                miss.append((r, "未找到目标字符串（源码版本可能已变更）"))
-            continue
-
-        cache[fp] = new_text
-        hit.append((r, n))
+        # changed==0 且 matched==0：所有目标文件都没命中，miss 已在上面记录
 
     if not dry_run:
         for fp, text in cache.items():
@@ -592,6 +1028,7 @@ def restore(root: Path, rules):
 def validate(c: dict):
     problems = []
     srv = c.get("server", {})
+    brand = c.get("brand", {})
     host = srv.get("rendezvous_host", "").strip()
     relay = srv.get("relay_host", "").strip()
     if not host:
@@ -607,6 +1044,13 @@ def validate(c: dict):
         problems.append(
             'server.api_server 必须带 http:// 或 https:// 前缀，且端口写全，'
             '例如 "http://admin.wedesk.alsoapp.com:5185"'
+        )
+
+    pkg = brand.get("package_name", "").strip()
+    if pkg and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+", pkg):
+        problems.append(
+            "brand.package_name 必须是反向域名格式（至少两段、每段字母/数字/下划线、"
+            '以字母开头），例如 "com.alsoapp.wedesk"'
         )
 
     # ---- 端口检查 ----------------------------------------------------------

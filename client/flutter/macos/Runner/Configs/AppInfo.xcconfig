@@ -5,10 +5,14 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = RustDesk
+// 必须与 hbb_common::config::APP_NAME 的大小写保持一致 —— 更新流程与
+// daemon/agent plist 都按 /Applications/{APP_NAME}.app 寻址（correct_app_name
+// 会把模板里的 RustDesk 改写成 APP_NAME）。此前这里是 RustDesk 而 APP_NAME 是
+// WeDesk，编出来的 .app 与运行时路径对不上，属于隐性坑。
+PRODUCT_NAME = WeDesk
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.carriez.flutterHbb
+PRODUCT_BUNDLE_IDENTIFIER = com.alsoapp.wedesk
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 www.alsoapp.com. All rights reserved.

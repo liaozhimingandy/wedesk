@@ -312,6 +312,32 @@ jobs:
             echo "::error::仍残留上游公司名 —— 请执行 python build/client/customize.py"
             exit 1
           fi
+          # 占位符守卫：重构提交曾把 Cargo.toml/Runner.rc 的公司名打回
+          # "贵公司名称" 而 CI 全绿（旧检查只认 Purslane），产物带着占位符出厂。
+          if grep -rq "贵公司名称" client/Cargo.toml client/flutter/windows/runner/Runner.rc; then
+            echo "::error::公司名仍是占位符 —— 填写 build/client/custom.toml 的 brand.company_name 后重跑 customize.py"
+            exit 1
+          fi
+          # 公司名守卫：上述两个文件之外，macOS About 版权行、便携版 winres、
+          # 服务端 --help 作者行也都曾带着上游公司名出厂。
+          # preprocess.py 只查 --manufacturer 默认值那一处 —— 它里面还有一行
+          # 是有意在打包时替换 License.rtf 里 Purslane 的正则，不能一锅端。
+          if grep -rq "Purslane" client/Cargo.toml client/flutter/windows/runner/Runner.rc \
+                 client/flutter/macos/Runner/Configs/AppInfo.xcconfig client/libs/portable/Cargo.toml \
+                 server/src/src/common.rs server/src/src/hbbr.rs; then
+            echo "::error::仍残留上游公司名 Purslane —— 请执行 python build/client/customize.py"
+            exit 1
+          fi
+          if grep -q 'default="Purslane' client/res/msi/preprocess.py; then
+            echo "::error::MSI 制造商仍是上游默认值 —— 请执行 python build/client/customize.py"
+            exit 1
+          fi
+          # 包名守卫：上游遗留 com.carriez.*（RustDesk 作者域名）。包名是各平台
+          # 应用商店的唯一标识，漏改任何一处都会导致上架被拒/更新不互通。
+          if grep -rq --exclude="*.rd.bak" "com.carriez" client/flutter/android client/flutter/ios client/flutter/macos client/flutter/linux client/src client/libs client/res client/Cargo.toml server/src; then
+            echo "::error::仍残留上游包名 com.carriez.* —— 包名定制见 build/client/custom.toml 的 brand.package_name"
+            exit 1
+          fi
           if grep -q 'rust-ny.rustdesk.com' client/libs/hbb_common/src/config.rs; then
             echo "::error::服务器地址仍是官方默认值"
             exit 1

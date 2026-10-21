@@ -55,6 +55,19 @@ exe_name = "wedesk"
 # 显示在"关于"与 Windows 属性里的公司名
 company_name = "www.alsoapp.com"
 
+# 应用包名 / Bundle ID，全平台统一为这一个值：
+#  Android applicationId + namespace + kotlin 包声明
+#  iOS / macOS PRODUCT_BUNDLE_IDENTIFIER + CFBundleURLName
+#  Linux GTK APPLICATION_ID
+#  Cargo bundle identifier、hbb_common ORG（macOS 配置目录）、
+#  macOS launchd 标签前缀（com.<org>.<App>_service/_server）
+#  !! 上线后不可更改 —— Android 应用市场与 App Store 都把它当唯一标识，
+#     改了等于换了一个新应用：老用户收不到更新、数据不互通、商店链接失效 !!
+#  上游遗留值是 com.carriez.flutter_hbb（RustDesk 作者个人域名），已全量替换。
+#  深链 scheme 不在这里配 —— 它由 app_name 小写生成（wedesk://），
+#  与客户端 get_uri_prefix() 自动保持一致。
+package_name = "com.alsoapp.wedesk"
+
 # 官网域名，用于替换界面里的帮助/隐私政策链接
 # 相关链接统一指向 https://www.alsoapp.com/wedesk/ 下：
 #   官网/帮助  → https://www.alsoapp.com/wedesk

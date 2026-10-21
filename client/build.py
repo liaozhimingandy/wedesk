@@ -966,6 +966,26 @@ def build_flutter_arch_manjaro(version, features):
     system2('HBB=`pwd`/.. FLUTTER=1 makepkg -f')
 
 
+def windows_exe_name() -> str:
+    """读 flutter/windows/CMakeLists.txt 的 BINARY_NAME（= custom.toml 的 exe_name）。
+
+    便携打包的 generate.py -e 必须指向 flutter 产物的主 exe。上游这里写死
+    rustdesk.exe，而本仓库 exe 早已改名 wedesk（BINARY_NAME），不跟着读就会
+    指向一个不存在的文件，build.py --portable 直接失败。
+    CI 不走这条路（自带便携打包），所以一直没暴露；本地脚本用了
+    --skip-portable-pack 也没暴露 —— 但直连 build.py 就会踩到。
+    """
+    cmake = pathlib.Path('flutter/windows/CMakeLists.txt')
+    try:
+        m = re.search(r'set\(BINARY_NAME "([^"]+)"\)',
+                      cmake.read_text(encoding='utf-8'))
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    return 'wedesk'
+
+
 def build_flutter_windows(version, features, skip_portable_pack):
     if not skip_cargo:
         system2(f'cargo build --locked --features {features} --lib --release')
@@ -982,7 +1002,7 @@ def build_flutter_windows(version, features, skip_portable_pack):
     os.chdir('libs/portable')
     system2('pip3 install -r requirements.txt')
     system2(
-        f'python3 ./generate.py -f ../../{flutter_build_dir_2} -o . -e ../../{flutter_build_dir_2}/rustdesk.exe')
+        f'python3 ./generate.py -f ../../{flutter_build_dir_2} -o . -e ../../{flutter_build_dir_2}/{windows_exe_name()}.exe')
     os.chdir('../..')
     if os.path.exists('./rustdesk_portable.exe'):
         os.replace('./target/release/rustdesk-portable-packer.exe',

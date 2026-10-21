@@ -448,8 +448,11 @@ ID 在 `config/` 目录里。**覆盖 exe 不会丢，但把整个目录删了�
 |---|---|---|
 | `HTTP 404` / `HTTP 5xx` | 官网静态目录里没有这个文件，或临时故障 | 找运维确认 `update.json` 已部署到 `www.alsoapp.com/static/wedesk/` |
 | `Connection timed out` / `SocketException` | 客户端到不了外网 | 私有内网机器本来就出不去，属预期；有代理的话在 设置 → 网络 配 Socks5/Http(s) |
-| `bad json` / `no version` | 文件内容不是约定的格式 | 对照 docs/14-desktop-ui.md 的格式说明修 JSON |
-| 显示"已是最新版本"但官网已有新版 | `update.json` 的 `version` 没比客户端大 | 版本号是**三段式数字**按段比较，`v1.2.3` 这种带 `v` 或四段号都不会被判定为更新 |
+| `bad json` | 文件内容不是约定的格式 | 对照 docs/14-desktop-ui.md 的格式说明修 JSON |
+| 显示"已是最新版本"但官网已有新版 | `update.json` 里当前平台那条的 `version` 没比客户端大，或该平台条目被 `enabled: false` | 版本号是**三段式数字**按段比较（容忍 `v` 前缀）；确认 `packages[]` 里有当前平台且 `enabled: true` |
+
+> 当前平台在 `packages[]` 里没有条目时客户端**按"已是最新"处理**（平台未发布
+> 不算故障，不会弹"检查失败"）；只有 HTTP 失败 / JSON 损坏才报错。
 
 > ⚠️ 这条链路与 Rust 侧官方更新器是**故意分开**的：私有部署客户端不允许访问
 > api.rustdesk.com（`common.rs` 的 `do_check_software_update` 对 custom client

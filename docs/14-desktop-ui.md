@@ -135,32 +135,49 @@ disable-udp = Y          # 等价于原 "Disable UDP" 开关
 `do_check_software_update` 对 custom client 的直接早退）。
 
 **更新数据源**：`https://www.alsoapp.com/static/wedesk/update.json`，
-发新版本时由运维更新这个文件即可，客户端不用重新构建。格式：
+发新版本时由运维更新这个文件即可，客户端不用重新构建。**线上实际格式**
+（packages 数组，每平台一条，2026-10-21 起客户端按此解析）：
 
 ```json
 {
-  "version": "1.2.3",
-  "date": "2026-10-21",
-  "mandatory": false,
-  "notes": "1. 中继节点自动注册\n2. 连接过程分阶段提示",
-  "platforms": {
-    "windows": { "url": "https://www.alsoapp.com/static/wedesk/Wedesk-Setup-1.2.3.exe" },
-    "macos":   { "url": "https://www.alsoapp.com/static/wedesk/Wedesk-1.2.3.dmg" },
-    "linux":   { "url": "https://www.alsoapp.com/static/wedesk/wedesk-1.2.3-x86_64.AppImage" }
-  }
+  "app_id": "wedesk",
+  "publish_time": "2026-10-21T14:30:00+08:00",
+  "global_release_note": "本次迭代概要",
+  "packages": [
+    {
+      "platform": "windows", "arch": "x64",
+      "version": "1.2.5", "version_code": 125,
+      "min_supported_version_code": 100,
+      "is_force": false, "update_type": "full", "enabled": true,
+      "update_title": "WeDesk 新版本可用",
+      "update_desc": "✅ 优化内网P2P\n✅ 修复WSL2网络场景",
+      "download_url": "https://www.alsoapp.com/static/wedesk/wedesk-1.2.5-setup.exe",
+      "sha256": "...", "size": 12582912
+    },
+    { "platform": "android", "arch": "arm64-v8a", "version": "1.2.5", "is_force": true, "...": "..." },
+    { "platform": "linux",  "arch": "x64",   "version": "1.2.5", "...": "..." },
+    { "platform": "macos",  "arch": "arm64", "version": "1.2.5", "...": "..." }
+  ],
+  "gray_release": { "enable": false, "percent": 0.2, "device_white_list": [] },
+  "metadata": { "sign": "", "cache_ttl": 300 }
 }
 ```
 
-字段说明：
+客户端解析规则（`update_check.dart`）：
 
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `version` | 是 | 三段式数字（`1.2.3`），与客户端当前版本按段比较，**大于**才提示更新 |
-| `platforms.<平台>.url` | 二选一 | 按平台给安装包地址，平台键：`windows` / `macos` / `linux` / `android` / `ios` |
-| `url` | 二选一 | 顶层兜底地址，`platforms` 没匹配到当前平台时用它 |
-| `notes` | 否 | 更新说明。支持纯字符串，或 `{"zh-cn": "...", "en": "..."}` 按界面语言取 |
-| `mandatory` | 否 | `true` = 强制更新：弹窗不可关闭，"稍后"按钮隐藏，只剩"立即更新" |
-| `date` | 否 | 发布日期，`notes` 为空时展示它 |
+- 只看 `platform` == 当前平台 且 `enabled != false` 的条目；`arch` 与本机
+  ABI 一致的优先（windows `x64` / android `arm64-v8a` / macos `arm64` 等写法
+  都会归一化后再比），同组里取 `version` 最高的。
+- 当前平台没有任何条目 → 按"已是最新"处理（平台未发布不算故障）。
+- `version` 三段式比较，**大于**客户端当前版本才提示更新；容忍 `v` 前缀。
+- `is_force: true` → 强制更新：弹窗不可关闭，"稍后"隐藏，只剩"立即更新"。
+- 说明文案取 `update_desc`，为空回退 `update_title`，再回退顶层
+  `global_release_note`；下载地址用 `download_url`。
+- `min_supported_version_code` / `gray_release` / `metadata` 暂未使用
+  （灰度留作后续扩展）。
+
+早期设计的顶层平铺格式（`version` + `platforms.<平台>.url` + `notes` +
+`mandatory`）客户端仍然兼容，作为 packages 数组缺失时的回退。
 
 交互分支：有新版本 → 弹窗（当前版本 → 新版本 + 更新说明 + 立即更新/稍后，
 "立即更新"用系统浏览器打开下载地址）；已是最新 → toast"已是最新版本"；

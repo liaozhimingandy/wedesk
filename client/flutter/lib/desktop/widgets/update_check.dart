@@ -5,6 +5,12 @@
 // 由运维在发布新版本时更新该文件，客户端启动时（勾选"自动更新版本"后）
 // 或用户在"关于"页点"检查更新"时拉取。
 //
+// 线上实际格式是 packages[] 数组（按平台/架构一条记录）：
+//   { "packages": [ { "platform": "windows", "arch": "x64", "version": "1.2.5",
+//     "is_force": false, "enabled": true, "update_desc": "...",
+//     "download_url": "...", ... }, ... ], "global_release_note": "..." }
+// 同时兼容早期设计的顶层平铺格式（version / platforms.<平台>.url）。
+//
 // 刻意不复用 Rust 侧 updater.rs 那条链路：那是为官方 api.rustdesk.com +
 // GitHub Release（allowlist / sha256 / MSI 提权安装）设计的，与自有 JSON
 // 格式不匹配；wedesk 私有部署客户端也不允许访问外网更新源
@@ -14,6 +20,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -25,7 +32,8 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
 /// 更新信息 JSON 的固定地址。
-const String kUpdateJsonUrl = 'https://www.alsoapp.com/static/wedesk/update.json';
+const String kUpdateJsonUrl =
+    'https://www.alsoapp.com/static/wedesk/update.json';
 
 /// 单次检查的最长等待时间。官网静态目录挂了的话不至于让按钮一直转圈。
 const Duration _kCheckTimeout = Duration(seconds: 10);
@@ -99,6 +107,118 @@ String _currentPlatformKey() {
   return 'unknown';
 }
 
+/// 当前进程的原生架构，归一化成 x64 / arm64 / arm；识别不了返回 null。
+///
+/// update.json 里各平台的 arch 写法不统一（windows "x64"、android
+/// "arm64-v8a"、macos "arm64"），匹配前先过 [_normalizeArch]。
+String? _currentArchKey() {
+  try {
+    switch (Abi.current()) {
+      case Abi.x64:
+      case Abi.ia32:
+        return 'x64';
+      case Abi.arm64:
+        return 'arm64';
+      case Abi.arm:
+        return 'arm';
+      default:
+        return null;
+    }
+  } catch (_) {
+    // 理论上原生编译永远有 ABI；防御一下，退化成不按架构筛选。
+    return null;
+  }
+}
+
+/// 把 JSON 里各种 arch 写法归一到 x64 / arm64 / arm。
+String? _normalizeArch(String? raw) {
+  if (raw == null) return null;
+  switch (raw.trim().toLowerCase()) {
+    case 'x64':
+    case 'x86_64':
+    case 'amd64':
+    case 'x86':
+      return 'x64';
+    case 'arm64':
+    case 'arm64-v8a':
+    case 'aarch64':
+      return 'arm64';
+    case 'arm':
+    case 'armeabi':
+    case 'armeabi-v7a':
+      return 'arm';
+    default:
+      return raw.trim().toLowerCase();
+  }
+}
+
+/// 从 packages[] 数组里挑出当前平台的更新条目（线上实际格式）。
+///
+/// 规则：跳过 enabled=false；platform 必须等于当前平台；arch 精确匹配优先
+/// （同平台多条记录时，先选架构一致的，再在同组里取版本号最高的）。
+/// 当前平台没有任何条目时返回 null（视为该平台未发布，不是错误）。
+WedeskUpdateInfo? _pickFromPackages(Map<String, dynamic> json) {
+  final packages = json['packages'];
+  if (packages is! List) return null;
+  final platformKey = _currentPlatformKey();
+  final archKey = _currentArchKey();
+  final globalNote = json['global_release_note'] is String
+      ? json['global_release_note'] as String
+      : '';
+  WedeskUpdateInfo? best;
+  var bestScore = -1;
+  for (final item in packages) {
+    if (item is! Map) continue;
+    if (item['enabled'] == false) continue;
+    if (item['platform']?.toString().trim() != platformKey) continue;
+    final version = item['version'];
+    if (version is! String || version.trim().isEmpty) continue;
+    final desc = item['update_desc'];
+    final title = item['update_title'];
+    final notes = desc is String && desc.trim().isNotEmpty
+        ? desc.trim()
+        : (title is String && title.trim().isNotEmpty
+            ? title.trim()
+            : globalNote);
+    final url = item['download_url'];
+    final date = item['publish_time'] is String
+        ? item['publish_time'] as String
+        : (item['date'] is String ? item['date'] as String : '');
+    final info = WedeskUpdateInfo(
+      // 容忍运维写 "v1.2.3"：versionToNumber 只认纯数字段。
+      version: version.trim().replaceFirst(RegExp(r'^[vV]'), ''),
+      downloadUrl: url is String && url.trim().isNotEmpty ? url.trim() : null,
+      notes: notes,
+      mandatory: item['is_force'] == true,
+      date: date,
+    );
+    final arch = _normalizeArch(item['arch']?.toString());
+    // 架构命中 2 分、仅平台命中 1 分；同分取版本号更高的那条。
+    final score = (archKey != null && arch == archKey) ? 2 : 1;
+    if (score > bestScore ||
+        (score == bestScore &&
+            best != null &&
+            versionCmp(info.version, best.version) > 0)) {
+      best = info;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/// 早期设计的顶层平铺格式：version + platforms.<平台>.url（保留兼容）。
+WedeskUpdateInfo? _pickFromLegacyTopLevel(Map<String, dynamic> json) {
+  final version = json['version'];
+  if (version is! String || version.trim().isEmpty) return null;
+  return WedeskUpdateInfo(
+    version: version.trim().replaceFirst(RegExp(r'^[vV]'), ''),
+    downloadUrl: _pickDownloadUrl(json),
+    notes: _pickNotes(json['notes']),
+    mandatory: json['mandatory'] == true,
+    date: json['date'] is String ? json['date'] as String : '',
+  );
+}
+
 /// 按当前平台取下载地址：platforms.<平台>.url 优先，顶层 url 兜底。
 String? _pickDownloadUrl(Map<String, dynamic> json) {
   final platforms = json['platforms'];
@@ -135,11 +255,14 @@ String _pickNotes(dynamic raw) {
 ///
 /// 任何异常都收敛成 [UpdateCheckResult.failed]，由调用方决定怎么提示——
 /// 检查更新失败不应该打断正常使用。
+///
+/// 解析优先级：线上 packages[] 数组（按平台/架构挑一条）→ 顶层平铺格式。
+/// 两者都没有可用条目时视为"已是最新"：服务端没给当前平台的包不算是故障，
+/// 弹"检查失败"反而会误导用户。
 Future<UpdateCheckResult> checkWedeskUpdate() async {
   try {
-    final resp = await http
-        .get(Uri.parse(kUpdateJsonUrl))
-        .timeout(_kCheckTimeout);
+    final resp =
+        await http.get(Uri.parse(kUpdateJsonUrl)).timeout(_kCheckTimeout);
     if (resp.statusCode != 200) {
       return UpdateCheckResult.failed('HTTP ${resp.statusCode}');
     }
@@ -147,18 +270,10 @@ Future<UpdateCheckResult> checkWedeskUpdate() async {
     if (decoded is! Map<String, dynamic>) {
       return UpdateCheckResult.failed('bad json');
     }
-    final version = decoded['version'];
-    if (version is! String || version.trim().isEmpty) {
-      return UpdateCheckResult.failed('no version');
+    final info = _pickFromPackages(decoded) ?? _pickFromLegacyTopLevel(decoded);
+    if (info == null) {
+      return const UpdateCheckResult.upToDate();
     }
-    final info = WedeskUpdateInfo(
-      // 容忍运维写 "v1.2.3"：versionToNumber 只认纯数字段。
-      version: version.trim().replaceFirst(RegExp(r'^[vV]'), ''),
-      downloadUrl: _pickDownloadUrl(decoded),
-      notes: _pickNotes(decoded['notes']),
-      mandatory: decoded['mandatory'] == true,
-      date: decoded['date'] is String ? decoded['date'] as String : '',
-    );
     final current = await bind.mainGetVersion();
     if (versionCmp(info.version, current) > 0) {
       return UpdateCheckResult.hasUpdate(info);
@@ -232,8 +347,8 @@ Future<void> showWedeskUpdateDialog(
             ),
             const SizedBox(height: 10),
             Text(translate('Release notes'),
-                style: const TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w600)),
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
             const SizedBox(height: 4),
             // 说明文案由服务端下发，必须可滚动 + 可选中，长文本不能撑破弹窗。
             Flexible(

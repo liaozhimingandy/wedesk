@@ -2624,7 +2624,7 @@ class _LogLevelEntryState extends State<_LogLevelEntry> {
               .toList(),
           onChanged: (v) async {
             if (v == null || v == _level) return;
-            await bind.mainSetLogLevel(v);
+            await bind.mainSetLogLevel(level: v);
             if (!mounted) return;
             setState(() => _level = v);
             showToast(translate('Success'));

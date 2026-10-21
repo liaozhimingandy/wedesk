@@ -520,7 +520,7 @@ class MyIdMenu: Reactor.Component {
                 {!disable_settings && <li #enable-terminal><span>{svg_checkmark}</span>{translate('Enable terminal')}</li>}
                 {!disable_settings && <li #enable-remote-restart><span>{svg_checkmark}</span>{translate('Enable remote restart')}</li>}
                 {!disable_settings && <li #enable-tunnel><span>{svg_checkmark}</span>{translate('Enable TCP tunneling')}</li>}
-                {!disable_settings && is_win ? <li #enable-block-input><span>{svg_checkmark}</span>{translate('Enable blocking user input')}</li> : ""}
+                {!disable_settings && is_win ? <li #enable-block-input title="开启后，连接期间会冻结本机【所有】键鼠输入（Windows BlockInput），第三方远控工具（如 ToDesk）的密码框也无法键入。被控机同时运行其他远控时请勿开启"><span>{svg_checkmark}</span>{translate('Enable blocking user input')}</li> : ""}
                 {!disable_settings && (handler.get_supported_privacy_mode_impls() != '[]') && <li #enable-privacy-mode><span>{svg_checkmark}</span>{translate('Enable privacy mode')}</li>}
                 {!disable_settings && <li #enable-lan-discovery><span>{svg_checkmark}</span>{translate('Enable LAN discovery')}</li>}
                 <AudioInputs />

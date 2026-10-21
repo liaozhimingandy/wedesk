@@ -80,8 +80,15 @@ pub fn approve_mode() -> ApproveMode {
         ApproveMode::Password
     } else if mode == "click" {
         ApproveMode::Click
-    } else {
+    } else if mode == "both" || mode == "password-click" {
+        // 上游「两者皆可」在 UI 层写入的内部字面量是 password-click；显式归一为 Both，
+        // 避免落入下面的兜底分支导致语义漂移。
         ApproveMode::Both
+    } else {
+        // wedesk 默认行为：受控端未显式设置 approve-mode 时，凭连接密码即可获得控制权，
+        // 无需被控人手动点「接受」。未携带密码的连接仍会弹出接受窗口作为兜底
+        // （见 connection.rs 登录授权分支的 lr.password.is_empty() 分支）。
+        ApproveMode::Password
     }
 }
 

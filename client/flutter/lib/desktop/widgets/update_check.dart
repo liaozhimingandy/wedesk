@@ -111,19 +111,20 @@ String _currentPlatformKey() {
 ///
 /// update.json 里各平台的 arch 写法不统一（windows "x64"、android
 /// "arm64-v8a"、macos "arm64"），匹配前先过 [_normalizeArch]。
+///
+/// 注意：dart:ffi 的 [Abi] 枚举成员命名在不同 Dart 版本间**不向后兼容**——
+/// 旧版是 `Abi.x64` / `Abi.arm64`（裸名），新版改成 `Abi.windowsX64` /
+/// `Abi.linuxArm64` 这类带 OS 前缀的名字，裸名已被移除，直接写
+/// `Abi.x64` 会在较新 SDK 上编译失败（CI 报 `Member not found: 'x64'`）。
+/// 因此这里只用稳定的 [Abi.current] 配合字符串特征判断，跨版本都可用。
 String? _currentArchKey() {
   try {
-    switch (Abi.current()) {
-      case Abi.x64:
-      case Abi.ia32:
-        return 'x64';
-      case Abi.arm64:
-        return 'arm64';
-      case Abi.arm:
-        return 'arm';
-      default:
-        return null;
-    }
+    final abi = Abi.current().toString().toLowerCase(); // "abi.x64" 或 "abi.windowsx64"
+    if (abi.contains('arm64')) return 'arm64';
+    if (abi.contains('ia32') || abi.contains('x86')) return 'x64';
+    if (abi.contains('arm')) return 'arm';
+    if (abi.contains('x64') || abi.contains('amd64')) return 'x64';
+    return null;
   } catch (_) {
     // 理论上原生编译永远有 ABI；防御一下，退化成不按架构筛选。
     return null;

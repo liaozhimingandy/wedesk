@@ -895,8 +895,19 @@ class _PasswordWidgetState extends State<PasswordWidget> {
   }
 }
 
+/// 密码输入对话框的 tag。同一会话只保留一个，避免：
+/// 1. 用户正在输入时，重复的 re-input-password 事件把对话框 dismissAll 后
+///    重弹，输了一半的密码被清掉 —— 表现为"密码还没输完就自动重连、如此重复"；
+/// 2. 同一会话叠多个密码对话框。
+const String kPasswordInputDialogTagSuffix = 'input-password';
+
 void wrongPasswordDialog(SessionID sessionId,
     OverlayDialogManager dialogManager, type, title, text) {
+  // 密码输入框已经开着（用户正在输入）时不要重弹：保留用户已输入的内容，
+  // 等他自己点 OK 提交。重复的 re-input-password 事件直接忽略即可。
+  if (dialogManager.isShowing('$sessionId-$kPasswordInputDialogTagSuffix')) {
+    return;
+  }
   dialogManager.dismissAll();
   dialogManager.show((setState, close, context) {
     cancel() {
@@ -981,6 +992,14 @@ _connectDialog(
     });
   }
 
+  // 密码输入对话框带固定 tag：同一会话已开着就直接返回，不叠加
+  // （注意必须先判断再 dismissAll，否则会把自己要保留的对话框关掉）。
+  final passwordDialogTag = passwordController != null
+      ? '$sessionId-$kPasswordInputDialogTagSuffix'
+      : null;
+  if (passwordDialogTag != null && dialogManager.isShowing(passwordDialogTag)) {
+    return;
+  }
   dialogManager.dismissAll();
   dialogManager.show((setState, close, context) {
     cancel() {
@@ -1135,7 +1154,7 @@ _connectDialog(
       onSubmit: submit,
       onCancel: cancel,
     );
-  });
+  }, tag: passwordDialogTag);
 }
 
 void showWaitUacDialog(

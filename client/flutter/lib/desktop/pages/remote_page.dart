@@ -135,6 +135,27 @@ class _RemotePageState extends State<RemotePage>
 
   SessionID get sessionId => _ffi.sessionId;
 
+  /// 被控端是手机（Android）时，把默认视图风格设为"适应窗口"（adaptive）：
+  /// 画面按 min(窗口宽/屏宽, 窗口高/屏高) 整体等比缩放，完整显示手机屏幕，
+  /// 不再 1:1 裁切。仅在该会话没有显式选过视图风格（original / custom）时
+  /// 生效 —— 用户手动选过就尊重他的选择。
+  Future<void> _applyMobilePeerDefaultViewStyle() async {
+    try {
+      if (!mounted) return;
+      final platform = _ffi.ffiModel.pi.platform;
+      if (platform != kPeerPlatformAndroid) return;
+      final style = await bind.sessionGetViewStyle(sessionId: _ffi.sessionId);
+      if (!mounted) return;
+      // null/'' 表示没设置过；非空说明用户选过 original/custom，不覆盖。
+      if (style != null && style.isNotEmpty) return;
+      await bind.sessionSetViewStyle(
+          sessionId: _ffi.sessionId, value: kRemoteViewStyleAdaptive);
+      await _ffi.canvasModel.updateViewStyle();
+    } catch (e) {
+      debugPrint('apply mobile peer default view style failed: $e');
+    }
+  }
+
   _RemotePageState(String id) {
     _initStates(id);
   }
@@ -162,6 +183,9 @@ class _RemotePageState extends State<RemotePage>
       _ffi.canvasModel.activateLocalCursor();
       showKBLayoutTypeChooserIfNeeded(
           _ffi.ffiModel.pi.platform, _ffi.dialogManager);
+      // 连手机端时默认"适应窗口"：保持手机屏幕比例、整体缩放进窗口，
+      // 而不是 1:1 显示后在横屏窗口里裁切、拖滚动条。
+      _applyMobilePeerDefaultViewStyle();
       _ffi.recordingModel
           .updateStatus(bind.sessionGetIsRecording(sessionId: _ffi.sessionId));
       // Seed shortcut action callbacks once the session is ready, so that

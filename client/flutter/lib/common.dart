@@ -823,6 +823,11 @@ class OverlayDialogManager {
     BackButtonInterceptor.removeByName(tag);
   }
 
+  /// 某个 tag 的对话框当前是否正在显示。
+  /// 用于"同类对话框只保留一个"的场景（如密码输入框已开着时，
+  /// 不再 dismissAll + 重弹，否则会把用户输了一半的内容清掉）。
+  bool isShowing(String tag) => _dialogs.containsKey(tag);
+
   Future<T?> show<T>(DialogBuilder builder,
       {bool clickMaskDismiss = false,
       bool backDismiss = false,

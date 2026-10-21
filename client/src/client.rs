@@ -4576,7 +4576,21 @@ pub fn handle_login_error(
         interface.msgbox("input-password", "Password Required", "", "");
         true
     } else if err == LOGIN_MSG_PASSWORD_WRONG {
-        lc.write().unwrap().password = Default::default();
+        // 清掉"记住的密码"。只清内存里的 lc.password 不够：被控端改了密码后，
+        // PeerConfig 里持久化的旧密码会在下次重连/哈希挑战时被 handle_hash
+        // 的 "peer config password" 分支自动重发，于是陷入
+        // 自动连接(旧密码) → 失败弹窗 → 用户重输 → 又被自动连接打断 的循环。
+        // 清掉后 handle_hash 会走 input-password 分支，等用户输入新密码
+        // （需要的话可重新勾选"记住密码"保存）。
+        {
+            let mut lc_w = lc.write().unwrap();
+            lc_w.password = Default::default();
+            let mut config = lc_w.load_config();
+            if !config.password.is_empty() {
+                config.password = Default::default();
+                lc_w.save_config(config);
+            }
+        }
         interface.msgbox("re-input-password", err, "Do you want to enter again?", "");
         true
     } else if err == LOGIN_MSG_2FA_WRONG || err == REQUIRE_2FA {

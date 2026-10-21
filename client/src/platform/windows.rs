@@ -1037,7 +1037,18 @@ pub fn try_change_desktop() -> bool {
             if !res {
                 let mut s = SUPPRESS.lock().unwrap();
                 if s.elapsed() > std::time::Duration::from_secs(3) {
-                    log::error!("Failed to switch desktop: {}", io::Error::last_os_error());
+                    let err = io::Error::last_os_error();
+                    // ERROR_ACCESS_DENIED(5) 是锁屏/UAC 安全桌面的典型错误码：
+                    // Winlogon 桌面只允许 SYSTEM 进程 OpenInputDesktop，普通用户
+                    // 进程（免安装/便携模式就是）进不去，SendInput 也就到不了锁屏
+                    // 界面 —— 表现为"看得见锁屏、点击输密码都没反应"。
+                    // 此时唯一解法是在被控端安装 Windows 服务（SYSTEM 身份）。
+                    let hint = if err.raw_os_error() == Some(5) {
+                        "（权限不足：被控端处于锁屏/UAC 安全桌面。免安装模式下无法向安全桌面注入输入；如需锁屏控制，请在被控电脑上以管理员身份运行 wedesk.exe --install-service 安装服务）"
+                    } else {
+                        ""
+                    };
+                    log::error!("Failed to switch desktop: {}{}", err, hint);
                     *s = Instant::now();
                 }
             } else {

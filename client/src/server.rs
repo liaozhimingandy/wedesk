@@ -671,15 +671,63 @@ pub async fn start_server(is_server: bool, no_server: bool) {
 
     if is_server {
         crate::common::set_server_running(true);
+        // The local IPC server is needed for single-instance detection and for
+        // cross-process communication (e.g. a second app window, the portable
+        // service). When it cannot be started — most often because a leftover
+        // named pipe from a previously crashed / elevated instance triggers
+        // `ACCESS_DENIED` (os error 5) — we must NOT crash the whole client.
+        // We used to call `std::process::exit(-1)` here, which closed the app
+        // instantly on startup (闪退). Now we retry to ride out transient races
+        // and, if all attempts fail, degrade gracefully instead of killing the
+        // UI process (the Flutter UI talks to the Rust core via FFI, not this
+        // pipe, so a missing IPC server does not break normal single-instance
+        // use).
         std::thread::spawn(move || {
-            if let Err(err) = crate::ipc::start("") {
-                log::error!("Failed to start ipc: {}", err);
-                if crate::is_server() {
-                    log::error!("ipc is occupied by another process, try kill it");
-                    std::thread::spawn(stop_main_window_process).join().ok();
+            const MAX_ATTEMPTS: u32 = 3;
+            let mut started = false;
+            for attempt in 1..=MAX_ATTEMPTS {
+                match crate::ipc::start("") {
+                    Ok(()) => {
+                        started = true;
+                        break;
+                    }
+                    Err(err) => {
+                        log::error!(
+                            "Failed to start ipc (attempt {}/{}): {}",
+                            attempt,
+                            MAX_ATTEMPTS,
+                            err
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            150 * attempt as u64,
+                        ));
+                    }
                 }
-                std::process::exit(-1);
             }
+            if started {
+                return;
+            }
+            // All attempts failed. A live instance may already own the pipe
+            // (e.g. a still-running elevated instance). If we can reach it,
+            // delegate to it instead of crashing.
+            if try_handoff_to_existing_server() {
+                log::info!(
+                    "Another WeDesk instance is already running; this instance \
+                     will not start its own IPC server"
+                );
+                return;
+            }
+            log::error!(
+                "IPC server could not be started after {} attempts. This is \
+                 usually caused by a leftover pipe from an elevated/crashed \
+                 WeDesk instance or another WeDesk process still running. The \
+                 app will continue in a limited mode. To fix: close all WeDesk \
+                 windows (including elevated ones) and restart, or run this \
+                 instance with the same privilege level as the existing one.",
+                MAX_ATTEMPTS
+            );
+            // Intentionally do NOT call std::process::exit here: keeping the UI
+            // alive is strictly better than an instant crash on startup.
         });
         // Warm the DRM availability cache before any client connects, so the first connection does
         // not race a cold `_drm` probe and ship an empty display list ("No displays" + retry).
@@ -922,6 +970,28 @@ async fn sync_and_watch_config_dir(sync_done_tx: Option<tokio::sync::oneshot::Se
         let _ = tx.send(());
     }
     log::warn!("skipped config sync");
+}
+
+/// Best-effort probe used when our own IPC server fails to start. Tries to
+/// connect to an already-running instance; if one is reachable we consider the
+/// conflict "resolved" (the other instance owns the pipe) and return `true` so
+/// the caller can stop trying to bind. This avoids an instant crash when a
+/// stale/leftover pipe blocks startup.
+///
+/// Marked `#[tokio::main]` so it can be called synchronously from the IPC
+/// watchdog thread (which is a plain OS thread, not an async task).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tokio::main(flavor = "current_thread")]
+async fn try_handoff_to_existing_server() -> bool {
+    match crate::ipc::connect(1000, "").await {
+        Ok(mut conn) => {
+            // Mirror the normal secondary-instance handshake: push our config so
+            // the running instance picks up any relevant state.
+            let _ = conn.send(&crate::ipc::Data::SyncConfig(None)).await;
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]

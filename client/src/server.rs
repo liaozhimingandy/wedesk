@@ -726,6 +726,18 @@ pub async fn start_server(is_server: bool, no_server: bool) {
                  instance with the same privilege level as the existing one.",
                 MAX_ATTEMPTS
             );
+            // Show a user-visible, actionable warning instead of only logging it.
+            // Buffered until Flutter registers its global event stream, so it is
+            // not lost by startup ordering (see `flutter::push_startup_notice`).
+            crate::flutter::push_startup_notice(
+                "warn",
+                "WeDesk 启动提示",
+                "WeDesk 的内部通信服务未能在本机启动（命名管道被占用，通常是已有 \
+                 WeDesk 实例或上次异常退出后残留的进程占用了该管道）。\n\n当前以受限 \
+                 模式运行：你仍可以正常发起连接，但可能无法被远程连接或出现异常。\n\n如 \
+                 果遇到连接问题，请先关闭所有 WeDesk 窗口（包括以管理员身份运行的），再重新 \
+                 启动本程序；或确保本次启动的权限级别与已运行的实例一致。",
+            );
             // Intentionally do NOT call std::process::exit here: keeping the UI
             // alive is strictly better than an instant crash on startup.
         });

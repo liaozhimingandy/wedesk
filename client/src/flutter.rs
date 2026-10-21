@@ -25,7 +25,7 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
     },
 };
 
@@ -53,6 +53,22 @@ pub type FlutterSession = Arc<Session<FlutterHandler>>;
 lazy_static::lazy_static! {
     pub(crate) static ref CUR_SESSION_ID: RwLock<SessionID> = Default::default(); // For desktop only
     static ref GLOBAL_EVENT_STREAM: RwLock<HashMap<String, StreamSink<String>>> = Default::default(); // rust to dart event channel
+    // Startup-time notices that must reach the UI *after* Flutter has registered
+    // its global event stream (e.g. the IPC-server degraded-mode warning below).
+    // They are buffered here and flushed by `start_global_event_stream` once the
+    // "main" channel is live, so they are never lost due to startup ordering.
+    static ref PENDING_STARTUP_NOTICES: Mutex<Vec<(String, String, String)>> = Default::default();
+}
+
+/// Buffer a notice (msgtype, title, text) to be shown to the user once the UI
+/// global event stream is ready. Used for errors that happen during Rust core
+/// init (before Flutter listens), such as the IPC server failing to start.
+pub fn push_startup_notice(msgtype: &str, title: &str, text: &str) {
+    PENDING_STARTUP_NOTICES.lock().unwrap().push((
+        msgtype.to_owned(),
+        title.to_owned(),
+        text.to_owned(),
+    ));
 }
 
 #[cfg(target_os = "windows")]
@@ -1877,15 +1893,36 @@ pub fn get_global_event_channels() -> Vec<String> {
 
 pub fn start_global_event_stream(s: StreamSink<String>, app_type: String) -> ResultType<()> {
     let app_type_values = app_type.split(",").collect::<Vec<&str>>();
-    let mut lock = GLOBAL_EVENT_STREAM.write().unwrap();
-    if !lock.contains_key(app_type_values[0]) {
-        lock.insert(app_type_values[0].to_string(), s);
-    } else {
-        if let Some(_) = lock.insert(app_type.clone(), s) {
-            log::warn!(
-                "Global event stream of type {} is started before, but now removed",
-                app_type
-            );
+    let is_main = app_type_values[0] == APP_TYPE_MAIN;
+    {
+        let mut lock = GLOBAL_EVENT_STREAM.write().unwrap();
+        if !lock.contains_key(app_type_values[0]) {
+            lock.insert(app_type_values[0].to_string(), s);
+        } else {
+            if let Some(_) = lock.insert(app_type.clone(), s) {
+                log::warn!(
+                    "Global event stream of type {} is started before, but now removed",
+                    app_type
+                );
+            }
+        }
+    }
+    // Flush any buffered startup notices now that the "main" channel is live.
+    // Done *after* dropping the write lock to avoid re-entering it via
+    // `push_global_event` (which takes a read lock on the same map).
+    if is_main {
+        let notices = PENDING_STARTUP_NOTICES.lock().unwrap().drain(..).collect::<Vec<_>>();
+        for (msgtype, title, text) in notices {
+            let evt = json!({
+                "name": "msgbox",
+                "type": msgtype,
+                "title": title,
+                "text": text,
+                "link": "",
+                "hasRetry": ""
+            })
+            .to_string();
+            push_global_event(APP_TYPE_MAIN, evt);
         }
     }
     Ok(())

@@ -1582,6 +1582,24 @@ async fn post_request_http(url: &str, body: &str, header: &str) -> ResultType<(u
     Ok((status, text))
 }
 
+/// Returns true if `url` targets the api-server the client *derived* from the
+/// configured rendezvous server (rendezvous_port - 2, e.g. 5187 -> 5185), i.e.
+/// no explicit `api-server` option was set. A direct connection failure against
+/// such a target is expected on self-hosted wedesk (no API service there) and
+/// the rendezvous server does not proxy HTTP, so it should not trigger the
+/// WARN/timeout path in the proxy fallback.
+fn is_derived_api_server(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    if parsed.host_str().is_none() {
+        return false;
+    }
+    let custom = Config::get_option("custom-rendezvous-server");
+    let derived = get_api_server("".to_owned(), custom);
+    !derived.is_empty() && url.starts_with(&derived)
+}
+
 /// Try `http_fn` first; on connection failure or 5xx, fall back to `tcp_fn`
 /// if the URL is eligible. 4xx responses are returned as-is.
 async fn with_tcp_proxy_fallback<HttpFut, TcpFut>(
@@ -1605,6 +1623,20 @@ where
     };
 
     if should_fallback && can_fallback_to_raw_tcp(url) {
+        // An auto-derived api-server (rendezvous_port - 2, e.g. 5187 -> 5185)
+        // with no explicit `api-server` configured: on self-hosted wedesk there
+        // is no API service there and the rendezvous server does not implement
+        // the HTTP proxy, so the direct connection is refused and the TCP proxy
+        // fallback can only hang for ~18s before timing out. Skip the fallback
+        // and return the original error quietly to avoid log spam and wasted time.
+        if http_result.is_err() && is_derived_api_server(url) {
+            log::debug!(
+                "api-server {} is the auto-derived port-2 endpoint and unreachable; \
+                 skipping TCP proxy fallback (no API service deployed — expected for wedesk self-host)",
+                tcp_proxy_log_target(url)
+            );
+            return http_result.map(|(_status, text)| text);
+        }
         api_log!(
             warn,
             url,
@@ -1684,6 +1716,17 @@ pub async fn post_request_with_status(
         Ok((status, _)) => *status >= 500,
     };
     if should_fallback && can_fallback_to_raw_tcp(&url) {
+        // Same optimization as `with_tcp_proxy_fallback`: skip the pointless
+        // ~18s TCP proxy timeout for an auto-derived api-server that is
+        // unreachable (no API service deployed on self-hosted wedesk).
+        if http_result.is_err() && is_derived_api_server(&url) {
+            log::debug!(
+                "api-server {} is the auto-derived port-2 endpoint and unreachable; \
+                 skipping TCP proxy fallback (no API service deployed — expected for wedesk self-host)",
+                tcp_proxy_log_target(&url)
+            );
+            return http_result;
+        }
         api_log!(
             warn,
             &url,

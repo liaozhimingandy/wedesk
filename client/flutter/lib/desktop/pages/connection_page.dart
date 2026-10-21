@@ -9,7 +9,6 @@ import 'package:flutter_hbb/desktop/widgets/connect_panel.dart';
 import 'package:flutter_hbb/common/widgets/wedesign.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:get/get.dart';
-import 'package:url_launcher/url_launcher_string.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../../common.dart';
@@ -32,17 +31,7 @@ class OnlineStatusWidget extends StatefulWidget {
 /// State for the connection page.
 class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
   final _svcStopped = Get.find<RxBool>(tag: 'stop-service');
-  final _svcIsUsingPublicServer = true.obs;
   Timer? _updateTimer;
-
-  void onUsePublicServerGuide() {
-    const url = "https://rustdesk.com/pricing";
-    canLaunchUrlString(url).then((can) {
-      if (can) {
-        launchUrlString(url);
-      }
-    });
-  }
 
   @override
   void initState() {
@@ -129,21 +118,6 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
                   ),
                 ),
               ),
-            if (!isIncomingOnly &&
-                !svcStopped &&
-                status == SvcStatus.ready &&
-                _svcIsUsingPublicServer.value)
-              InkWell(
-                onTap: onUsePublicServerGuide,
-                child: Text(
-                  translate('setup_server_tip'),
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: colors.brand,
-                    decoration: TextDecoration.underline,
-                  ),
-                ),
-              ),
             if (!isIncomingOnly && stateGlobal.videoConnCount.value > 0)
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -177,7 +151,6 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
     } else {
       stateGlobal.svcStatus.value = SvcStatus.notReady;
     }
-    _svcIsUsingPublicServer.value = await bind.mainIsUsingPublicServer();
     try {
       stateGlobal.videoConnCount.value = status['video_conn_count'] as int;
     } catch (_) {}
@@ -218,6 +191,11 @@ class _ConnectionPageState extends State<ConnectionPage>
 
   final AllPeersLoader _allPeersLoader = AllPeersLoader();
 
+  /// 被控端自动最小化：监听被控方向的视频会话数（来自本地 ipc 服务的
+  /// AUTHED_CONNS，仅统计有人连入本机的会话，主动外连不计入）。
+  Worker? _videoConnWorker;
+  int _lastVideoConnCount = 0;
+
   @override
   void initState() {
     super.initState();
@@ -236,10 +214,19 @@ class _ConnectionPageState extends State<ConnectionPage>
     Get.put<TextEditingController>(_idEditingController);
     Get.put<IDTextEditingController>(_idController);
     windowManager.addListener(this);
+    _videoConnWorker = ever<int>(stateGlobal.videoConnCount, (count) {
+      // 只在 0 -> >0 的跳变（有被控会话接入）时最小化一次；后续计数变化
+      // 与会话结束归零都不动作，用户手动恢复窗口后不会被再次压下去。
+      if (_lastVideoConnCount == 0 && count > 0) {
+        windowManager.minimize();
+      }
+      _lastVideoConnCount = count;
+    });
   }
 
   @override
   void dispose() {
+    _videoConnWorker?.dispose();
     _idController.dispose();
     windowManager.removeListener(this);
     _allPeersLoader.clear();

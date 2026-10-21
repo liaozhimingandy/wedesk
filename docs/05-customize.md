@@ -32,6 +32,7 @@
 [server]
 rendezvous_host = "id.wedesk.alsoapp.com:5187"                  # hbbs —— 端口必须写全
 key             = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0="  # RS_PUB_KEY
+api_server      = "http://admin.wedesk.alsoapp.com:5185"        # 管理后台（admin FastAPI），留空则按 rendezvous 端口-2 推导
 # relay_host 已废弃（2026-10-21）：客户端不再保存中继节点数据。
 # 中继清单由 hbbs 维护 —— 每台 hbbr 自动注册上报，P2P 失败时 hbbs 统一下发。
 # 运维只需在 hbbr 容器上设 RELAY_PUBLIC_ADDR，改它不需要重新构建客户端。
@@ -43,6 +44,11 @@ exe_name     = "wedesk"
 company_name = "贵公司名称"             # ⚠️ 占位值，务必替换
 website      = "https://www.alsoapp.com/wedesk"
 ```
+
+> **`api_server`（管理后台地址）**：非空时编译为 `hbb_common::config::CUSTOM_API_SERVER`
+> 常量，`get_api_server_` 优先采用它（仍低于 exe 内嵌 license 与用户手填的
+> `api-server` 选项）。留空则按老规则从 rendezvous 地址"端口 − 2"推导
+> （5187 → 5185，同域）。必须带 `http://` / `https://` 前缀且端口写全。
 
 > **`rendezvous_host` 必须写端口。**
 > 客户端内置的兜底端口是 `21116`（`client/libs/hbb_common/src/config.rs` 的 `RENDEZVOUS_PORT`，

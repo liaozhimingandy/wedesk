@@ -176,6 +176,7 @@ def build_rules(c: dict) -> "list[Rule]":
 
     host = srv.get("rendezvous_host", "").strip()
     key = srv.get("key", "").strip()
+    api_server = srv.get("api_server", "").strip()
     app_name = brand.get("app_name", "RemoteDesk").strip()
     product = brand.get("product_name", "RemoteDesk").strip()
     company = brand.get("company_name", "").strip()
@@ -204,6 +205,32 @@ def build_rules(c: dict) -> "list[Rule]":
                 'pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";',
                 'pub const RS_PUB_KEY: &str = "%s";' % key,
                 required=True,
+            )
+        )
+    if api_server:
+        # 管理后台（admin FastAPI）地址：注入为编译期常量，get_api_server_
+        # 优先采用它，不再按 rendezvous 端口-2 推导。
+        # 锚点选 RENDEZVOUS_PORT —— 唯一且不被其它规则改写。
+        rules.append(
+            Rule(
+                "管理后台地址（client 的 /api/* 上报目标，custom.toml server.api_server）",
+                "libs/hbb_common/src/config.rs",
+                "pub const RENDEZVOUS_PORT: i32 = 21116;",
+                'pub const CUSTOM_API_SERVER: &str = "%s";\n\npub const RENDEZVOUS_PORT: i32 = 21116;'
+                % api_server,
+            )
+        )
+        rules.append(
+            Rule(
+                "管理后台地址生效（get_api_server_ 优先采用 CUSTOM_API_SERVER）",
+                "src/common.rs",
+                "    let s0 = get_custom_rendezvous_server(custom);",
+                "    // 编译期注入的定制管理后台地址优先于端口推导\n"
+                "    // （见 hbb_common config::CUSTOM_API_SERVER，由 customize.py 写入）。\n"
+                "    if !config::CUSTOM_API_SERVER.is_empty() {\n"
+                "        return config::CUSTOM_API_SERVER.to_owned();\n"
+                "    }\n"
+                "    let s0 = get_custom_rendezvous_server(custom);",
             )
         )
     if app_name:
@@ -552,6 +579,13 @@ def validate(c: dict):
         problems.append("server.key 未填写 —— 公钥不匹配会导致无法连接")
     elif key == "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=":
         problems.append("server.key 仍是官方默认值 —— 必须换成你自己的 hbbs 公钥")
+
+    api_server = srv.get("api_server", "").strip()
+    if api_server and not api_server.lower().startswith(("http://", "https://")):
+        problems.append(
+            'server.api_server 必须带 http:// 或 https:// 前缀，且端口写全，'
+            '例如 "http://admin.wedesk.alsoapp.com:5185"'
+        )
 
     # ---- 端口检查 ----------------------------------------------------------
     # 客户端内置兜底端口是 21116（libs/hbb_common/src/config.rs 的 RENDEZVOUS_PORT，

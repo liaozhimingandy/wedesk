@@ -12,6 +12,7 @@
 #   ┌──────┬────────┬──────┬───────────────────────────────┬────────────────┐
 #   │ 端口 │ 协议   │ 进程 │ 用途                          │ 对外？         │
 #   ├──────┼────────┼──────┼───────────────────────────────┼────────────────┤
+#   │ 5185 │ TCP    │ admin│ 管理后台 API（FastAPI）       │ 必须           │
 #   │ 5186 │ TCP    │ hbbs │ NAT 类型探测                  │ 必须           │
 #   │ 5187 │ TCP    │ hbbs │ 注册 / TCP 打洞与连接         │ 必须           │
 #   │ 5187 │ UDP    │ hbbs │ 注册 + 心跳 + UDP 打洞        │ 必须（单独写） │
@@ -22,12 +23,9 @@
 #   │ 5192 │ TCP    │ hbbr │ 健康检查 GET /health          │ 建议           │
 #   └──────┴────────┴──────┴───────────────────────────────┴────────────────┘
 #
-#   另有一个"客户端以为有、服务端没有"的端口：
-#     5185 TCP —— 客户端按 rendezvous 端口 -2 推导出来的 api-server
-#                 （心跳 / 设备台账 / 地址簿同步）。hbbs 不监听它，
-#                 那是官方 SaaS 才有的独立服务。客户端日志里会出现
-#                 Heartbeat failed ... TimedOut，连续 3 次后自动停搏，
-#                 属正常噪音，不用管，也不用放行这个端口。
+#   5185 由本文件底部的 admin 服务提供（客户端 /api/* 上报目标：登录、心跳、
+#   设备台账、地址簿、审计）。定制客户端把 api_server 编译为
+#   admin.wedesk.alsoapp.com:5185 —— DNS 解析到这台机器即可。
 #
 # 为什么是这几个数字（改之前务必看懂）：
 #
@@ -266,6 +264,55 @@ services:
     mem_limit: ${HBBR_MEM:-512m}
     cpus: ${HBBR_CPUS:-1.00}
     pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILE:-3}"
+
+  # ---------------------------------------------------------------------------
+  # admin : 管理后台 API（FastAPI + PG 线程池）
+  # ---------------------------------------------------------------------------
+  # 客户端的 /api/* 上报目标：登录/currentUser、心跳、sysinfo 设备台账、
+  # 审计、地址簿、设备部署令牌等。源码在仓库根的 admin/，首次启动前
+  # `docker compose build admin`。
+  #
+  # 对外地址：admin.wedesk.alsoapp.com:5185（DNS 解析到这台机器）。
+  # 客户端侧由 build/client/custom.toml 的 server.api_server 编译注入，
+  # 与这里的 5185 映射一一对应。
+  admin:
+    image: ${ADMIN_IMAGE:-wedesk-admin:latest}
+    build:
+      context: ../../admin
+      dockerfile: Dockerfile
+    container_name: rd-admin
+    environment:
+      # 与 hbbs 共用同一个 postgres 实例和库（admin_* 表与 peer /
+      # connection_log 同库，由 admin 启动时幂等创建）。
+      - DATABASE_URL=${DB_URL:-postgres://${PG_USER:-rustdesk}:${PG_PASSWORD:-changeme}@postgres:5432/${PG_DB:-rustdesk}}
+      # 首个管理员账号（仅 users 表为空时创建）
+      - DEFAULT_ADMIN_NAME=${ADMIN_NAME:-admin}
+      - DEFAULT_ADMIN_PASSWORD=${ADMIN_PASSWORD:-changeme}
+    ports:
+      - "5185:5185"      # TCP   管理后台 API（客户端 /api/* 上报）
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - rd-net
+    healthcheck:
+      # python:3.12-slim 里没有 wget/curl，用标准库 urllib 当探针。
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5185/health', timeout=3)\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # FastAPI 常驻内存很小（uvicorn 单 worker 约几十 MB）；数据库访问走线程池，
+    # 并发主要受 PG 连接池约束（QueuePool 10 + overflow 20）。
+    mem_limit: ${ADMIN_MEM:-256m}
+    cpus: ${ADMIN_CPUS:-0.50}
+    pids_limit: 128
     logging:
       driver: json-file
       options:

@@ -25,6 +25,12 @@ rendezvous_host = "id.wedesk.alsoapp.com:5187"
 #       公钥也会变，客户端必须跟着改。
 key = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0="
 
+# 管理后台（admin FastAPI 服务，/api/*）地址。
+#  留空 = 客户端按"rendezvous 端口 - 2"自动推导（5187 → 5185，同域）。
+#  填写后客户端的所有账号/审计/心跳上报都指向这里，优先级高于端口推导。
+#  !! 必须带 http:// 或 https:// 前缀，端口必须写全 !!
+api_server = "http://admin.wedesk.alsoapp.com:5185"
+
 # 中继服务器地址：已【移除】。客户端不再保存任何中继节点数据 ——
 # 每台 hbbr 启动后自动向 hbbs 注册上报（60s 一次），hbbs 维护 relay_nodes 表，
 # P2P 打洞失败时按 权重/负载/时延 统一下发最优节点。超过 3 个周期未上报的

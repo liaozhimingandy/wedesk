@@ -44,14 +44,17 @@ UDP 5187
 >
 > 可用性损失远大于伪造 IP 的风险（后者的前提是你前面挂了反向代理，见坑 1）。
 
-还有一个端口是**客户端自己推导出来的、服务端根本不监听**：
+还有一个端口是**客户端自己推导出来的**：
 
 | 端口   | 协议  | 谁在用                                        | 对外？       |
 | ---- | --- | ------------------------------------------ | --------- |
-| 5185 | TCP | 客户端按 `P-2` 推导的 api-server（心跳 / 设备台账 / 地址簿） | ❌ 不存在这个服务 |
+| 5185 | TCP | 管理后台 admin（FastAPI）：客户端按 `P-2` 推导或由 `api_server` 编译注入（心跳 / 设备台账 / 地址簿 / 登录 / 审计） | ✅ 已由 compose 的 admin 服务提供 |
 
-自建部署没有那份 API 服务，客户端日志会出现 `Heartbeat failed: ... TimedOut`，  
-连续 3 次后自动停搏，属正常现象。见第 4 节坑 4。
+自建部署现在**有**这份 API 服务：`server/deploy/docker-compose.yml` 的 `admin`
+服务监听 5185，对外地址 `admin.wedesk.alsoapp.com:5185`（DNS 解析到该机器）。
+定制客户端把 api-server 编译为该地址（`build/client/custom.toml` 的
+`server.api_server`）。若 admin 服务未部署，客户端日志仍会出现
+`Heartbeat failed: ... TimedOut`，连续 3 次后自动停搏。
 
 客户端不需要任何固定的入站端口。员工机器只需要能**出站**访问上面这些端口。
 
@@ -102,11 +105,11 @@ hbbr  →  TCP  R           中继主端口
 | 5190 | TCP | hbbr      | 监听 + publish | WebSocket 中继                       | ✅ 是（见坑 1 前提） |
 | 5191 | TCP | hbbs      | 监听 + publish | 健康检查 `GET /health`                 | 建议           |
 | 5192 | TCP | hbbr      | 监听 + publish | 健康检查 `GET /health`                 | 建议           |
-| 5185 | TCP | **无进程监听** | —            | 客户端推导的 api-server（心跳 / 设备台账 / 地址簿） | ❌ 无需处理       |
+| 5185 | TCP | admin（FastAPI） | 监听 + publish | 管理后台 API：心跳 / 设备台账 / 地址簿 / 登录 / 审计 | ✅ 是 |
 
 > 5189/5190 是 hbbs/hbbr **进程无条件监听**的端口（没有开关能关）。  
 > `docker exec rd-hbbs ss -ltnp` 能看到它们在容器里听着。  
-> 5185 与之相反：服务端没有任何东西监听它，是客户端单方面按 `P-2` 拼出来的 URL。
+> 5185 由独立的 admin 容器提供（compose 的 `admin` 服务），与 hbbs/hbbr 互不相干。
 
 > **客户端自己还有一个端口：21118。**  
 > 它来自 `client/libs/hbb_common/src/config.rs` 的 `RENDEZVOUS_PORT + 2`，是员工电脑上"IP 直连"  
@@ -229,13 +232,14 @@ if let Some(v) = common::get_arg_opt("PORT") {   // ← 注意：读的是环境
 第 3 点最容易漏：客户端碰到不带端口的域名时，兜底用 `RENDEZVOUS_PORT`(21116)。  
 服务端改了端口而客户端没改，现象是"ID 一直转圈，最后超时"，看日志还以为是鉴权失败。
 
-### 坑 4：客户端会去连一个根本不存在的 `P-2` API 端口
+### 坑 4：客户端会去连 `P-2` API 端口（现在已有 admin 服务接住）
 
 客户端 `common::get_api_server_()` 在只配了自定义 rendezvous server 时，会把 API 地址  
-推导成 `http://<host>:P-2`（5187 → **5185**）。这个服务是官方 SaaS 才有的一套东西  
-（心跳、设备台账、地址簿同步、策略下发），自建的 hbbs **不监听 5185**。
+推导成 `http://<host>:P-2`（5187 → **5185**）。这个服务由 compose 的 `admin` 服务提供  
+（FastAPI 管理后台：心跳、设备台账、地址簿同步、审计、登录）。
 
-表现：客户端日志每 15 秒一条
+**admin 已部署时**：客户端请求正常，无噪音。若既不部署 admin 也没配 api-server，  
+客户端日志每 15 秒一条
 
 ```
 WARN [src/hbbs_http/sync.rs] Heartbeat failed: reqwest::Error { kind: Request,
@@ -245,9 +249,10 @@ WARN [src/hbbs_http/sync.rs] Heartbeat failed: reqwest::Error { kind: Request,
 这是**噪音不是故障**，不影响注册、打洞、中继。从 2026-10-20 起客户端连续失败 3 次后  
 自动停搏，日志里只会看到 3 条 WARN + 一条说明性的 `info`。
 
-想彻底消掉，二选一：
+想彻底消掉，三选一：
 
-- 客户端显式配一个 `api-server`（有自建 API 服务时）；
+- 部署 compose 里的 `admin` 服务（`docker compose up -d admin`）；
+- 客户端显式配一个 `api-server`（定制客户端经 `custom.toml` 的 `server.api_server` 注入）；
 - 关闭设备注册：`OPTION_REGISTER_DEVICE`（`register-device`）= `N`，  
   此时 `get_api_server()` 直接返回空串，心跳根本不启动。
 

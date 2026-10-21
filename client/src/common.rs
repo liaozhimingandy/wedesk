@@ -1260,6 +1260,11 @@ fn get_api_server_(api: String, custom: String) -> String {
     if !api.is_empty() {
         return api.to_owned();
     }
+    // 编译期注入的定制管理后台地址优先于端口推导
+    // （见 hbb_common config::CUSTOM_API_SERVER，由 customize.py 写入）。
+    if !config::CUSTOM_API_SERVER.is_empty() {
+        return config::CUSTOM_API_SERVER.to_owned();
+    }
     let s0 = get_custom_rendezvous_server(custom);
     if !s0.is_empty() {
         let s = crate::increase_port(&s0, -2);

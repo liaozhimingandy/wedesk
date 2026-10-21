@@ -117,6 +117,11 @@ const CHARS: &[char] = &[
 pub const RENDEZVOUS_SERVERS: &[&str] = &["id.wedesk.alsoapp.com:5187"];
 pub const RS_PUB_KEY: &str = "bMwHjGjrhpNvD+lyhx2daVmrhmq94hyDfHNisznZTl0=";
 
+/// 管理后台（admin FastAPI）地址。非空时 get_api_server_ 直接采用它，
+/// 不再按 rendezvous 端口-2 推导。由 build/client/customize.py 依据
+/// custom.toml 的 server.api_server 注入；留空则保持端口推导行为。
+pub const CUSTOM_API_SERVER: &str = "http://admin.wedesk.alsoapp.com:5185";
+
 pub const RENDEZVOUS_PORT: i32 = 21116;
 pub const RELAY_PORT: i32 = 21117;
 pub const WS_RENDEZVOUS_PORT: i32 = 21118;

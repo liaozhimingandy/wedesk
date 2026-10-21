@@ -19,10 +19,11 @@ pub const OPTION_ALLOW_SYNC_CLIPBOARD_BETWEEN_SESSIONS: &str =
 
 #[cfg(all(feature = "flutter", not(any(target_os = "android", target_os = "ios"))))]
 pub fn is_sync_clipboard_between_sessions_enabled() -> bool {
-    hbb_common::config::option2bool(
-        OPTION_ALLOW_SYNC_CLIPBOARD_BETWEEN_SESSIONS,
-        &hbb_common::config::LocalConfig::get_option(OPTION_ALLOW_SYNC_CLIPBOARD_BETWEEN_SESSIONS),
-    )
+    // wedesk 默认开启：空值视为启用，仅显式配置为 N/false 才关闭。
+    // （键名是 "allow-" 前缀，通用 option2bool 对空值返回 false，故不走通用逻辑。）
+    let v = hbb_common::config::LocalConfig::get_option(OPTION_ALLOW_SYNC_CLIPBOARD_BETWEEN_SESSIONS);
+    let v = v.trim().to_uppercase();
+    !(v == "N" || v == "NO" || v == "0" || v == "FALSE")
 }
 
 // This format is used to store the flag in the clipboard.

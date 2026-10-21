@@ -1734,6 +1734,15 @@ bool mainGetLocalBoolOptionSync(String key) {
   return option2bool(key, bind.mainGetLocalOption(key: key));
 }
 
+/// 与 mainGetLocalBoolOptionSync 相同，但对"空值默认开启"的选项
+/// （如 allow-sync-clipboard-between-sessions，"allow-" 前缀在通用
+/// option2bool 里空值为 false）按 wedesk 约定把空值视为开启。
+bool mainGetLocalBoolOptionDefaultOn(String key) {
+  final v = bind.mainGetLocalOption(key: key).trim().toUpperCase();
+  if (v.isEmpty) return true;
+  return option2bool(key, v);
+}
+
 bool mainGetPeerBoolOptionSync(String id, String key) {
   return option2bool(key, bind.mainGetPeerOptionSync(id: id, key: key));
 }

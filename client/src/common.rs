@@ -1315,16 +1315,16 @@ pub fn get_webrtc_enabled() -> bool {
 
 pub fn get_local_option(key: &str) -> String {
     let v = LocalConfig::get_option(key);
-    if key == keys::OPTION_ENABLE_UDP_PUNCH
-        || key == keys::OPTION_ENABLE_IPV6_PUNCH
-        || key == keys::OPTION_ENABLE_WEBRTC
-    {
+    if key == keys::OPTION_ENABLE_WEBRTC {
         if v.is_empty() {
             if !is_public(&Config::get_rendezvous_server()) {
                 return "N".to_owned();
             }
         }
     }
+    // UDP / IPv6 打洞是常用能力，wedesk 服务端（自建 rendezvous）完整支持，
+    // 空值默认开启：option2bool 对 "enable-" 前缀空值即视为 true，
+    // 不再沿用上游"非公开服务器默认关"的保守策略（用户可在设置里手动关）。
     if key == "lang" && (v == "pt" || v == "br") {
         return "pt-br".to_owned();
     }

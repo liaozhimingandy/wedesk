@@ -108,8 +108,10 @@ class _LocalDeviceCardState extends State<LocalDeviceCard> {
   Widget _buildCard(BuildContext context, ServerModel model) {
     final colors = WeColors.of(context);
     return WeCard(
+      // 竖向内边距收紧（l→m）：右侧列本身较高（下拉+密码行），
+      // 左侧 ID 垂直居中后上下留白随 padding 放大，观感空旷。
       padding: const EdgeInsets.symmetric(
-          horizontal: WeSpace.xl, vertical: WeSpace.l),
+          horizontal: WeSpace.xl, vertical: WeSpace.m),
       color: colors.surfaceAlt,
       elevation: false,
       border: Border.all(color: Colors.transparent, width: 1),
@@ -121,7 +123,7 @@ class _LocalDeviceCardState extends State<LocalDeviceCard> {
           Padding(
             padding:
                 const EdgeInsets.symmetric(horizontal: WeSpace.xl),
-            child: Container(width: 1, height: 56, color: colors.border),
+            child: Container(width: 1, height: 60, color: colors.border),
           ),
           Expanded(child: _buildPasswordColumn(context, model)),
         ],
@@ -143,7 +145,7 @@ class _LocalDeviceCardState extends State<LocalDeviceCard> {
             fontWeight: FontWeight.w500,
           ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 4),
         Row(
           children: [
             Expanded(
@@ -154,7 +156,7 @@ class _LocalDeviceCardState extends State<LocalDeviceCard> {
                   groupId(id),
                   style: TextStyle(
                     color: colors.textPrimary,
-                    fontSize: 26,
+                    fontSize: 30,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 1.2,
                     height: 1.2,
@@ -165,8 +167,8 @@ class _LocalDeviceCardState extends State<LocalDeviceCard> {
             WeIconButton(
               icon: Icons.content_copy,
               tooltip: translate("Copy"),
-              size: 30,
-              iconSize: 17,
+              size: 32,
+              iconSize: 18,
               onTap: () {
                 if (id.isEmpty) {
                   return;
@@ -201,7 +203,7 @@ class _LocalDeviceCardState extends State<LocalDeviceCard> {
             fontWeight: FontWeight.w500,
           ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 4),
         // 连接模式（一次性密码 / 固定密码 / 两者都用）直接在这里切，
         // 不用再进设置页。写的是 kOptionVerificationMethod，与设置页同一个选项。
         ComboBox(
@@ -219,7 +221,7 @@ class _LocalDeviceCardState extends State<LocalDeviceCard> {
           initialKey: method,
           onChanged: (key) => _onMethodChanged(model, key),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
         if (showOneTime) _buildOneTimeRow(context, model),
         if (showPermanent) _buildPermanentRow(context, model),
         if (noPassword)

@@ -60,14 +60,15 @@ pub struct Peer {
 }
 
 // ---------------------------------------------------------------------------
-// server_config：服务端自身的键值状态
+// server_config：旧版密钥迁移专用（已不再建表）
 // ---------------------------------------------------------------------------
 // 2026-10-20 起**不再托管密钥**：私钥/公钥改为只存文件（docker secrets
 // 标准挂载，见 server_key.rs），库中不再写入任何密钥材料。
-// 保留本表与常量只有两个用途：
-//   1. 旧版本升级上来的部署，库里还残留着私钥 —— 启动时 server_key
-//      会把它迁移回文件，然后调用 remove_config 把这三行删干净；
-//   2. 未来若有需要落库的"非敏感"键值状态，可复用这张表。
+// 2026-10-21 起**连表也不再创建**：本表 DDL 已从两处 EXTRA_DDL 中移除，
+// 全新部署的库里根本没有这张表。get_config / remove_config 仅剩一个用途：
+// 旧版本升级上来的部署，库里还残留着私钥 —— 启动时 server_key 会把它
+// 迁移回文件，然后把这三行删干净。表不存在时读写做静默降级（读 → None、
+// 删 → 成功），迁移逻辑对全新部署零噪音。
 /// 旧版私钥在 `server_config` 表里的键名（base64 后的 64 字节 ed25519 私钥）
 pub const CFG_PRIVATE_KEY: &str = "server.private_key";
 /// 旧版公钥在 `server_config` 表里的键名（迁移时一并删除）
@@ -371,19 +372,29 @@ impl DbBackend for SqliteBackend {
 
     async fn get_config(&self, key: &str) -> ResultType<Option<String>> {
         let mut conn = self.pool.get().await?;
-        let row = sqlx::query("select value from server_config where key = ?")
+        match sqlx::query("select value from server_config where key = ?")
             .bind(key)
             .fetch_optional(&mut *conn)
-            .await?;
-        Ok(row.map(|r| r.get::<String, _>("value")))
+            .await
+        {
+            Ok(row) => Ok(row.map(|r| r.get::<String, _>("value"))),
+            Err(err) if is_missing_server_config_table(&err) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
     }
 
     async fn remove_config(&self, key: &str) -> ResultType<()> {
         let mut conn = self.pool.get().await?;
-        sqlx::query("delete from server_config where key = ?")
+        if let Err(err) = sqlx::query("delete from server_config where key = ?")
             .bind(key)
             .execute(&mut *conn)
-            .await?;
+            .await
+        {
+            if is_missing_server_config_table(&err) {
+                return Ok(());
+            }
+            return Err(err.into());
+        }
         Ok(())
     }
 
@@ -545,14 +556,28 @@ impl DbBackend for SqliteBackend {
     }
 }
 
-/// SQLite 侧的 server_config / connection_log DDL。
+/// server_config 表在新部署中已不再创建（密钥早已退出数据库，见模块注释）。
+/// 只有旧版本升级上来的库才有这张表。这里识别"表不存在"错误，
+/// 供 get_config / remove_config 静默降级，避免迁移逻辑对全新部署报错。
+fn is_missing_server_config_table(err: &sqlx::Error) -> bool {
+    if let Some(db_err) = err.as_database_error() {
+        // PG：42P01 = undefined_table，报文形如 relation "server_config" does not exist
+        if db_err.code().as_deref() == Some("42P01") {
+            return true;
+        }
+        // SQLite：报文形如 no such table: server_config
+        let msg = db_err.message().to_lowercase();
+        return msg.contains("no such table")
+            || (msg.contains("server_config") && msg.contains("does not exist"));
+    }
+    false
+}
+
+/// SQLite 侧的 connection_log / relay_nodes 等扩展表 DDL。
 /// 与 PG 版一一对应，只是类型与自增写法不同。
+/// 注意：server_config 表**不在其中** —— 密钥退出数据库后此表不再创建，
+/// 仅旧版本升级部署残留，读写见 is_missing_server_config_table 的静默降级。
 const SQLITE_EXTRA_DDL: &[&str] = &[
-    r#"create table if not exists server_config (
-           key        varchar(100) primary key not null,
-           value      text not null,
-           updated_at datetime not null default(current_timestamp)
-       )"#,
     r#"create table if not exists connection_log (
            id         integer primary key autoincrement,
            ts         datetime not null default(current_timestamp),
@@ -772,18 +797,28 @@ impl DbBackend for PgBackend {
     }
 
     async fn get_config(&self, key: &str) -> ResultType<Option<String>> {
-        let row = sqlx::query(r#"select value from server_config where key = $1"#)
+        match sqlx::query(r#"select value from server_config where key = $1"#)
             .bind(key)
             .fetch_optional(&self.pool)
-            .await?;
-        Ok(row.map(|r| r.get::<String, _>("value")))
+            .await
+        {
+            Ok(row) => Ok(row.map(|r| r.get::<String, _>("value"))),
+            Err(err) if is_missing_server_config_table(&err) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
     }
 
     async fn remove_config(&self, key: &str) -> ResultType<()> {
-        sqlx::query(r#"delete from server_config where key = $1"#)
+        if let Err(err) = sqlx::query(r#"delete from server_config where key = $1"#)
             .bind(key)
             .execute(&self.pool)
-            .await?;
+            .await
+        {
+            if is_missing_server_config_table(&err) {
+                return Ok(());
+            }
+            return Err(err.into());
+        }
         Ok(())
     }
 
@@ -963,14 +998,10 @@ const PG_DDL_STATEMENTS: &[&str] = &[
     r#"create index if not exists index_peer_status on peer (status)"#,
 ];
 
-/// PG 侧的 server_config / connection_log DDL（与 SQLITE_EXTRA_DDL 一一对应）。
+/// PG 侧的 connection_log / relay_nodes 等扩展表 DDL（与 SQLITE_EXTRA_DDL 一一对应）。
 /// 同样必须逐条执行 —— PG 的 PREPARE 不接受多语句。
+/// server_config 表同理不再创建（见 SQLITE_EXTRA_DDL 注释）。
 const PG_EXTRA_DDL: &[&str] = &[
-    r#"create table if not exists server_config (
-           key        varchar(100) primary key not null,
-           value      text not null,
-           updated_at timestamptz not null default now()
-       )"#,
     r#"create table if not exists connection_log (
            id         bigserial primary key,
            ts         timestamptz not null default now(),

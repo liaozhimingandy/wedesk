@@ -664,6 +664,10 @@ class _GeneralState extends State<_General> {
             'Sync clipboard between sessions',
             kOptionAllowSyncClipboardBetweenSessions,
             isServer: false,
+            // wedesk 默认开启：空值视为勾选（Rust 侧同规则，见 clipboard.rs），
+            // 仅显式 N/false 才显示为未勾选。
+            optGetter: () => mainGetLocalBoolOptionDefaultOn(
+                kOptionAllowSyncClipboardBetweenSessions),
           ),
         ),
     ];
@@ -2474,10 +2478,9 @@ class _LogDirEntry extends StatefulWidget {
 
 class _LogDirEntryState extends State<_LogDirEntry> {
   // flutter_rust_bridge v1 里没有标 `SyncReturn` 的函数一律生成 async 版本，
-  // 所以这两个都是 Future —— 不能在 initState 里同步取值（G44692867）。
+  // 所以这个是 Future —— 不能在 initState 里同步取值（G44692867）。
   // 空串表示"还没取到"，界面上按 '-' 显示。
   String _dir = '';
-  List<String> _files = const [];
 
   @override
   void initState() {
@@ -2489,18 +2492,10 @@ class _LogDirEntryState extends State<_LogDirEntry> {
     final dir = await bind.mainGetLogDir();
     if (!mounted) return;
     setState(() => _dir = dir);
-    await _refresh();
-  }
-
-  Future<void> _refresh() async {
-    final files = await bind.mainGetLogFiles();
-    if (!mounted) return;
-    setState(() => _files = files);
   }
 
   @override
   Widget build(BuildContext context) {
-    final colors = WeColors.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2537,34 +2532,12 @@ class _LogDirEntryState extends State<_LogDirEntry> {
               tooltip: translate('Open'),
               size: 28,
               iconSize: 16,
-              onTap: () async {
-                await _refresh();
+              onTap: () {
                 if (_dir.isNotEmpty) launchUrl(Uri.file(_dir));
               },
             ),
           ],
         ),
-        if (_files.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(translate('No logs yet'),
-                style: TextStyle(fontSize: 12.5, color: colors.textTertiary)),
-          )
-        else
-          ..._files.map((f) => Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: GestureDetector(
-                  onTap: () => launchUrl(Uri.file('$_dir${Platform.pathSeparator}$f')),
-                  child: Text(
-                    f,
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      color: colors.textSecondary,
-                      decoration: TextDecoration.underline,
-                    ),
-                  ),
-                ),
-              )),
       ],
     );
   }
@@ -2663,6 +2636,7 @@ class _AboutState extends State<_About> {
       final fingerprint = data['fingerprint'].toString();
       final myId = data['myId'].toString();
       const linkStyle = TextStyle(decoration: TextDecoration.underline);
+      final colors = WeColors.of(context);
       final scrollController = ScrollController();
       return SingleChildScrollView(
         controller: scrollController,
@@ -2725,6 +2699,11 @@ class _AboutState extends State<_About> {
                     translate('Website'),
                     style: linkStyle,
                   ).marginSymmetric(vertical: 4.0)),
+              // 软件更新/版本信息 与 日志输出 之间的分隔：
+              // 两个功能块语义独立，用细分隔线 + 上下留白隔开，避免挤在一起。
+              const SizedBox(height: 14),
+              Divider(height: 1, thickness: 1, color: colors.border),
+              const SizedBox(height: 10),
               if (!isWeb) const _LogDirEntry(),
               if (!isWeb) const _LogLevelEntry(),
               Container(

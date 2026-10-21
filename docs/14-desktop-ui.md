@@ -183,6 +183,29 @@ disable-udp = Y          # 等价于原 "Disable UDP" 开关
 "立即更新"用系统浏览器打开下载地址）；已是最新 → toast"已是最新版本"；
 网络失败 → 弹窗显示错误原因（不阻塞正常使用）。请求超时 10 秒。
 
+### 关于我们：日志输出等级（2026-10-21 起）
+
+「关于」Tab 日志目录入口下方新增**日志输出等级**下拉（版式对齐 ToDesk 的
+"日志上报类型"）：`debug / info / warn / error` 四档，**默认 info**。
+下方灰字提示当前行为；切换后 toast"成功"。
+
+实现要点（排查日志相关问题时先看这里）：
+
+- 配置键 `log-level`（普通 option，随 main_set_option 走同一存储）；
+  Rust 侧 `hbb_common::normalize_log_level` 做归一化（`warning` 会被当作
+  `warn`，空/非法值回退 info）。
+- **release 构建**（flexi_logger）：`hbb_common::set_log_level` 持有
+  `LoggerHandle`，切档**立即热生效**，不用重启。
+- **debug 构建**（env_logger）：env_logger 不支持运行时重载，切档只持久化
+  配置、**下次启动生效**；开发调试仍可直接用 `RUST_LOG` 环境变量覆盖。
+- 无论选哪档，`reqwest / hyper_util / rustls / webrtc*` 这几个噪音库固定压在
+  warn/error（`log_filter_string`），避免 info 下被心跳日志刷屏。
+- ffi：`main_get_log_level`（回显，恒返回规范化值）/ `main_set_log_level`
+  （持久化 + 热切换）。flexi_logger 侧 RUST_LOG 优先级高于选项（启动时）。
+- 日志目录/文件入口就是上方的"日志目录"行（`mainGetLogDir` /
+  `mainGetLogFiles`），切到 debug 后复现问题，把对应日志文件发给开发即可。
+- 截图里的"上传日志"按钮未实现（需要配套的日志上报服务端，暂无此需求）。
+
 ### 主窗口旧标签栏已隐藏
 
 `DesktopTab` 加了实例级参数 `showTabBar`（默认 true，不影响远程会话窗口）。
@@ -288,6 +311,7 @@ WeCard(
 | `Verification method when controlling this device` | 控制本设备时的验证方式 | 安全设置卡标题 |
 | `Set up and enable` / `banner_2fa_title` / `banner_2fa_desc` | 设置并开启 / 建议设置主设备… | 安全设置顶部横幅 |
 | `Auto update version` 等 12 条 | 自动更新版本 / 检查更新 / 正在检查更新... / 发现新版本 / 已是最新版本 / 检查更新失败 / 立即更新 / 稍后 / 更新说明 / 暂无更新说明 / 当前版本 / 该平台暂未提供下载地址 | 关于页检查更新（2026-10-21 新增） |
+| `Log level` / `Log level tip` / `Success` | 日志输出等级 / 选择输出到日志文件的最低级别… / 成功 | 关于页日志输出等级（2026-10-21 新增） |
 
 其余语言（en 等）没有对应条目时会**回退显示英文 key**，这是上游 `translate()`
 的既有行为；要补齐就往对应 `src/lang/*.rs` 里加同样的 key。

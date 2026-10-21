@@ -2570,6 +2570,76 @@ class _LogDirEntryState extends State<_LogDirEntry> {
   }
 }
 
+/// "日志输出等级"行（参考 ToDesk 设置页）：下拉切换 debug / info / warn / error，
+/// 默认 info。切换即时生效（release 构建的 flexi_logger 支持热切换；
+/// debug 构建 env_logger 不支持重载，需重启客户端）。
+class _LogLevelEntry extends StatefulWidget {
+  const _LogLevelEntry({Key? key}) : super(key: key);
+
+  @override
+  State<_LogLevelEntry> createState() => _LogLevelEntryState();
+}
+
+class _LogLevelEntryState extends State<_LogLevelEntry> {
+  // ffi 未标 SyncReturn 的一律是 Future，initState 里异步取回显值。
+  String _level = 'info';
+
+  @override
+  void initState() {
+    super.initState();
+    bind.mainGetLogLevel().then((v) {
+      if (mounted) setState(() => _level = v);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = WeColors.of(context);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const SizedBox(height: 8),
+      Row(children: [
+        Text('${translate('Log level')}:',
+            style: const TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(width: 8),
+        // 展开菜单主题跟随卡片配色；级别值本身是通用术语，不做翻译。
+        DropdownButton<String>(
+          value: _level,
+          underline: const SizedBox.shrink(),
+          borderRadius: BorderRadius.circular(6),
+          style: TextStyle(
+              fontSize: 13.5,
+              color: colors.textPrimary,
+              fontWeight: FontWeight.normal),
+          dropdownColor: Theme.of(context).colorScheme.background,
+          icon: Icon(Icons.keyboard_arrow_down_rounded,
+              size: 18, color: colors.textSecondary),
+          items: const ['debug', 'info', 'warn', 'error']
+              .map((v) => DropdownMenuItem<String>(
+                    value: v,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Text(v),
+                    ),
+                  ))
+              .toList(),
+          onChanged: (v) async {
+            if (v == null || v == _level) return;
+            await bind.mainSetLogLevel(v);
+            if (!mounted) return;
+            setState(() => _level = v);
+            showToast(translate('Success'));
+          },
+        ),
+      ]),
+      Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Text(translate('Log level tip'),
+            style: TextStyle(fontSize: 12, color: colors.textTertiary)),
+      ),
+    ]);
+  }
+}
+
 class _AboutState extends State<_About> {
   @override
   Widget build(BuildContext context) {
@@ -2656,6 +2726,7 @@ class _AboutState extends State<_About> {
                     style: linkStyle,
                   ).marginSymmetric(vertical: 4.0)),
               if (!isWeb) const _LogDirEntry(),
+              if (!isWeb) const _LogLevelEntry(),
               Container(
                 decoration: const BoxDecoration(color: Color(0xFF2c8cff)),
                 padding:

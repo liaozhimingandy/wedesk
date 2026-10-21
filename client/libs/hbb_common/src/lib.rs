@@ -424,6 +424,64 @@ pub fn is_domain_port_str(id: &str) -> bool {
     }
 }
 
+/// "log-level" 选项（设置页"日志输出等级"）的合法值归一化。
+/// 接受 debug / info / warn / warning / error（大小写不敏感）；
+/// 空串或非法值返回 None，调用方按默认 info 处理。
+pub fn normalize_log_level(v: &str) -> Option<log::LevelFilter> {
+    match v.trim().to_lowercase().as_str() {
+        "debug" => Some(log::LevelFilter::Debug),
+        "info" => Some(log::LevelFilter::Info),
+        "warn" | "warning" => Some(log::LevelFilter::Warn),
+        "error" => Some(log::LevelFilter::Error),
+        _ => None,
+    }
+}
+
+/// 当前生效的日志基准级别：配置项 log-level，缺省 info。
+fn current_log_level() -> log::LevelFilter {
+    normalize_log_level(&config::Config::get_option("log-level"))
+        .unwrap_or(log::LevelFilter::Info)
+}
+
+/// 完整的日志过滤串：基准级别 + 第三方噪音库的固定收敛。
+/// reqwest/hyper/rustls/webrtc 的心跳与候选对日志在任何级别下都刷屏，
+/// 固定压到 warn/error，用户选的级别只约束我们自己的代码。
+fn log_filter_string(level: log::LevelFilter) -> String {
+    format!(
+        "{},reqwest=warn,hyper_util=warn,rustls=warn,webrtc-sctp=warn,webrtc=warn,webrtc_ice::agent::agent_internal=error,webrtc::peer_connection=error",
+        level
+    )
+}
+
+lazy_static::lazy_static! {
+    // init_log 的返回值在多数调用点被丢弃，这里另存一份，
+    // 供 set_log_level 在运行时热切换级别（仅 flexi_logger 路径，即 release 构建）。
+    static ref FLEXI_LOGGER_HANDLE: std::sync::Mutex<Option<flexi_logger::LoggerHandle>> =
+        std::sync::Mutex::new(None);
+}
+
+/// 运行时切换日志基准级别。仅 release 构建（flexi_logger）能热切换；
+/// debug 构建（env_logger）只持久化选项、重启后生效，返回 false。
+pub fn set_log_level(level: &str) -> bool {
+    let Some(level) = normalize_log_level(level) else {
+        return false;
+    };
+    let Ok(guard) = FLEXI_LOGGER_HANDLE.lock() else {
+        return false;
+    };
+    match guard.as_ref() {
+        Some(handle) => match flexi_logger::LogSpecification::parse(log_filter_string(level)) {
+            Ok(spec) => {
+                handle.set_new_spec(spec);
+                true
+            }
+            Err(_) => false,
+        },
+        // None = 还没走到 flexi_logger 初始化（debug 构建或初始化失败）。
+        None => false,
+    }
+}
+
 pub fn init_log(_is_async: bool, _name: &str) -> Option<flexi_logger::LoggerHandle> {
     static INIT: std::sync::Once = std::sync::Once::new();
     #[allow(unused_mut)]
@@ -437,7 +495,10 @@ pub fn init_log(_is_async: bool, _name: &str) -> Option<flexi_logger::LoggerHand
         #[cfg(debug_assertions)]
         {
             use env_logger::*;
-            init_from_env(Env::default().filter_or(DEFAULT_FILTER_ENV, "info,reqwest=warn,hyper_util=warn,rustls=warn,webrtc-sctp=warn,webrtc=warn,webrtc_ice::agent::agent_internal=error,webrtc::peer_connection=error"));
+            init_from_env(Env::default().filter_or(
+                DEFAULT_FILTER_ENV,
+                log_filter_string(current_log_level()),
+            ));
         }
         #[cfg(not(debug_assertions))]
         {
@@ -452,7 +513,8 @@ pub fn init_log(_is_async: bool, _name: &str) -> Option<flexi_logger::LoggerHand
                 path.push(_name);
             }
             use flexi_logger::*;
-            if let Ok(x) = Logger::try_with_env_or_str("debug,reqwest=warn,hyper_util=warn,rustls=warn,webrtc-sctp=warn,webrtc=warn,webrtc_ice::agent::agent_internal=error,webrtc::peer_connection=error") {
+            // 基准级别来自设置页"log-level"选项（缺省 info）；RUST_LOG 仍可覆盖。
+            if let Ok(x) = Logger::try_with_env_or_str(log_filter_string(current_log_level())) {
                 logger_holder = x
                     .log_to_file(FileSpec::default().directory(path))
                     .write_mode(if _is_async {
@@ -478,6 +540,9 @@ pub fn init_log(_is_async: bool, _name: &str) -> Option<flexi_logger::LoggerHand
                     )
                     .start()
                     .ok();
+                if let Some(handle) = &logger_holder {
+                    *FLEXI_LOGGER_HANDLE.lock().unwrap() = Some(handle.clone());
+                }
             }
         }
     });

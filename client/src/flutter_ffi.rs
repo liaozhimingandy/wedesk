@@ -1069,6 +1069,27 @@ pub fn main_set_option(key: String, value: String) {
     }
 }
 
+/// 当前日志输出级别（设置页"日志输出等级"下拉框的回显值）。
+/// 恒返回规范化的 debug / info / warn / error 之一，缺省 info。
+pub fn main_get_log_level() -> String {
+    hbb_common::normalize_log_level(&get_option("log-level"))
+        .map(|l| l.as_str().to_lowercase())
+        .unwrap_or_else(|| "info".to_owned())
+}
+
+/// 设置日志输出级别并即时生效（release 构建的 flexi_logger 支持热切换；
+/// debug 构建 env_logger 不支持重载，改完下次启动生效）。
+/// 非法值静默忽略，由 Dart 侧保证只传合法项。
+pub fn main_set_log_level(level: String) {
+    let Some(level) = hbb_common::normalize_log_level(&level) else {
+        return;
+    };
+    let value = level.as_str().to_lowercase();
+    set_option("log-level".to_owned(), value.clone());
+    let applied = hbb_common::set_log_level(&value);
+    log::info!("log level set to {} (runtime applied: {})", value, applied);
+}
+
 pub fn main_get_options() -> String {
     get_options()
 }

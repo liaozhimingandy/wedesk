@@ -438,6 +438,24 @@ wedesk.exe --password YourFixedPwd
 ID 在 `config/` 目录里。**覆盖 exe 不会丢，但把整个目录删了会丢。**
 便携版升级时保留 `config/` 目录。
 
+### 检查更新失败 / 总提示"已是最新版本"
+
+客户端的更新检查走 `https://www.alsoapp.com/static/wedesk/update.json`
+（设置 → 关于 → 检查更新；勾了"自动更新版本"则启动 8 秒后自动查一次）。
+失败时弹窗会带具体原因，按原因对号入座：
+
+| 弹窗里的原因 | 含义 | 处理 |
+|---|---|---|
+| `HTTP 404` / `HTTP 5xx` | 官网静态目录里没有这个文件，或临时故障 | 找运维确认 `update.json` 已部署到 `www.alsoapp.com/static/wedesk/` |
+| `Connection timed out` / `SocketException` | 客户端到不了外网 | 私有内网机器本来就出不去，属预期；有代理的话在 设置 → 网络 配 Socks5/Http(s) |
+| `bad json` / `no version` | 文件内容不是约定的格式 | 对照 docs/14-desktop-ui.md 的格式说明修 JSON |
+| 显示"已是最新版本"但官网已有新版 | `update.json` 的 `version` 没比客户端大 | 版本号是**三段式数字**按段比较，`v1.2.3` 这种带 `v` 或四段号都不会被判定为更新 |
+
+> ⚠️ 这条链路与 Rust 侧官方更新器是**故意分开**的：私有部署客户端不允许访问
+> api.rustdesk.com（`common.rs` 的 `do_check_software_update` 对 custom client
+> 直接早退），所以主页那张"new version"卡片对定制客户端永远不显示，
+> 更新提示只来自这里。
+
 ---
 
 ## 六、终极排查手段

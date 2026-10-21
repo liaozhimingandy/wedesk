@@ -17,6 +17,7 @@ import 'package:flutter_hbb/desktop/screen/desktop_port_forward_screen.dart';
 import 'package:flutter_hbb/desktop/screen/desktop_remote_screen.dart';
 import 'package:flutter_hbb/desktop/screen/desktop_terminal_screen.dart';
 import 'package:flutter_hbb/desktop/widgets/refresh_wrapper.dart';
+import 'package:flutter_hbb/desktop/widgets/update_check.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -479,6 +480,11 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     };
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _updateOrientation());
+    // 启动后自动检查一次更新（仅勾选"自动更新版本"时生效，内部自行延迟，
+    // 不阻塞首屏）。主窗口才做；多窗口 / CM 走的是别的入口。
+    if (desktopType == DesktopType.main) {
+      autoCheckUpdateOnStartup();
+    }
   }
 
   @override

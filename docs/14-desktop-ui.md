@@ -119,6 +119,53 @@ disable-udp = Y          # 等价于原 "Disable UDP" 开关
 移动端设置页只移除了"ID/Relay Server"一项，本地传输类开关保留 ——
 运营商网络下 UDP 常被限制，"Use WebSocket"是移动端唯一的自救手段。
 
+### 关于我们：检查更新（2026-10-21 起）
+
+「关于」Tab 在版本信息上方新增两块（版式对齐 ToDesk）：
+
+- **自动更新版本**（勾选框）：勾上后客户端启动约 8 秒会自动检查一次更新，
+  发现新版本时弹全局对话框引导下载。存的是 `allow-auto-update` 配置项，
+  与 Rust 侧同名 option 同一个键。
+- **当前版本 Vx.y.z + 检查更新按钮**：手动检查，进行中按钮变成
+  "正在检查..."并禁用连点。
+
+检查逻辑在 `client/flutter/lib/desktop/widgets/update_check.dart`（纯 Dart，
+不动 Rust 侧 updater.rs——那条链路是给官方 api.rustdesk.com + GitHub Release
+设计的，私有部署客户端不允许访问外网更新源，见 common.rs 的
+`do_check_software_update` 对 custom client 的直接早退）。
+
+**更新数据源**：`https://www.alsoapp.com/static/wedesk/update.json`，
+发新版本时由运维更新这个文件即可，客户端不用重新构建。格式：
+
+```json
+{
+  "version": "1.2.3",
+  "date": "2026-10-21",
+  "mandatory": false,
+  "notes": "1. 中继节点自动注册\n2. 连接过程分阶段提示",
+  "platforms": {
+    "windows": { "url": "https://www.alsoapp.com/static/wedesk/Wedesk-Setup-1.2.3.exe" },
+    "macos":   { "url": "https://www.alsoapp.com/static/wedesk/Wedesk-1.2.3.dmg" },
+    "linux":   { "url": "https://www.alsoapp.com/static/wedesk/wedesk-1.2.3-x86_64.AppImage" }
+  }
+}
+```
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `version` | 是 | 三段式数字（`1.2.3`），与客户端当前版本按段比较，**大于**才提示更新 |
+| `platforms.<平台>.url` | 二选一 | 按平台给安装包地址，平台键：`windows` / `macos` / `linux` / `android` / `ios` |
+| `url` | 二选一 | 顶层兜底地址，`platforms` 没匹配到当前平台时用它 |
+| `notes` | 否 | 更新说明。支持纯字符串，或 `{"zh-cn": "...", "en": "..."}` 按界面语言取 |
+| `mandatory` | 否 | `true` = 强制更新：弹窗不可关闭，"稍后"按钮隐藏，只剩"立即更新" |
+| `date` | 否 | 发布日期，`notes` 为空时展示它 |
+
+交互分支：有新版本 → 弹窗（当前版本 → 新版本 + 更新说明 + 立即更新/稍后，
+"立即更新"用系统浏览器打开下载地址）；已是最新 → toast"已是最新版本"；
+网络失败 → 弹窗显示错误原因（不阻塞正常使用）。请求超时 10 秒。
+
 ### 主窗口旧标签栏已隐藏
 
 `DesktopTab` 加了实例级参数 `showTabBar`（默认 true，不影响远程会话窗口）。
@@ -223,6 +270,7 @@ WeCard(
 | `Security verification` | 安全验证 | 安全设置卡标题 |
 | `Verification method when controlling this device` | 控制本设备时的验证方式 | 安全设置卡标题 |
 | `Set up and enable` / `banner_2fa_title` / `banner_2fa_desc` | 设置并开启 / 建议设置主设备… | 安全设置顶部横幅 |
+| `Auto update version` 等 12 条 | 自动更新版本 / 检查更新 / 正在检查更新... / 发现新版本 / 已是最新版本 / 检查更新失败 / 立即更新 / 稍后 / 更新说明 / 暂无更新说明 / 当前版本 / 该平台暂未提供下载地址 | 关于页检查更新（2026-10-21 新增） |
 
 其余语言（en 等）没有对应条目时会**回退显示英文 key**，这是上游 `translate()`
 的既有行为；要补齐就往对应 `src/lang/*.rs` 里加同样的 key。

@@ -15,7 +15,7 @@ import 'package:flutter_hbb/common/widgets/keyboard_shortcuts/page_body.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_keyboard_shortcuts_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
-import 'package:flutter_hbb/mobile/widgets/dialog.dart';
+import 'package:flutter_hbb/desktop/widgets/update_check.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/printer_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
@@ -2605,9 +2605,30 @@ class _AboutState extends State<_About> {
               const SizedBox(
                 height: 8.0,
               ),
-              SelectionArea(
-                  child: Text('${translate('Version')}: $version')
-                      .marginSymmetric(vertical: 4.0)),
+              // "自动更新版本"：勾上后客户端启动时会自动检查一次更新
+              // （数据源 www.alsoapp.com/static/wedesk/update.json），
+              // 发现新版本弹窗引导下载。与 Rust 侧 allow-auto-update 同一个
+              // 配置键，语义一致。
+              _OptionCheckBox(
+                context,
+                'Auto update version',
+                kOptionAllowAutoUpdate,
+                isServer: true,
+              ).marginSymmetric(vertical: 2.0),
+              // 当前版本 + 检查更新按钮（同一行，右侧对齐）。
+              Row(
+                children: [
+                  Expanded(
+                    child: SelectionArea(
+                      child: Text(
+                        '${translate('Current version')} V$version',
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                    ),
+                  ),
+                  const CheckUpdateButton(),
+                ],
+              ).marginSymmetric(vertical: 6.0),
               SelectionArea(
                   child: Text('${translate('Build Date')}: $buildDate')
                       .marginSymmetric(vertical: 4.0)),

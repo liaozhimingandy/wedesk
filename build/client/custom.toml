@@ -47,7 +47,7 @@ product_name = "WeDesk"
 exe_name = "wedesk"
 
 # 显示在"关于"与 Windows 属性里的公司名
-company_name = "贵公司名称"
+company_name = "www.alsoapp.com"
 
 # 官网域名，用于替换界面里的帮助/隐私政策链接
 # 相关链接统一指向 https://www.alsoapp.com/wedesk/ 下：

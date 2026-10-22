@@ -849,25 +849,75 @@ jobs:
           cp -rf usbmmidd_v2 ./rustdesk/
 
       # 打印机驱动属于可选增强，下载/校验失败不应让整个构建变红
+      #
+      # 打包逻辑刻意做成**与 zip 内部结构无关**：
+      # 上游 PowerShell 版是 Expand-Archive 到工作目录（zip 自带同名父目录时
+      # 解出 ./rustdesk_printer_driver_v4-1.4/），我们原先照字面翻译成
+      # `unzip -d rustdesk_printer_driver_v4-1.4`，一旦 zip 有父目录就会多
+      # 嵌套一层，最终变成
+      #   drivers/RustDeskPrinterDriver/rustdesk_printer_driver_v4-1.4/***.inf
+      # 而 lib.rs 的 RD_DRIVER_INF_PATH 认的是
+      #   drivers/RustDeskPrinterDriver/RustDeskPrinterDriver.inf
+      # ——点击"安装打印机"报 "does not exists"（2026-10-22 实测）。
+      # 这里改为按名字定位 .inf / .dll，两种布局都能落到正确位置。
       - name: Bundle printer driver (optional)
         continue-on-error: true
         shell: bash
         run: |
-          set -e
+          set -eo pipefail
           BASE=https://github.com/rustdesk/hbb_common/releases/download/driver
-          curl -L --fail -o driver.zip    "$BASE/rustdesk_printer_driver_v4-1.4.zip"
-          curl -L --fail -o adapter.zip   "$BASE/printer_driver_adapter.zip"
-          curl -L --fail -o sha256sums    "$BASE/sha256sums"
-          sum_driver=$(awk '$2=="*rustdesk_printer_driver_v4-1.4.zip"{print $1}' sha256sums)
-          sum_adapter=$(awk '$2=="*printer_driver_adapter.zip"{print $1}' sha256sums)
-          [ "$(sha256sum driver.zip  | cut -d' ' -f1)" = "$sum_driver" ] || exit 1
-          [ "$(sha256sum adapter.zip | cut -d' ' -f1)" = "$sum_adapter" ] || exit 1
-          unzip -q -o driver.zip -d rustdesk_printer_driver_v4-1.4
-          unzip -q -o adapter.zip -d printer_driver_adapter
+          STAGE="$RUNNER_TEMP/printer_stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/driver" "$STAGE/adapter"
+
+          curl -L --fail -o "$STAGE/driver.zip"    "$BASE/rustdesk_printer_driver_v4-1.4.zip"
+          curl -L --fail -o "$STAGE/adapter.zip"   "$BASE/printer_driver_adapter.zip"
+          curl -L --fail -o "$STAGE/sha256sums"    "$BASE/sha256sums"
+          sum_driver=$(awk '$2=="*rustdesk_printer_driver_v4-1.4.zip"{print $1}' "$STAGE/sha256sums")
+          sum_adapter=$(awk '$2=="*printer_driver_adapter.zip"{print $1}' "$STAGE/sha256sums")
+          [ -n "$sum_driver" ] || { echo "::error::sha256sums 里没有 rustdesk_printer_driver_v4-1.4.zip 的条目（上游资源变了）"; exit 1; }
+          [ -n "$sum_adapter" ] || { echo "::error::sha256sums 里没有 printer_driver_adapter.zip 的条目（上游资源变了）"; exit 1; }
+          [ "$(sha256sum "$STAGE/driver.zip"  | cut -d' ' -f1)" = "$sum_driver" ]   || { echo "::error::驱动 zip 校验和不匹配"; exit 1; }
+          [ "$(sha256sum "$STAGE/adapter.zip" | cut -d' ' -f1)" = "$sum_adapter" ] || { echo "::error::适配层 zip 校验和不匹配"; exit 1; }
+
+          unzip -q -o "$STAGE/driver.zip"  -d "$STAGE/driver"
+          unzip -q -o "$STAGE/adapter.zip" -d "$STAGE/adapter"
+
+          INF=$(find "$STAGE/driver" -iname "RustDeskPrinterDriver.inf" | head -1)
+          [ -n "$INF" ] || { echo "::error::驱动 zip 里找不到 RustDeskPrinterDriver.inf"; find "$STAGE/driver" | head -20; exit 1; }
+          DLL=$(find "$STAGE/adapter" -iname "printer_driver_adapter.dll" | head -1)
+          [ -n "$DLL" ] || { echo "::error::适配层 zip 里找不到 printer_driver_adapter.dll"; find "$STAGE/adapter" | head -20; exit 1; }
+
           mkdir -p ./rustdesk/drivers
-          cp -rf rustdesk_printer_driver_v4-1.4 ./rustdesk/drivers/RustDeskPrinterDriver
-          cp -f printer_driver_adapter/printer_driver_adapter.dll ./rustdesk/
+          rm -rf ./rustdesk/drivers/RustDeskPrinterDriver
+          cp -rf "$(dirname "$INF")" ./rustdesk/drivers/RustDeskPrinterDriver
+          cp -f "$DLL" ./rustdesk/
+
+          # 落位自检：客户端认的就是这个相对路径，不对就红。
+          test -f ./rustdesk/drivers/RustDeskPrinterDriver/RustDeskPrinterDriver.inf \
+            || { echo "::error::驱动已拷贝但仍不在 drivers/RustDeskPrinterDriver/RustDeskPrinterDriver.inf"; find ./rustdesk/drivers | head -20; exit 1; }
+          test -f ./rustdesk/printer_driver_adapter.dll \
+            || { echo "::error::printer_driver_adapter.dll 未落到便携包根目录"; exit 1; }
           echo "✓ 打印机驱动已打包"
+          find ./rustdesk/drivers -maxdepth 2 | head -20
+
+      # 上面的步骤带 continue-on-error（可选增强不该阻断便携版），所以这一步
+      # 必须把"到底有没有打进去"摆到明面上：驱动缺失时客户端点"安装打印机"
+      # 只会报一句 "inf does not exists"，用户在 UI 上完全排查不到。
+      - name: 核对打印机驱动
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          INF=./rustdesk/drivers/RustDeskPrinterDriver/RustDeskPrinterDriver.inf
+          DLL=./rustdesk/printer_driver_adapter.dll
+          if [ -f "$INF" ] && [ -f "$DLL" ]; then
+            echo "PRINTER_DRIVER=已打包" >> "$GITHUB_ENV"
+            echo "OK: $INF 与 $DLL 均就位"
+          else
+            echo "PRINTER_DRIVER=未打包（安装打印机功能不可用）" >> "$GITHUB_ENV"
+            echo "::warning::打印机驱动未打进便携包（.inf 或 adapter dll 缺失），客户端点\"安装打印机\"会报 \"The driver inf file ... does not exists\"。展开 Bundle printer driver 步骤看是哪一环失败。"
+            echo "::warning::$INF exists=$( [ -f "$INF" ] && echo yes || echo no )；$DLL exists=$( [ -f "$DLL" ] && echo yes || echo no )"
+          fi
 
       - name: Upload client
         uses: actions/upload-artifact@v4
@@ -987,6 +1037,7 @@ jobs:
             else
               echo "- MSI 未构建（本次未启用 build_msi）"
             fi
+            echo "- 打印机驱动（随机身下发，用于「远程打印」）: ${PRINTER_DRIVER:-未核对}"
             echo ""
             if [ "$GITHUB_REF_TYPE" = "tag" ]; then
               echo ""

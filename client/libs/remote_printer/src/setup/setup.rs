@@ -23,9 +23,13 @@ fn get_driver_inf_abs_path() -> ResultType<PathBuf> {
         ),
     };
     if !abs_path.exists() {
+        // 带上解析后的绝对路径：便携版与安装版的 exe 目录不同（MSI 装到
+        // Program Files\<Product>），只报相对路径时看不出它到底去哪找的。
+        // 保持单行——这条消息会直接弹到 Flutter UI 上（install-printer-res）。
         bail!(
-            "The driver inf file \"{}\" does not exists",
-            RD_DRIVER_INF_PATH
+            "The driver inf file \"{}\" does not exist (resolved: \"{}\"), please make sure the driver folder ships next to the executable",
+            RD_DRIVER_INF_PATH,
+            abs_path.display(),
         )
     }
     Ok(abs_path)

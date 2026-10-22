@@ -890,6 +890,19 @@ jobs:
       # 逐个查 $LASTEXITCODE 不是洁癖：PowerShell 对原生命令的非零退出
       # 【不抛异常】，preprocess.py 挂了脚本也会继续往下跑，最后以一个
       # 看不懂的 msbuild 错误收场。
+      # runner 镜像里装了 VS2022，但 msbuild 不在 PATH 上（2026-10-22 实测
+      # "The term 'msbuild' is not recognized"）—— setup-msbuild 用 vswhere
+      # 定位后注入 PATH；setup-nuget 同理，不依赖镜像预装。
+      - name: Setup MSBuild and NuGet
+        if: ${{ env.BUILD_MSI == 'true' }}
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        if: ${{ env.BUILD_MSI == 'true' }}
+        uses: nuget/setup-nuget@v2
+        with:
+          nuget-version: "6.x"
+
       - name: Build MSI installer (optional)
         id: msi-build
         if: ${{ env.BUILD_MSI == 'true' }}

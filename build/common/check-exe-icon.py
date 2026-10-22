@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import struct
 import sys
 from pathlib import Path
@@ -254,6 +255,9 @@ def main(argv: list[str]) -> int:
 
     print(f"[OK] {exe.name} 内嵌 {len(entries)} 张图标（{sizes}），"
           f"最大 {biggest[0]}x{biggest[1]} / {len(biggest_blob)} 字节 / {distinct} 种取值")
+    # 打最大条目的 SHA256：用户拿到产物后可以用它核对"我这份 exe 是不是
+    # 品牌图标"（对 hash 排除图标缓存/旧构建的干扰）。
+    print(f"     最大条目 SHA256: {hashlib.sha256(biggest_blob).hexdigest()}")
 
     if ico is not None:
         try:
@@ -269,7 +273,9 @@ def main(argv: list[str]) -> int:
                 "——图标可能是旧的或被换过，仅警告不失败"
             )
         else:
-            print(f"[OK] exe 内嵌图标与 {ico.name} 逐字节一致")
+            biggest_src = max(want.items(), key=lambda kv: len(kv[1]))
+            print(f"[OK] exe 内嵌图标与 {ico.name} 逐字节一致"
+                  f"（源 SHA256: {hashlib.sha256(biggest_src[1]).hexdigest()}）")
 
     return 0
 

@@ -1,5 +1,7 @@
 // https://tools.ietf.org/rfc/rfc5128.txt
 // https://blog.csdn.net/bytxl/article/details/44344855
+// [ci-verify] server-only 变更占位：用于验证 build-windows.yml 的分区域门禁
+// —— 仅改 server/ 时应跳过客户端（Windows/Android/iOS/macOS/Linux）构建。
 
 use flexi_logger::*;
 use hbb_common::{bail, config::RENDEZVOUS_PORT, ResultType};

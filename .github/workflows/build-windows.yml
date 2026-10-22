@@ -158,6 +158,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.gate.outputs.should_build }}
+      server_changed: ${{ steps.gate.outputs.server_changed }}
+      client_changed: ${{ steps.gate.outputs.client_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -179,37 +181,64 @@ jobs:
         shell: bash
         run: |
           set -e
-          # tag push 必须构建：下游要发 Release，不能因为只改了文档就不产出
+          # 分区域判定：服务端 / 客户端各自独立，只有对应代码变了才构建对应产物，
+          # 避免“只改了服务端却把 40 分钟的客户端也重编一遍”。
+          SERVER_CHANGED=false
+          CLIENT_CHANGED=false
+          force_all() {
+            echo "should_build=true"   >> "$GITHUB_OUTPUT"
+            echo "server_changed=true" >> "$GITHUB_OUTPUT"
+            echo "client_changed=true" >> "$GITHUB_OUTPUT"
+          }
+          # tag push 必须全量构建：下游要发 Release，不能因只改了文档就不产出
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "tag push（$GITHUB_REF_NAME）→ 构建并发布 Release"
-            exit 0
+            echo "tag push（$GITHUB_REF_NAME）→ 全量构建并发布 Release"
+            force_all; exit 0
           fi
           # 手动触发：用户点了就跑
           if [ "${{ github.event_name }}" != "push" ]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "${{ github.event_name }} → 构建"
-            exit 0
+            echo "${{ github.event_name }} → 全量构建"
+            force_all; exit 0
           fi
           BEFORE="${{ github.event.before }}"
           # 首次推送时 before 是全 0，取不到 diff
           if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "首次推送 → 构建"
-            exit 0
+            echo "首次推送 → 全量构建"
+            force_all; exit 0
           fi
           CHANGED="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null || true)"
           if [ -z "$CHANGED" ]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "无法判定变更范围 → 保守起见构建"
-            exit 0
+            echo "无法判定变更范围 → 保守全量构建"
+            force_all; exit 0
           fi
-          if echo "$CHANGED" | grep -qvE '^(docs/|upstream/|.*\.md$)'; then
+          # 逐文件归类：文档 / 上游说明类忽略；server/ 只触发服务端，
+          # client/libs/hbb_common（客户端与服务端共享）两边都触发，其余客户端相关触发客户端。
+          while IFS= read -r f; do
+            case "$f" in
+              *.md|docs/*|upstream/*) continue ;;
+            esac
+            case "$f" in
+              server/*)                   SERVER_CHANGED=true ;;
+              client/libs/hbb_common/*)    SERVER_CHANGED=true; CLIENT_CHANGED=true ;;
+              client/*|build/*|.github/*)  CLIENT_CHANGED=true ;;
+            esac
+          done <<< "$CHANGED"
+          # 兜底：有非文档变更但不属于上述任何目录（如仓库根的配置），保守地构建客户端
+          if [ "$SERVER_CHANGED" = "false" ] && [ "$CLIENT_CHANGED" = "false" ]; then
+            CLIENT_CHANGED=true
+          fi
+          if [ "$SERVER_CHANGED" = "true" ] || [ "$CLIENT_CHANGED" = "true" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "有代码变更 → 构建"
           else
             echo "should_build=false" >> "$GITHUB_OUTPUT"
-            echo "仅文档 / 上游说明变更 → 跳过构建（省约 40 分钟机时）"
+          fi
+          echo "server_changed=$SERVER_CHANGED" >> "$GITHUB_OUTPUT"
+          echo "client_changed=$CLIENT_CHANGED" >> "$GITHUB_OUTPUT"
+          echo ""
+          if [ "$SERVER_CHANGED" = "true" ]; then   echo "→ 服务端将构建"; fi
+          if [ "$CLIENT_CHANGED" = "true" ]; then   echo "→ 客户端将构建（Windows/Android/iOS/macOS/Linux）"; fi
+          if [ "$SERVER_CHANGED" = "false" ] && [ "$CLIENT_CHANGED" = "false" ]; then
+            echo "仅文档 / 上游说明变更 → 跳过全部构建（省约 40 分钟机时）"
           fi
           echo ""
           echo "变更文件："
@@ -367,7 +396,8 @@ jobs:
     # PR 只做 preflight，不烧 40 分钟构建机时；仅文档变更的提交同理跳过。
     # 注意不是用 concurrency 取消，而是直接不触发：vcpkg 的二进制缓存有读写竞争，
     # 频繁取消/重跑反而容易把缓存写坏。
-    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' }}
+    # 仅当客户端相关文件变更时才重跑 bridge 生成；tag / 手动触发全量跑
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.client_changed == 'true' }}
     # 必须显式 needs 才能访问 needs.preflight.outputs —— 否则 context 为空，
     # 上面那个 == 'true' 恒不成立，这个 job 永远不跑
     needs: [preflight]
@@ -496,7 +526,8 @@ jobs:
   # ---------------------------------------------------------------------------
   build-windows:
     name: x86_64-pc-windows-msvc
-    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' }}
+    # 仅当客户端相关文件变更时才构建 Windows 客户端（服务端改动不会触发，省 40 分钟）
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.client_changed == 'true' }}
     needs: [preflight, generate-bridge]
     runs-on: windows-2022
 
@@ -1142,7 +1173,7 @@ jobs:
     name: android ${{ matrix.job.abi }}
     # inputs.build_android 只在 workflow_dispatch 时有值；push/tag 时为空，
     # 所以要在前半段先排除 workflow_dispatch，否则空值会让整个 job 被跳过。
-    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_android == true) }}
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.client_changed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_android == true) }}
     needs: [preflight, generate-bridge]
     runs-on: ubuntu-22.04
     strategy:
@@ -1423,7 +1454,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-android-apk:
     name: android apk/aab
-    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_android == true) && !cancelled() && needs.build-android.result != 'skipped' }}
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.client_changed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_android == true) && !cancelled() && needs.build-android.result != 'skipped' }}
     needs: [preflight, generate-bridge, build-android]
     runs-on: ubuntu-22.04
     env:
@@ -1748,7 +1779,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-ios:
     name: ios (unsigned ipa)
-    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_ios == true) }}
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.client_changed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_ios == true) }}
     needs: [preflight, generate-bridge]
     # macos-latest 现在是 arm64，正好对应 aarch64-apple-ios 目标
     runs-on: macos-latest
@@ -1952,7 +1983,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-macos:
     name: macos (desktop app)
-    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_macos == true) }}
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.client_changed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_macos == true) }}
     needs: [preflight, generate-bridge]
     runs-on: macos-latest
 
@@ -2145,7 +2176,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-linux:
     name: linux (desktop x64)
-    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_linux == true) }}
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.client_changed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_linux == true) }}
     needs: [preflight, generate-bridge]
     runs-on: ubuntu-latest
 
@@ -2342,8 +2373,8 @@ jobs:
   # ---------------------------------------------------------------------------
   build-server:
     name: hbbs/hbbr (linux musl)
-    # PR 与「仅文档变更」同样跳过；逻辑与 generate-bridge 保持一致
-    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' }}
+    # 仅当服务端相关文件（server/ 或共享的 hbb_common）变更时才构建服务端
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.server_changed == 'true' }}
     needs: [preflight]
     runs-on: ubuntu-latest
 
@@ -2473,7 +2504,7 @@ jobs:
   # ---------------------------------------------------------------------------
   server-image:
     name: Push server image (Docker Hub)
-    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.should_build == 'true' }}
+    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.server_changed == 'true' }}
     needs: [build-server]
     runs-on: ubuntu-latest
     permissions:

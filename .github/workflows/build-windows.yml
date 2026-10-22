@@ -528,6 +528,17 @@ jobs:
       BUILD_MSI: ${{ github.event_name != 'workflow_dispatch' || inputs.build_msi == true }}
 
     steps:
+      # 把 Windows runner 系统时区改成北京时间（UTC+8）。
+      # 关键点：Windows runner 默认 UTC，且【忽略 TZ 环境变量】—— 顶层 env 的
+      # TZ=Asia/Shanghai 在 Windows 上完全不生效，必须用 tzutil 改系统时区。
+      # 改完后，构建时间（Rust 的 Local::now() / Python 的 datetime.now()）才会
+      # 返回北京时间。macOS / Linux runner 靠顶层 TZ=Asia/Shanghai 即可，无需此步。
+      - name: Set runner timezone to Asia/Shanghai (UTC+8)
+        shell: powershell
+        run: |
+          tzutil /s "China Standard Time"
+          echo "runner timezone now: $(tzutil /g)"
+
       # vcpkg 的 x-gha 二进制缓存后端需要这两个运行时变量，
       # 不导出的话 vcpkg 会静默退化成不用缓存，构建时间直接翻倍。
       - name: Export GitHub Actions cache environment variables

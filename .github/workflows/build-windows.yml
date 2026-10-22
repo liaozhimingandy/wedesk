@@ -91,6 +91,15 @@ permissions:
   contents: read
 
 env:
+  # ---- Python ----
+  # Windows runner 的控制台是 cp1252，而仓库里的构建脚本（customize.py、
+  # check-exe-icon.py 等）大量打印中文 —— 写不进去就是 UnicodeEncodeError，
+  # 而且会发生在"检查其实已经通过、正要打印结论"的那一刻，表现为莫名其妙的
+  # 假红。Linux runner 本来就是 UTF-8，设了无害。
+  PYTHONIOENCODING: "utf-8"
+  # 同时关掉"没找到 .pyc 就写一份"的告警噪音（可选，顺手）
+  PYTHONDONTWRITEBYTECODE: "1"
+
   # ---- 版本锁定，全部对齐上游 CI，改动前请先确认上游 flutter-build.yml ----
   RUST_VERSION: "1.75" # 1.78 有 i128 ABI 变更，会导致 sciter/bridge 不兼容
   FLUTTER_VERSION: "3.24.5"
@@ -816,8 +825,13 @@ jobs:
       # 链路：Runner.rc 的 IDI_APP_ICON → runner/resources/app_icon.ico，
       # 两者都在 git 里，换图标只需替换 app_icon.ico。
       # 脚本本体见 build/common/check-exe-icon.py（纯标准库，本地可测）。
+      # PYTHONIOENCODING：runner 的控制台是 cp1252，脚本里的中文日志写不进去会
+      # 让这一步在"校验其实已经通过"之后才挂掉（假红）。脚本内部也强制了 UTF-8，
+      # 这里是双保险——同时覆盖该步骤里 python 的任何其他输出。
       - name: 校验 wedesk.exe 图标
         shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           python build/common/check-exe-icon.py \
             client/flutter/build/windows/x64/runner/Release/wedesk.exe \

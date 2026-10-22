@@ -1104,7 +1104,24 @@ def apply_overrides(c: dict, overrides):
     return c
 
 
+def _force_utf8_console() -> None:
+    """Windows 的控制台默认是 ANSI 代码页（西文 cp1252 / 中文 cp936）。本脚本
+    通篇中文输出，在 cp1252 下第一行 print 就是 UnicodeEncodeError，而且往往
+    发生在"注入其实已经做完、正要打印结论"的时候 —— 看起来像注入失败，
+    实际只是日志写不出。CI 里靠 workflow 的 PYTHONIOENCODING 兜底，这里是
+    本地/其它调用方式下的第二道保险。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # Python < 3.7
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            pass
+
+
 def main():
+    _force_utf8_console()
     _init_color()
     ap = argparse.ArgumentParser(
         description="RustDesk 源码品牌/服务器定制注入器",

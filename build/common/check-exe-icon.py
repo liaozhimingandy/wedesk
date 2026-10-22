@@ -35,6 +35,29 @@ RT_GROUP_ICON = 14
 USAGE = "用法: python check-exe-icon.py <exe> [icon.ico]"
 
 
+def force_utf8_console() -> None:
+    """Make stdout/stderr UTF-8 before anything is printed.
+
+    On a Windows runner the console defaults to the legacy ANSI codepage
+    (cp1252 for en-US), which cannot encode the Chinese messages below: the
+    first ``print`` raises UnicodeEncodeError and the step dies *after* the
+    check already succeeded, i.e. a false red build. Callers that pipe into a
+    file hit the same thing. Reconfiguring up front is enough for both.
+
+    ``errors="backslashreplace"`` is belt-and-braces: should the reconfigure
+    itself be unavailable we would rather emit \\uXXXX escapes than let a log
+    line abort the whole check.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # Python < 3.7
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            pass
+
+
 class PeResourceError(Exception):
     pass
 
@@ -164,6 +187,7 @@ def parse_ico(path: Path) -> dict[int, bytes]:
 
 
 def main(argv: list[str]) -> int:
+    force_utf8_console()
     if len(argv) < 2:
         print(USAGE)
         return 2

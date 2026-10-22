@@ -230,6 +230,16 @@ const String kOptionKeepScreenOn = "keep-screen-on";
 const String kOptionKeepAwakeDuringIncomingSessions = "keep-awake-during-incoming-sessions";
 const String kOptionKeepAwakeDuringOutgoingSessions = "keep-awake-during-outgoing-sessions";
 
+// 无人值守：无连接时也保持唤醒（防止电脑休眠），见 connection.rs 的
+// wakelock 线程；开机自启动（Windows 写 HKCU Run 键，见 flutter_ffi.rs）。
+const String kOptionPreventSleep = "prevent-sleep";
+const String kOptionAutoStart = "auto-start";
+
+// 构建号（version code）：CI 通过 --dart-define=VERSION_CODE=<run_number>
+// 注入，每次流水线构建自动 +1；本地开发没有注入时为 0，界面与更新比较
+// 都按"未知构建号"处理（回退到语义版本比较）。
+const String kVersionCode = String.fromEnvironment('VERSION_CODE', defaultValue: '0');
+
 const String kOptionShowMobileAction = "showMobileActions";
 
 const String kUrlActionClose = "close";

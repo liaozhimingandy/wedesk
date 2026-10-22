@@ -1981,6 +1981,34 @@ pub fn is_installed() -> bool {
     std::fs::metadata(exe).is_ok()
 }
 
+/// 开机自动启动（无人值守）：写 HKCU ...\CurrentVersion\Run。
+///
+/// 已安装服务时用 `--tray` 自启（服务负责接连接，托盘只提供入口，开机不弹
+/// 主窗口）；便携版没有服务，直接自启主程序（主进程内跑 server）。
+/// 用户级 Run 键不需要管理员权限，安装/便携都能用。
+pub fn set_auto_start(enable: bool) -> ResultType<()> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        KEY_READ | KEY_WRITE,
+    )?;
+    if enable {
+        let exe = std::env::current_exe()?;
+        let arg = if is_installed() { " --tray" } else { "" };
+        let cmd = format!("\"{}\"{}", exe.display(), arg);
+        key.set_value("WeDesk", &cmd)?;
+        log::info!("auto start enabled: {cmd}");
+    } else {
+        match key.delete_value("WeDesk") {
+            Ok(_) => log::info!("auto start disabled"),
+            // 本来就没写过，视为已关闭而不是报错，否则 UI 开关永远关不回去。
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 pub fn get_reg(name: &str) -> String {
     let (subkey, _, _, _) = get_install_info();
     get_reg_of(&subkey, name)

@@ -53,6 +53,11 @@ enum UpdateCheckStatus {
 class WedeskUpdateInfo {
   final String version;
 
+  /// 构建号（version code）。运维在 update.json 条目里给
+  /// `"version_code": <int>` 时用构建号比较（CI 每次构建 +1，比语义版本
+  /// 更可靠）；条目没给或本地没注入时为 0，回退到 [version] 字符串比较。
+  final int versionCode;
+
   /// 当前平台的安装包地址；JSON 里没给时为空（此时只提示版本，不提供下载）。
   final String? downloadUrl;
 
@@ -67,6 +72,7 @@ class WedeskUpdateInfo {
 
   const WedeskUpdateInfo({
     required this.version,
+    this.versionCode = 0,
     this.downloadUrl,
     this.notes = '',
     this.mandatory = false,
@@ -188,6 +194,7 @@ WedeskUpdateInfo? _pickFromPackages(Map<String, dynamic> json) {
     final info = WedeskUpdateInfo(
       // 容忍运维写 "v1.2.3"：versionToNumber 只认纯数字段。
       version: version.trim().replaceFirst(RegExp(r'^[vV]'), ''),
+      versionCode: item['version_code'] is int ? item['version_code'] as int : 0,
       downloadUrl: url is String && url.trim().isNotEmpty ? url.trim() : null,
       notes: notes,
       mandatory: item['is_force'] == true,
@@ -213,6 +220,7 @@ WedeskUpdateInfo? _pickFromLegacyTopLevel(Map<String, dynamic> json) {
   if (version is! String || version.trim().isEmpty) return null;
   return WedeskUpdateInfo(
     version: version.trim().replaceFirst(RegExp(r'^[vV]'), ''),
+    versionCode: json['version_code'] is int ? json['version_code'] as int : 0,
     downloadUrl: _pickDownloadUrl(json),
     notes: _pickNotes(json['notes']),
     mandatory: json['mandatory'] == true,
@@ -276,7 +284,13 @@ Future<UpdateCheckResult> checkWedeskUpdate() async {
       return const UpdateCheckResult.upToDate();
     }
     final current = await bind.mainGetVersion();
-    if (versionCmp(info.version, current) > 0) {
+    // 构建号优先：双方都有有效构建号（>0）时按构建号比（每次构建 +1，
+    // 不受语义版本写错影响）；任一方缺构建号则回退语义版本比较。
+    final localCode = int.tryParse(kVersionCode) ?? 0;
+    final hasUpdate = (info.versionCode > 0 && localCode > 0)
+        ? info.versionCode > localCode
+        : versionCmp(info.version, current) > 0;
+    if (hasUpdate) {
       return UpdateCheckResult.hasUpdate(info);
     }
     return const UpdateCheckResult.upToDate();

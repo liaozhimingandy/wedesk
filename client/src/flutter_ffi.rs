@@ -1281,6 +1281,16 @@ pub fn main_set_local_option(key: String, value: String) {
     let is_texture_render_key = key.eq(keys::OPTION_TEXTURE_RENDER);
     let is_d3d_render_key = key.eq(keys::OPTION_ALLOW_D3D_RENDER);
     set_local_option(key, value.clone());
+    // 开机自启动（无人值守）：本地选项落库后同步系统自启项。
+    // 写注册表失败时不回滚选项，仅记日志——UI 下次读取的是注册表同步后的
+    // 真实状态由 optGetter 保证不了，但失败场景（路径无效等）极少见。
+    #[cfg(windows)]
+    if key.eq(keys::OPTION_AUTO_START) {
+        let enable = config::option2bool(keys::OPTION_AUTO_START, &value);
+        if let Err(e) = crate::platform::set_auto_start(enable) {
+            log::error!("Failed to set auto start to {enable}: {e:?}");
+        }
+    }
     let is_render_target =
         |session: &crate::flutter::FlutterSession| session.is_default() || session.is_view_camera();
     if is_texture_render_key {

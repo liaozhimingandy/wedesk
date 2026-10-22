@@ -142,3 +142,18 @@ sha256sum -c SHA256SUMS.txt
 
 本机构建流程与常见坑见 [03 构建](03-build.md)；输入类"点了没反应"的排查见
 [07-faq 第七章](07-faq.md)。
+
+---
+
+## 七、构建号（version code）与更新判断
+
+- **构建号来源**：CI 每次运行把 `github.run_number`（同一工作流单调 +1）通过
+  `--dart-define=VERSION_CODE=<n>` 注入 Flutter；Dart 侧常量
+  `consts.dart::kVersionCode` 读取。本地开发未注入时为 0，按"未知构建号"处理。
+- **界面展示**：关于页"当前版本"行显示 `V1.2.3 (123)`；构建号为 0 时只显示语义版本。
+- **更新比较**（`update_check.dart`）：update.json 条目里**双方都有**有效构建号时
+  （本地 >0 且条目 `"version_code": <int>` >0）按构建号比大小；任一方缺失则回退
+  语义版本字符串比较 —— 所以旧的 update.json 不用改也不会坏。
+- **运维发布清单**：更新 update.json 时给对应平台条目加上 `"version_code": <n>`，
+  取值 = 该平台最近一次成功构建的 run_number（构建摘要里会打印）。**构建号必须
+  递增**，否则已装高构建号的客户端收不到更新提示。

@@ -768,6 +768,9 @@ jobs:
           HWCODEC="${{ env.ENABLE_HWCODEC == 'true' && '--hwcodec' || '' }}"
           echo "硬件编解码: ${HWCODEC:-关闭}"
           echo "硬件编解码: ${HWCODEC:-关闭}" >> "$GITHUB_STEP_SUMMARY"
+          # 构建号：flutter 构建经 --dart-define 注入 kVersionCode，发布
+          # update.json 时把这里的值填进对应条目的 version_code 字段。
+          echo "构建号(version_code): ${GITHUB_RUN_NUMBER}" | tee -a "$GITHUB_STEP_SUMMARY"
           FEATURES="$(cd client && python build.py --flutter --portable $HWCODEC ${{ inputs.build_args }} --print-features)"
           echo "cargo features: ${FEATURES}"
           echo "cargo features: \`${FEATURES}\`" >> "$GITHUB_STEP_SUMMARY"
@@ -806,7 +809,10 @@ jobs:
           LOG="$RUNNER_TEMP/flutter-build.log"
           # 必须在 client/flutter 里跑：flutter 靠向上查找 pubspec.yaml 定位工程根。
           # 从别处调用会拿到错误的工程根，报的错跟真正的问题毫无关系。
-          if ! (cd client/flutter && flutter build windows --release) 2>&1 | tee "$LOG"; then
+          # VERSION_CODE：构建号，每次流水线运行自动 +1（github.run_number）。
+          # Dart 侧 consts.dart 的 kVersionCode 读取，关于页展示 + 更新比较。
+          if ! (cd client/flutter && flutter build windows --release \
+                --dart-define=VERSION_CODE="${GITHUB_RUN_NUMBER}") 2>&1 | tee "$LOG"; then
             echo "::error::flutter build windows 失败 —— 关键行见 Annotations"
             emit_error_lines "$LOG" flutter
             exit 1
@@ -928,6 +934,12 @@ jobs:
         run: |
           INF=./rustdesk/drivers/WeDeskPrinterDriver/WeDeskPrinterDriver.inf
           DLL=./rustdesk/printer_driver_adapter.dll
+          # 把 drivers 目录树打出来：目录名/文件名变动过（RustDesk → WeDesk），
+          # 只说"已打包/未打包"时用户按旧名字在产物里找不到会以为丢了。
+          echo "--- rustdesk/drivers 实际内容 ---"
+          find ./rustdesk/drivers -maxdepth 3 2>/dev/null | sed 's/^/    /' || echo "    (无 drivers 目录)"
+          echo "--- adapter dll ---"
+          ls -l ./rustdesk/printer_driver_adapter.dll 2>/dev/null || echo "    (缺失)"
           if [ -f "$INF" ] && [ -f "$DLL" ]; then
             echo "PRINTER_DRIVER=已打包" >> "$GITHUB_ENV"
             echo "OK: $INF 与 $DLL 均就位"
@@ -1571,6 +1583,7 @@ jobs:
           fi
           echo "target-platform = $PLATFORMS"
           echo "target-platform = $PLATFORMS" >> "$GITHUB_STEP_SUMMARY"
+          echo "构建号(version_code): ${GITHUB_RUN_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
 
           # libc++_shared.so 是 librustdesk.so 的运行时依赖，缺了会在启动时
           # 直接崩，且崩溃日志里只写 dlopen 失败 —— 从 NDK 的 sysroot 补齐。
@@ -1591,13 +1604,15 @@ jobs:
 
           # 用子 shell 而不是 pushd/popd：这条命令失败时 set -e 会直接结束
           # 步骤，后面的诊断代码一行都跑不到 —— 只剩一句 exit code 1。
-          if ! (cd client/flutter && flutter build apk --release --split-per-abi --target-platform "$PLATFORMS") 2>&1 | tee "$LOG"; then
+          if ! (cd client/flutter && flutter build apk --release --split-per-abi --target-platform "$PLATFORMS" \
+                --dart-define=VERSION_CODE="${GITHUB_RUN_NUMBER}") 2>&1 | tee "$LOG"; then
             emit_error_lines "$LOG" "flutter:apk" 20
             emit_log_tail "$LOG" "flutter:apk-tail" 30
             echo "::error::flutter build apk 失败。剩余磁盘：$(df -h / 2>/dev/null | tail -1 | tr -s ' ')"
             exit 1
           fi
-          if ! (cd client/flutter && flutter build appbundle --release --target-platform "$PLATFORMS") 2>&1 | tee "$LOG"; then
+          if ! (cd client/flutter && flutter build appbundle --release --target-platform "$PLATFORMS" \
+                --dart-define=VERSION_CODE="${GITHUB_RUN_NUMBER}") 2>&1 | tee "$LOG"; then
             emit_error_lines "$LOG" "flutter:aab" 20
             emit_log_tail "$LOG" "flutter:aab-tail" 30
             echo "::error::flutter build appbundle 失败。剩余磁盘：$(df -h / 2>/dev/null | tail -1 | tr -s ' ')"
@@ -1826,7 +1841,8 @@ jobs:
           set -eo pipefail
           source build/common/emit-error-lines.sh
           LOG="$RUNNER_TEMP/flutter-build-ipa.log"
-          if ! (cd client/flutter && flutter build ipa --release --no-codesign) 2>&1 | tee "$LOG"; then
+          if ! (cd client/flutter && flutter build ipa --release --no-codesign \
+                --dart-define=VERSION_CODE="${GITHUB_RUN_NUMBER}") 2>&1 | tee "$LOG"; then
             # xcodebuild 的真因常常被几百行 pod 编译日志埋掉：
             # 先挑"像报错"的行，再把尾部整段搬出来看上下文。
             emit_error_lines "$LOG" "flutter:ipa" 15

@@ -438,6 +438,7 @@ class _GeneralState extends State<_General> {
       controller: scrollController,
       children: [
         if (!isWeb) service(),
+        if (!isWeb) unattended(),
         theme(),
         _Card(title: 'Language', children: [language()]),
         if (!isWeb) hwcodec(),
@@ -488,9 +489,37 @@ class _GeneralState extends State<_General> {
     });
   }
 
+  // 无人值守（参考 ToDesk「高级设置 → 基本设置」）：异地操控一台没人守着
+  // 的电脑，前提是它开机就在（开机自动启动）且不会睡死（防止电脑休眠）。
+  // 仅 Windows 桌面端展示：自启动写的是 HKCU Run 注册表键，Linux/mac
+  // 各有自启机制，需要时再接进来。
+  Widget unattended() {
+    if (!isWindows || bind.isOutgoingOnly()) {
+      return const Offstage();
+    }
+    return _Card(title: 'Unattended access', children: [
+      // 本地选项（isServer:false）：flutter_ffi 的 main_set_local_option
+      // 会在落库后同步写注册表 Run 键。
+      _OptionCheckBox(
+        context,
+        'Start on boot',
+        kOptionAutoStart,
+        isServer: false,
+      ),
+      // 主配置选项（isServer:true）：connection.rs 的 wakelock 线程读的
+      // 就是 Config 里的这个键，5 秒内生效。
+      _OptionCheckBox(
+        context,
+        'prevent-sleep-label',
+        kOptionPreventSleep,
+        isServer: true,
+        trailing: const InfoTooltipIcon(tipKey: 'prevent-sleep-tip'),
+      ),
+    ]);
+  }
+
   Widget theme() {
-    final current = MyTheme.getThemeModePreference().toShortString();
-    onChanged(String value) async {
+    final current = MyTheme.getThemeModePreference().toShortString();    onChanged(String value) async {
       await MyTheme.changeDarkMode(MyTheme.themeModeFromString(value));
       setState(() {});
     }
@@ -2660,12 +2689,16 @@ class _AboutState extends State<_About> {
                 isServer: true,
               ).marginSymmetric(vertical: 2.0),
               // 当前版本 + 检查更新按钮（同一行，右侧对齐）。
+              // 构建号（version code）由 CI 注入（--dart-define=
+              // VERSION_CODE=<run_number>，每次构建 +1），本地开发为 0，
+              // 不展示；更新比较也优先用它（见 update_check.dart）。
               Row(
                 children: [
                   Expanded(
                     child: SelectionArea(
                       child: Text(
-                        '${translate('Current version')} V$version',
+                        '${translate('Current version')} V$version'
+                        '${(int.tryParse(kVersionCode) ?? 0) > 0 ? ' ($kVersionCode)' : ''}',
                         style: const TextStyle(fontSize: 14),
                       ),
                     ),

@@ -66,14 +66,30 @@ class _WeSideMenuState extends State<WeSideMenu> {
                 onTap: () => widget.onSelect(i),
               ),
           const Spacer(),
-          if (bind.isCustomClient())
-            Padding(
-              padding: const EdgeInsets.only(bottom: WeSpace.s),
-              child: Align(
-                alignment: Alignment.center,
-                child: loadPowered(context),
-              ),
+          // 左下角品牌区（参考 ToDesk）：图标 + 软件名称。名称取运行时
+          // app_name，定制客户端会跟着变。
+          Padding(
+            padding: const EdgeInsets.only(
+                left: WeSpace.m, right: WeSpace.m, bottom: WeSpace.m),
+            child: Row(
+              children: [
+                loadIcon(22),
+                const SizedBox(width: WeSpace.s),
+                Flexible(
+                  child: Text(
+                    bind.mainGetAppNameSync(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
             ),
+          ),
         ],
       ),
       ),

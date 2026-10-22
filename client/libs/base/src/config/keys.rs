@@ -179,6 +179,17 @@ pub const OPTION_KEEP_AWAKE_DURING_INCOMING_SESSIONS: &str = "keep-awake-during-
 // Client-side: keep client system awake during outgoing sessions (General setting)
 pub const OPTION_KEEP_AWAKE_DURING_OUTGOING_SESSIONS: &str = "keep-awake-during-outgoing-sessions";
 
+// Unattended access: keep the machine awake even with no active session, so a
+// machine left far away never falls asleep and becomes unreachable (General
+// setting, Windows desktop). Evaluated by the wakelock thread, which re-reads
+// the option periodically.
+pub const OPTION_PREVENT_SLEEP: &str = "prevent-sleep";
+
+// Unattended access: launch the client at system startup (General setting,
+// Windows desktop). The option itself is a plain LocalConfig flag, but
+// main_set_local_option syncs it to the HKCU Run registry key on change.
+pub const OPTION_AUTO_START: &str = "auto-start";
+
 pub const OPTION_DISABLE_GROUP_PANEL: &str = "disable-group-panel";
 pub const OPTION_DISABLE_DISCOVERY_PANEL: &str = "disable-discovery-panel";
 pub const OPTION_PRE_ELEVATE_SERVICE: &str = "pre-elevate-service";

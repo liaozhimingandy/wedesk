@@ -6652,45 +6652,58 @@ fn start_wakelock_thread() -> std::sync::mpsc::Sender<(usize, usize)> {
     std::thread::spawn(move || {
         let mut wakelock: Option<WakeLock> = None;
         let mut last_display = false;
+        // 无人值守（prevent-sleep）在没有任何连接时也要保持唤醒，而连接事件
+        // 只在有连接进出时才会发消息过来——所以用 recv_timeout 周期性醒来
+        // 重读选项，保证设置开关后最多几秒内生效，不必依赖额外的事件通知。
+        let mut last_counts = (0usize, 0usize);
         loop {
-            match rx.recv() {
-                Ok((conn_count, remote_count)) => {
-                    let keep_awake = config::Config::get_bool_option(
-                        keys::OPTION_KEEP_AWAKE_DURING_INCOMING_SESSIONS,
-                    );
-                    *WAKELOCK_KEEP_AWAKE_OPTION.lock().unwrap() = Some(keep_awake);
-                    if conn_count == 0 || !keep_awake {
-                        if wakelock.is_some() {
-                            wakelock = None;
-                            log::info!("drop wakelock");
-                        }
-                    } else {
-                        let mut display = remote_count > 0;
-                        if let Some(_w) = wakelock.as_mut() {
-                            if display != last_display {
-                                #[cfg(any(target_os = "windows", target_os = "macos"))]
-                                {
-                                    log::info!("set wakelock display to {display}");
-                                    if let Err(e) = _w.set_display(display) {
-                                        log::error!(
-                                            "failed to set wakelock display to {display}: {e:?}"
-                                        );
-                                    }
-                                }
-                            }
-                        } else {
-                            if cfg!(target_os = "linux") {
-                                display = true;
-                            }
-                            wakelock = Some(get_wakelock(display));
-                        }
-                        last_display = display;
-                    }
+            let (conn_count, remote_count) = match rx.recv_timeout(std::time::Duration::from_secs(
+                5,
+            )) {
+                Ok(counts) => {
+                    last_counts = counts;
+                    counts
                 }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => last_counts,
                 Err(e) => {
                     log::error!("wakelock receive error: {e:?}");
                     break;
                 }
+            };
+            let keep_awake = config::Config::get_bool_option(
+                keys::OPTION_KEEP_AWAKE_DURING_INCOMING_SESSIONS,
+            );
+            let prevent_sleep = config::Config::get_bool_option(keys::OPTION_PREVENT_SLEEP);
+            *WAKELOCK_KEEP_AWAKE_OPTION.lock().unwrap() = Some(keep_awake);
+            let hold = prevent_sleep || (conn_count > 0 && keep_awake);
+            if !hold {
+                if wakelock.is_some() {
+                    wakelock = None;
+                    log::info!("drop wakelock");
+                }
+            } else {
+                // 只有远程会话才点亮屏幕；纯防休眠（无人值守）允许息屏，
+                // 但系统不进入睡眠（ES_SYSTEM_REQUIRED）。
+                let mut display = remote_count > 0;
+                if let Some(_w) = wakelock.as_mut() {
+                    if display != last_display {
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
+                        {
+                            log::info!("set wakelock display to {display}");
+                            if let Err(e) = _w.set_display(display) {
+                                log::error!(
+                                    "failed to set wakelock display to {display}: {e:?}"
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    if cfg!(target_os = "linux") {
+                        display = true;
+                    }
+                    wakelock = Some(get_wakelock(display));
+                }
+                last_display = display;
             }
         }
     });

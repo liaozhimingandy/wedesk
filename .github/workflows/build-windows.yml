@@ -895,7 +895,23 @@ jobs:
           rm -rf "$STAGE"
           mkdir -p "$STAGE/driver" "$STAGE/adapter"
 
-          # 下载 + 校验，失败整轮重下（最多 3 轮）。
+          # 仓库内置驱动包（可选 vendoring）：放在 client/printer_driver/ 下，文件名
+          # 必须与上游 release 完全一致。两个都在则直接采用，跳过上游下载 —— 这能
+          # 彻底摆脱 run 93 那种 CDN 偶发截断导致驱动缺包的问题，且驱动文件带 WHQL
+          # 签名、内容为静态资产，本就适合 vendoring。仓库内置包信任 git 完整性，
+          # 不做 sha256 校验。缺任一个（或本地开发未拉取该目录）才回退到上游下载。
+          VEN_DIR=client/printer_driver
+          VEN_DRIVER="$VEN_DIR/rustdesk_printer_driver_v4-1.4.zip"
+          VEN_ADAPTER="$VEN_DIR/printer_driver_adapter.zip"
+          if [ -f "$VEN_DRIVER" ] && [ -f "$VEN_ADAPTER" ]; then
+            echo "✓ 命中仓库内置驱动包（$VEN_DIR），跳过上游下载"
+            cp -f "$VEN_DRIVER"  "$STAGE/driver.zip"
+            cp -f "$VEN_ADAPTER" "$STAGE/adapter.zip"
+          else
+            fetch_verify
+          fi
+
+          # 下载 + 校验，失败整轮重下（最多 3 轮）。仅在内置包缺失时才会走到这里。
           # 教训（run 93，2026-10-22）：release 资产走 CDN，runner 上偶发下载被
           # 截断 —— zip 只有 34KB 也照样缺斤短两，sha256 不匹配。原先不带重试，
           # 一次网络抖动整个驱动就静默缺包（continue-on-error 把步骤标成
@@ -923,7 +939,6 @@ jobs:
             echo "::error::驱动 zip 连续 3 轮校验不匹配 —— 若复现请到 rustdesk/hbb_common 的 driver release 核对资产是否被更换"
             return 1
           }
-          fetch_verify
 
           unzip -q -o "$STAGE/driver.zip"  -d "$STAGE/driver"
           unzip -q -o "$STAGE/adapter.zip" -d "$STAGE/adapter"

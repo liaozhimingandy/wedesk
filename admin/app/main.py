@@ -46,15 +46,30 @@ async def lifespan(app: FastAPI):
 
     os.makedirs(settings.record_dir, exist_ok=True)
 
-    # PKI (ROOT -> CA -> leaf). Generates ROOT/CA on first boot if PKI_DIR is
-    # empty; in production mount your offline ROOT and keep root.key out.
+    # PKI (ROOT -> CA -> leaf). Material already in PKI_DIR is used as-is and
+    # never overwritten; only empty slots are filled, and only when
+    # PKI_AUTO_CREATE is on. A misconfiguration here means every device
+    # certificate would be issued under the wrong anchor, so fail loudly.
     try:
         ca = pki.get()
         app.state.pki_ready = True
         app.state.pki_info = ca.info()
+        if ca.root_source == "generated" or ca.ca_source == "generated":
+            print(
+                "[pki] WARNING: using generated CA material "
+                f"(root={ca.root_source}, ca={ca.ca_source}). "
+                "Supply your own ROOT/CA in PKI_DIR for production."
+            )
     except Exception as exc:  # pragma: no cover - misconfigured PKI_DIR
         app.state.pki_ready = False
         app.state.pki_error = str(exc)
+        print(f"[pki] CA bootstrap FAILED: {exc}", flush=True)
+        print(
+            "[pki] certificate issuance and mTLS device APIs are disabled until "
+            "PKI_DIR holds a usable ROOT/CA (or PKI_ROOT_CERT_FILE / "
+            "PKI_CA_CERT_FILE point at yours).",
+            flush=True,
+        )
 
     yield
 

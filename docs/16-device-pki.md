@@ -43,11 +43,61 @@ ROOT（自签，20 年，生产环境应离线保存）
 ```
 root.key / root.crt   ROOT CA
 ca.key   / ca.crt     中间 CA（签所有叶子）
-ca_chain.crt          ca.crt + root.crt —— 客户端要信任/安装的就这俩
+ca_chain.crt          ca.crt + root.crt —— 客户端要信任/安装的就这俩（派生文件）
+.wedesk-pki-origin.json  记录哪些文件是本服务生成的（来源标记，派生文件）
 ```
 
-首次启动自动生成（开发便利）。**生产环境**请挂载离线生成的 ROOT/CA，
-并把 `root.key` 移出容器——ROOT 私钥泄露等于整个体系失效。
+### 2.1 使用自己的 ROOT / CA（生产必读）
+
+**服务不会覆盖任何已存在的证书文件。** 目录里有就用你的，目录里没有才可能
+生成——而且只在 `PKI_AUTO_CREATE=1`（默认）时才生成。判断顺序是：
+证书文件存在 → 直接采用；只有空槽位才填。
+
+放进去即可（四种文件都是 PEM）：
+
+```
+PKI_DIR/root.crt          你的 ROOT 证书（root.key 可以没有，离线 ROOT 正是推荐形态）
+PKI_DIR/ca.crt + ca.key   你的中间 CA —— 必须带私钥，否则签不了叶子
+```
+
+也支持用绝对路径精确指定：
+
+| 环境变量 | 含义 |
+|---|---|
+| `PKI_ROOT_CERT_FILE` / `PKI_ROOT_KEY_FILE` | ROOT 证书 / 私钥路径 |
+| `PKI_CA_CERT_FILE` / `PKI_CA_KEY_FILE` | 中间 CA 证书 / 私钥路径 |
+| `PKI_KEY_PASSWORD` | 私钥口令（若导出时加密） |
+| `PKI_AUTO_CREATE` | `0` = 缺材料就报错，**绝不自己造**（生产推荐） |
+| `PKI_ALLOW_UNCHAINED_CA` | `1` = 允许 CA 与 ROOT 不成链（默认拒绝） |
+
+**兼容的文件名**：`root.crt` / `root.pem` / `root.cert.pem`、`ca.crt` / `ca.pem`；
+私钥 `*.key` / `*.key.pem`；也接受**私钥和证书写在同一个 PEM 文件里**
+（很多 CA 就这么发）。
+
+**离线 ROOT 为什么能工作**：ROOT 私钥只在"签发新的中间 CA"时才需要。只要你
+同时提供了 `ca.crt` + `ca.key`，ROOT 有没有私钥都不影响签发设备证书——
+所以 `root.key` 可以不进容器，这是推荐做法。
+
+**会直接启动失败的四种情况**（都是宁可停机也不毁证书）：
+
+1. 显式配置的路径不存在（不会退回自动生成，否则等于偷偷换锚点）；
+2. `PKI_AUTO_CREATE=0` 且材料缺失；
+3. 私钥与证书不匹配 —— **两个文件都原样保留**，报错让你自己看；
+4. 提供的 CA 不是由提供的 ROOT 签发的（真签名验证，不是比字符串）；
+   或 CA 不是 CA（`CA=FALSE` / 缺 `keyCertSign`）/ 已过期。
+
+**确认用的是不是你自己的证书**：
+
+```bash
+curl https://admin.example.com/api/cert/info    # 带管理员会话
+curl https://admin.example.com/api/cert/ca      # 公开
+```
+
+返回里有 `root_source` / `ca_source`：`provided` = 用的你的文件，
+`generated` = 这套是本服务自己造的（首次启动的 dev 便利），此时服务启动日志
+会打一行 `[pki] WARNING: using generated CA material`。来源靠
+`.wedesk-pki-origin.json` 记录序列号，重启后依然如实上报——不会出现"第一次
+自动生成、重启后伪装成 provided"。
 
 ---
 
@@ -229,18 +279,31 @@ PKI_DIR=/data/pki                 # 需要持久化，否则每次重启都换 C
 PKI_CRL_URL=https://admin.example.com/api/cert/crl   # 可选，写进证书的 CDP
 ```
 
+生产环境再加这两条（用你自己的 ROOT/CA，且不允许自动生成）：
+
+```bash
+PKI_AUTO_CREATE=0                          # 缺证书就停机报错，绝不自己造一套
+PKI_CA_KEY_FILE=/run/secrets/ca.key        # CA 私钥走 secret 挂载，不进镜像
+PKI_ROOT_CERT_FILE=/etc/wedesk/root.crt    # ROOT 只要证书（离线 ROOT）
+PKI_CA_CERT_FILE=/etc/wedesk/ca.crt
+```
+
 `docker-compose` 里给 admin 服务挂卷：
 
 ```yaml
 volumes:
-  - ./data/pki:/data/pki
+  - ./data/pki:/data/pki          # 或只读挂载你准备好的 ROOT/CA 目录
 ```
+
+> 挂载前先确认目录里**已经**有你的 `root.crt` 和 `ca.crt`+`ca.key`。若先空着
+> 启动一次，服务会自己生成一套并写入；之后你再放自己的文件也来得及（不会被
+> 覆盖），但**已经签发出去的设备证书是用旧 CA 签的，需要重新激活**。
 
 启动后自检：
 
 ```bash
 curl https://admin.example.com/health      # pki: true
-curl https://admin.example.com/api/cert/ca
+curl https://admin.example.com/api/cert/ca # root_source/ca_source 应为 provided
 ```
 
 ---
@@ -265,12 +328,19 @@ curl https://admin.example.com/api/cert/ca
 ```bash
 cd admin
 pip install -r requirements.txt
-python tests/test_cert_api.py
+python tests/test_cert_api.py        # 端到端：激活 / 续期 / mTLS / 吊销 / 伪造
+python tests/test_pki_external.py    # 自带 ROOT/CA 的覆盖防护（10 组场景）
 ```
 
-覆盖 15 组、30 项断言：CA 引导 → 激活（ed25519 / EC 两种密钥）→ token 单次性 →
-mTLS 业务调用 → **重放拒绝** → 证书类型越权拒绝 → 密钥轮换续期 →
+`test_cert_api.py` 覆盖 15 组、30 项断言：CA 引导 → 激活（ed25519 / EC 两种密钥）
+→ token 单次性 → mTLS 业务调用 → **重放拒绝** → 证书类型越权拒绝 → 密钥轮换续期 →
 旧证书被顶替后拒绝 → 吊销即时生效并进 CRL → 伪造 CA 拒绝 → 无证书拒绝。
+
+`test_pki_external.py` 覆盖自带材料的各种摆放方式与故障模式：离线 ROOT（只有
+证书）+ 自带 CA 原样采用且字节不被改写、二次启动幂等、`PKI_AUTO_CREATE=0` 缺
+材料即报错、离线 ROOT 缺 CA 时不乱签、密钥与证书不匹配时**双方文件都保留**、
+显式路径不存在不退回自动生成、CA 与 ROOT 不成链默认拒绝、合并 PEM 识别、
+空目录仍能自举、非 CA 证书不能冒充中间 CA、来源标记不被冒认。
 
 ---
 
@@ -278,7 +348,7 @@ mTLS 业务调用 → **重放拒绝** → 证书类型越权拒绝 → 密钥�
 
 | 限制 | 说明 |
 |---|---|
-| ROOT 首次启动自动生成 | 生产必须换成离线 ROOT；`root.key` 别进镜像 |
+| ROOT 可能自动生成 | 目录为空且 `PKI_AUTO_CREATE=1` 时会自己造一套；生产设 `PKI_AUTO_CREATE=0` 并挂离线 ROOT，`root.key` 别进镜像 |
 | 续期不强制窗口 | `renew_after` 只是建议值，早续期也允许（否则设备时钟漂移会锁死自己） |
 | 吊销靠服务端表 + CRL | 没有 OCSP；客户端必须自己拉 `/api/cert/crl` 或依赖服务端库校验 |
 | uvicorn 直连拿不到对端证书 | 必须走反向代理转发头（见 4.2），或改由支持 scope 的服务器托管 |

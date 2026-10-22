@@ -200,6 +200,14 @@ def cert_ca():
         "root": ca.root_pem,
         "ca": ca.ca_pem,
         "chain": ca.chain_pem,
+        # Lets an operator confirm the anchors in use are *their* ROOT/CA and
+        # not something the service generated on a first boot.
+        "root_source": ca.root_source,
+        "ca_source": ca.ca_source,
+        "root_serial": format(ca.root_cert.serial_number, "x"),
+        "ca_serial": format(ca.ca_cert.serial_number, "x"),
+        "root_subject": ca.root_cert.subject.rfc4514_string(),
+        "ca_subject": ca.ca_cert.subject.rfc4514_string(),
     }
 
 

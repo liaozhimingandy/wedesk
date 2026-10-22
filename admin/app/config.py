@@ -58,6 +58,33 @@ class Settings:
         # PKI (ROOT -> CA -> device/app leaf). See app/pki.py for the model.
         # ------------------------------------------------------------------
         self.pki_dir = _env("PKI_DIR", "/data/pki")
+        # ------------------------------------------------------------------
+        # 自带 ROOT / CA（生产必配）。留空则回落到 PKI_DIR 下的默认文件名
+        # root.key/root.crt、ca.key/ca.crt。显式指定却不存在 = 配置错误，
+        # 直接失败而不是悄悄生成一套新的（生成会让客户端内置的信任锚失效）。
+        # ------------------------------------------------------------------
+        self.pki_root_key_file = _env("PKI_ROOT_KEY_FILE", "")
+        self.pki_root_cert_file = _env("PKI_ROOT_CERT_FILE", "")
+        self.pki_ca_key_file = _env("PKI_CA_KEY_FILE", "")
+        self.pki_ca_cert_file = _env("PKI_CA_CERT_FILE", "")
+        # 加密私钥的口令（可选）。ROOT/CA 私钥若带口令，填这里。
+        self.pki_key_password = _env("PKI_KEY_PASSWORD", "") or None
+
+        # 材料缺失时是否自动生成。默认 1（首次启动的 dev 便利）；
+        # 生产应设 0 —— 缺证书就报错，绝不自己造一套。
+        self.pki_auto_create = _env("PKI_AUTO_CREATE", "1") not in (
+            "0",
+            "",
+            "false",
+            "False",
+        )
+        # 提供的 CA 与 ROOT 不成链时是否放行。默认拒绝，避免用错 CA 签发。
+        self.pki_allow_unchained_ca = _env("PKI_ALLOW_UNCHAINED_CA", "0") not in (
+            "0",
+            "",
+            "false",
+            "False",
+        )
         self.pki_root_cn = _env("PKI_ROOT_CN", "WeDesk Root CA")
         self.pki_ca_cn = _env("PKI_CA_CN", "WeDesk Device CA")
         # ed25519 | ec256 | ec384 | rsa2048 | rsa4096

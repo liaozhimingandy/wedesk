@@ -20,9 +20,26 @@ Key material lives in ``PKI_DIR`` as PEM files (default ``/data/pki``)::
     ca.key   / ca.crt      intermediate CA (signs every leaf)
     ca_chain.crt           ca.crt + root.crt — what clients must trust/install
 
-On first start the ROOT and CA are generated automatically (dev convenience).
-In production, mount a pre-generated ROOT/CA or replace the generated ROOT with
-your offline one and keep ``root.key`` out of the container.
+Bringing your own ROOT / CA
+---------------------------
+Put the four files into ``PKI_DIR`` (or point ``PKI_ROOT_CERT_FILE`` /
+``PKI_ROOT_KEY_FILE`` / ``PKI_CA_CERT_FILE`` / ``PKI_CA_KEY_FILE`` at absolute
+paths). They are used as-is and **never overwritten** — that is the whole point:
+clients ship with your ROOT baked in, so silently replacing it would orphan
+every deployed device.
+
+Accepted layouts:
+* separate key + cert files (typical);
+* one combined PEM holding key and certificate (either file name works);
+* ROOT **without** its private key (offline ROOT) — legal, and in fact the
+  recommended production layout. The ROOT key is only needed to mint a new
+  intermediate; as long as ``ca.key`` + ``ca.crt`` are supplied it is never
+  touched.
+
+If material is missing the service generates it (dev convenience), unless
+``PKI_AUTO_CREATE=0``, in which case startup fails loudly with the exact files
+it wants. Generation refuses to write over an existing file, so a half-mounted
+secret can never be clobbered.
 
 Security notes
 --------------
@@ -31,12 +48,17 @@ Security notes
   extension from server-side policy.
 * Serial numbers are random 128-bit and recorded in the database, so revocation
   and CRL generation are exact.
+* A supplied CA is signature-checked against the supplied ROOT. A mismatch means
+  the two files are not a pair; startup refuses rather than issuing leaves under
+  the wrong anchor.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,6 +156,10 @@ def _sign(builder, key):
 
 
 def _write_key(path: Path, key) -> None:
+    if path.exists():
+        # Generation is only ever allowed into an empty slot; hitting this means
+        # two processes raced, or an operator mounted a file after we looked.
+        raise PkiError(f"refusing to overwrite existing private key {path}")
     path.write_bytes(
         key.private_bytes(
             encoding=serialization.Encoding.PEM,
@@ -148,19 +174,136 @@ def _write_key(path: Path, key) -> None:
 
 
 def _write_cert(path: Path, cert: x509.Certificate) -> None:
+    if path.exists():
+        raise PkiError(f"refusing to overwrite existing certificate {path}")
     path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+
+_PEM_BLOCK = re.compile(
+    rb"-----BEGIN ([A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*)-----\r?\n(.*?)\r?\n?-----END \1-----",
+    re.DOTALL,
+)
+_PEM_CERT = re.compile(
+    rb"-----BEGIN CERTIFICATE-----\r?\n(.*?)\r?\n?-----END CERTIFICATE-----", re.DOTALL
+)
+
+
+def _parse_pem_bundle(data: bytes) -> tuple[list[x509.Certificate], list]:
+    """Split a PEM file into certificates and private keys.
+
+    Handles the "one file holds both" layout that plenty of CAs hand out, so an
+    operator does not have to guess which filename we expect.
+    """
+    certs: list[x509.Certificate] = []
+    keys: list = []
+    for match in _PEM_CERT.finditer(data):
+        try:
+            certs.append(
+                x509.load_pem_x509_certificate(
+                    b"-----BEGIN CERTIFICATE-----\n"
+                    + match.group(1)
+                    + b"\n-----END CERTIFICATE-----\n"
+                )
+            )
+        except Exception:
+            continue
+    for match in _PEM_BLOCK.finditer(data):
+        blob = match.group(0)
+        try:
+            keys.append(
+                serialization.load_pem_private_key(
+                    blob, password=settings.pki_key_password
+                )
+            )
+        except TypeError:  # encrypted key but no password configured
+            raise PkiError(
+                "private key is encrypted; set PKI_KEY_PASSWORD (or re-export it "
+                "without a passphrase)"
+            )
+        except Exception:
+            continue
+    return certs, keys
+
+
+def _read_material(path: Path) -> tuple[list[x509.Certificate], list]:
+    return _parse_pem_bundle(path.read_bytes())
 
 
 def _load_cert(path: Path) -> x509.Certificate | None:
     if not path.exists():
         return None
-    return x509.load_pem_x509_certificate(path.read_bytes())
+    certs, _ = _read_material(path)
+    return certs[0] if certs else None
 
 
 def _load_key(path: Path):
     if not path.exists():
         return None
-    return serialization.load_pem_private_key(path.read_bytes(), password=None)
+    _, keys = _read_material(path)
+    return keys[0] if keys else None
+
+
+def _key_matches_cert(key, cert: x509.Certificate) -> bool:
+    try:
+        return key.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ) == cert.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    except Exception:
+        return False
+
+
+# Provenance marker. ``source`` in /api/cert/ca is what tells an operator
+# whether the anchors in use are theirs or something this box invented on a
+# first boot — and that must survive a restart, otherwise the second boot with
+# the same volume would report "provided" and the warning would never fire
+# again. It records the serial we generated; a file whose serial does not match
+# is somebody else's material.
+_ORIGIN_FILE = ".wedesk-pki-origin.json"
+
+
+def _read_origin(base: Path) -> dict:
+    path = base / _ORIGIN_FILE
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_origin(base: Path, stem: str, serial: int) -> None:
+    data = _read_origin(base)
+    data[f"{stem}_serial"] = format(serial, "x")
+    data[f"{stem}_generated_at"] = now().isoformat()
+    (base / _ORIGIN_FILE).write_text(
+        json.dumps(data, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+
+def _locate(explicit: str, base: Path, names: tuple[str, ...], what: str) -> Path | None:
+    """Resolve one material file: explicit env path, else first name that exists.
+
+    An explicitly configured path that does not exist is a hard error rather
+    than a fallback — silently ignoring it would generate a brand new CA and
+    invalidate every certificate the operator thought they had mounted.
+    """
+    if explicit:
+        path = Path(explicit)
+        if not path.exists():
+            raise PkiError(
+                f"{what} was configured at {path} but the file does not exist; "
+                f"mount it or unset the variable"
+            )
+        return path
+    for name in names:
+        path = base / name
+        if path.exists():
+            return path
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +319,35 @@ class IssuedCert:
     not_before: dt.datetime
     not_after: dt.datetime
     subject_cn: str
+
+
+@dataclass
+class CaMaterial:
+    """One CA half (ROOT or intermediate) plus where it came from.
+
+    ``source`` is surfaced through ``/api/cert/ca`` and ``/health`` so an
+    operator can confirm at a glance that their own ROOT — not a generated
+    one — is in use.
+    """
+
+    key: object | None  # None is legal for an offline ROOT (cert only)
+    cert: x509.Certificate
+    source: str  # "provided" | "generated"
+    files: dict
+
+
+def _fail_unchained(root: x509.Certificate, ca: x509.Certificate, why: str) -> None:
+    message = (
+        f"supplied intermediate CA {ca.subject.rfc4514_string()} is not issued by "
+        f"the supplied ROOT {root.subject.rfc4514_string()} ({why})"
+    )
+    if settings.pki_allow_unchained_ca:
+        print(f"[pki][warn] {message} — continuing because PKI_ALLOW_UNCHAINED_CA=1")
+        return
+    raise PkiError(
+        message + "; devices trusting that ROOT will reject every certificate "
+        "issued under this CA. Set PKI_ALLOW_UNCHAINED_CA=1 to override."
+    )
 
 
 def _subject(cn: str) -> x509.Name:
@@ -195,13 +367,19 @@ class Pki:
     """Loads (or creates) ROOT + intermediate CA and signs leaf certificates."""
 
     def __init__(self, root_key, root_cert: x509.Certificate, ca_key, ca_cert: x509.Certificate,
-                 root_pem: str, ca_pem: str):
+                 root_pem: str, ca_pem: str, *, root_source: str = "generated",
+                 ca_source: str = "generated", root_files: dict | None = None,
+                 ca_files: dict | None = None):
         self.root_key = root_key
         self.root_cert = root_cert
         self.ca_key = ca_key
         self.ca_cert = ca_cert
         self.root_pem = root_pem
         self.ca_pem = ca_pem
+        self.root_source = root_source
+        self.ca_source = ca_source
+        self.root_files = root_files or {}
+        self.ca_files = ca_files or {}
 
     # -- construction ------------------------------------------------------
     @classmethod
@@ -210,63 +388,228 @@ class Pki:
         base = Path(directory)
         base.mkdir(parents=True, exist_ok=True)
 
-        root = cls._ensure_ca(
-            base / "root.key",
-            base / "root.crt",
+        # Fail before touching disk: a supplied CA with no ROOT would make us
+        # generate a ROOT first (leaving stray files behind) and only then
+        # discover it cannot vouch for that CA.
+        if (
+            _locate(settings.pki_ca_cert_file, base,
+                    ("ca.crt", "ca.pem", "ca.cert.pem"), "ca.crt")
+            is not None
+            and _locate(settings.pki_root_cert_file, base,
+                        ("root.crt", "root.pem", "root.cert.pem"), "root.crt")
+            is None
+        ):
+            raise PkiError(
+                f"a CA certificate was found in {base} but no ROOT certificate; "
+                f"clients need both halves of the chain. Add root.crt (or set "
+                f"PKI_ROOT_CERT_FILE) — no files were written"
+            )
+
+        root = cls._load_or_create(
+            base,
+            stem="root",
+            key_file=settings.pki_root_key_file,
+            cert_file=settings.pki_root_cert_file,
             cn=settings.pki_root_cn,
             days=settings.pki_root_days,
             path_length=1,
             issuer=None,
         )
-        ca = cls._ensure_ca(
-            base / "ca.key",
-            base / "ca.crt",
+        ca = cls._load_or_create(
+            base,
+            stem="ca",
+            key_file=settings.pki_ca_key_file,
+            cert_file=settings.pki_ca_cert_file,
             cn=settings.pki_ca_cn,
             days=settings.pki_ca_days,
             path_length=0,
             issuer=root,
         )
 
-        root_pem = (base / "root.crt").read_text(encoding="utf-8")
-        ca_pem = (base / "ca.crt").read_text(encoding="utf-8")
-        (base / "ca_chain.crt").write_text(ca_pem.strip() + "\n" + root_pem.strip() + "\n",
-                                           encoding="utf-8")
+        # The intermediate is the only thing that ever signs a leaf, so it must
+        # be usable; a cert-only CA (key kept in an HSM elsewhere) cannot issue.
+        cls._assert_usable_ca(ca)
+
+        # Both supplied -> they must actually be a pair, or we would be handing
+        # out leaves that no client can chain to the ROOT it trusts.
+        if root.cert is not None and ca.cert is not None:
+            if ca.source == "provided" and root.source == "generated":
+                # We just minted a ROOT, so of course it did not sign their CA.
+                # Say that plainly instead of "not issued by the supplied ROOT",
+                # which reads as if the ROOT were the problem.
+                raise PkiError(
+                    f"a CA was supplied ({ca.files.get('cert')}) but no ROOT "
+                    f"certificate was found, so a throwaway ROOT was generated "
+                    f"that cannot vouch for it. Add your root.crt to "
+                    f"{base} (or set PKI_ROOT_CERT_FILE); nothing was overwritten"
+                )
+            cls._assert_chained(root.cert, ca.cert)
+
+        root_pem = cls._pem(root.cert)
+        ca_pem = cls._pem(ca.cert)
+        # Derived file: rewritten whenever the inputs change, never authoritative.
+        chain_path = base / "ca_chain.crt"
+        chain_text = ca_pem.strip() + "\n" + root_pem.strip() + "\n"
+        if not chain_path.exists() or chain_path.read_text(encoding="utf-8") != chain_text:
+            chain_path.write_text(chain_text, encoding="utf-8")
 
         return cls(
-            root_key=root[0], root_cert=root[1],
-            ca_key=ca[0], ca_cert=ca[1],
+            root_key=root.key, root_cert=root.cert,
+            ca_key=ca.key, ca_cert=ca.cert,
             root_pem=root_pem, ca_pem=ca_pem,
+            root_source=root.source, ca_source=ca.source,
+            root_files=root.files, ca_files=ca.files,
         )
 
     @staticmethod
-    def _ensure_ca(key_path: Path, crt_path: Path, *, cn: str, days: int,
-                   path_length: int, issuer: tuple | None):
-        key = _load_key(key_path)
-        cert = _load_cert(crt_path)
-        if key is not None and cert is not None:
-            # Sanity: the on-disk key must match the on-disk certificate.
-            try:
-                same = (
-                    key.public_key().public_bytes(
-                        serialization.Encoding.DER,
-                        serialization.PublicFormat.SubjectPublicKeyInfo,
-                    )
-                    == cert.public_key().public_bytes(
-                        serialization.Encoding.DER,
-                        serialization.PublicFormat.SubjectPublicKeyInfo,
-                    )
-                )
-            except Exception:
-                same = False
-            if same:
-                return key, cert
+    def _pem(cert: x509.Certificate) -> str:
+        return cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
 
-        key = _new_key(settings.pki_key_type)
+    @staticmethod
+    def _assert_usable_ca(ca: "CaMaterial") -> None:
+        if ca.key is None:
+            raise PkiError(
+                f"intermediate CA {ca.files.get('cert', '?')} has no usable private "
+                f"key ({ca.files.get('key', 'ca.key')} missing or unreadable); "
+                f"the CA key is required to issue and renew device certificates"
+            )
+        cert = ca.cert
+        if cert is None:  # pragma: no cover - _load_or_create always yields one
+            raise PkiError("intermediate CA certificate is missing")
+        name = cert.subject.rfc4514_string()
+        try:
+            bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        except Exception:
+            raise PkiError(
+                f"intermediate CA {name} has no BasicConstraints extension; an "
+                f"end-entity certificate cannot sign device certificates"
+            )
+        if not bc.ca:
+            raise PkiError(
+                f"intermediate CA {name} is not a CA (BasicConstraints CA=FALSE)"
+            )
+        try:
+            ku = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+        except Exception:
+            raise PkiError(
+                f"intermediate CA {name} has no KeyUsage extension; refusing to "
+                f"assume keyCertSign"
+            )
+        if not ku.key_cert_sign:
+            raise PkiError(
+                f"intermediate CA {name} lacks keyCertSign and cannot issue "
+                f"certificates"
+            )
+        not_after = cert_not_after(cert)
+        if not_after < now():
+            raise PkiError(
+                f"intermediate CA expired at {not_after.isoformat()}; renew or "
+                f"replace ca.crt before starting the service"
+            )
+
+    @staticmethod
+    def _assert_chained(root: x509.Certificate, ca: x509.Certificate) -> None:
+        """Real signature check that ``ca`` was issued by ``root``."""
+        if ca.issuer != root.subject:
+            _fail_unchained(root, ca, "issuer name does not match the ROOT subject")
+        pub = root.public_key()
+        try:
+            if isinstance(pub, ed25519.Ed25519PublicKey):
+                pub.verify(ca.signature, ca.tbs_certificate_bytes)
+            elif isinstance(pub, ec.EllipticCurvePublicKey):
+                pub.verify(
+                    ca.signature, ca.tbs_certificate_bytes,
+                    ec.ECDSA(ca.signature_hash_algorithm),
+                )
+            elif isinstance(pub, rsa.RSAPublicKey):
+                pub.verify(
+                    ca.signature, ca.tbs_certificate_bytes,
+                    padding.PKCS1v15(), ca.signature_hash_algorithm,
+                )
+            else:
+                _fail_unchained(root, ca, "unsupported ROOT key type")
+        except Exception:
+            _fail_unchained(root, ca, "signature does not verify against the ROOT key")
+
+    @classmethod
+    def _load_or_create(cls, base: Path, *, stem: str, key_file: str, cert_file: str,
+                        cn: str, days: int, path_length: int,
+                        issuer: "CaMaterial | None") -> "CaMaterial":
+        """Use the operator's material when present; only ever fill empty slots.
+
+        Ordering matters: a certificate on disk wins unconditionally. The old
+        implementation regenerated whenever key+cert did not pair up, which
+        silently replaced an offline ROOT (cert mounted, key deliberately
+        withheld) with a brand new self-signed one — invalidating every client
+        that had the real ROOT pinned.
+        """
+        cert_path = _locate(
+            cert_file, base, (f"{stem}.crt", f"{stem}.pem", f"{stem}.cert.pem"),
+            f"{stem}.crt",
+        )
+        key_path = _locate(
+            key_file, base, (f"{stem}.key", f"{stem}.key.pem"), f"{stem}.key"
+        )
+
+        cert = _load_cert(cert_path) if cert_path else None
+        key = _load_key(key_path) if key_path else None
+        # Combined PEM: one file carrying both halves.
+        if cert is None and key_path is not None:
+            certs, _ = _read_material(key_path)
+            if certs:
+                cert = certs[0]
+        if key is None and cert_path is not None:
+            _, keys = _read_material(cert_path)
+            if keys:
+                key = keys[0]
+
+        if cert is not None:
+            if key is not None and not _key_matches_cert(key, cert):
+                # Never "fix" this by regenerating — that is how real key
+                # material gets destroyed. Refuse and let the operator look.
+                raise PkiError(
+                    f"{stem}: the private key at {key_path} does not match the "
+                    f"certificate at {cert_path}; both are left untouched. Point "
+                    f"PKI_{stem.upper()}_KEY_FILE / PKI_{stem.upper()}_CERT_FILE at "
+                    f"a matching pair"
+                )
+            origin = _read_origin(base)
+            mine = origin.get(f"{stem}_serial") == format(cert.serial_number, "x")
+            files = {
+                "cert": str(cert_path) if cert_path else str(key_path),
+                "key": str(key_path) if key_path else "",
+            }
+            return CaMaterial(
+                key=key, cert=cert,
+                source="generated" if mine else "provided",
+                files=files,
+            )
+
+        if not settings.pki_auto_create:
+            raise PkiError(
+                f"{stem}: no certificate found in {base} and PKI_AUTO_CREATE=0. "
+                f"Supply {stem}.crt (and {stem}.key for the CA) or point "
+                f"PKI_{stem.upper()}_CERT_FILE at your file"
+            )
+        if issuer is not None and issuer.key is None:
+            raise PkiError(
+                f"{stem}: the ROOT certificate was supplied without its private "
+                f"key, so a new intermediate cannot be signed. Supply ca.key + "
+                f"ca.crt yourself (PKI_CA_KEY_FILE / PKI_CA_CERT_FILE), or mount "
+                f"root.key temporarily for a one-time CA mint"
+            )
+
+        key = key or _new_key(settings.pki_key_type)
+        crt_target = Path(cert_file) if cert_file else base / f"{stem}.crt"
+        key_target = Path(key_file) if key_file else base / f"{stem}.key"
+        if crt_target.exists() or key_target.exists():  # pragma: no cover - race
+            raise PkiError(f"{stem}: refusing to generate over existing files")
+
         subject = _subject(cn)
         builder = (
             x509.CertificateBuilder()
             .subject_name(subject)
-            .issuer_name(issuer[1].subject if issuer else subject)
+            .issuer_name(issuer.cert.subject if issuer else subject)
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(_naive_utc(now() - dt.timedelta(hours=1)))
@@ -295,15 +638,19 @@ class Pki:
         if issuer is not None:
             builder = builder.add_extension(
                 x509.AuthorityKeyIdentifier.from_issuer_public_key(
-                    issuer[0].public_key()
+                    issuer.key.public_key()
                 ),
                 critical=False,
             )
-        cert = _sign(builder, issuer[0] if issuer else key)
+        cert = _sign(builder, issuer.key if issuer else key)
 
-        _write_key(key_path, key)
-        _write_cert(crt_path, cert)
-        return key, cert
+        _write_key(key_target, key)
+        _write_cert(crt_target, cert)
+        _write_origin(base, stem, cert.serial_number)
+        return CaMaterial(
+            key=key, cert=cert, source="generated",
+            files={"cert": str(crt_target), "key": str(key_target)},
+        )
 
     # -- public material ----------------------------------------------------
     @property
@@ -484,11 +831,17 @@ class Pki:
                 "subject": self.root_cert.subject.rfc4514_string(),
                 "not_after": cert_not_after(self.root_cert).isoformat(),
                 "serial": format(self.root_cert.serial_number, "x"),
+                "source": self.root_source,
+                "files": self.root_files,
+                "has_private_key": self.root_key is not None,
             },
             "ca": {
                 "subject": self.ca_cert.subject.rfc4514_string(),
                 "not_after": cert_not_after(self.ca_cert).isoformat(),
                 "serial": format(self.ca_cert.serial_number, "x"),
+                "source": self.ca_source,
+                "files": self.ca_files,
+                "has_private_key": self.ca_key is not None,
             },
             "leaf_domain": settings.pki_leaf_domain,
             "device_cert_days": settings.pki_device_cert_days,

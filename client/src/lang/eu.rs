@@ -381,7 +381,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("xdp-portal-unavailable", "Wayland-eko pantaila-kapturak huts egin du. Baliteke XDG Desktop Portal kraskatu izana edo erabilgarri ez egotea. Saiatu berrabiarazten `systemctl --user restart xdg-desktop-portal` erabiliz."),
         ("JumpLink", "Ikusi"),
         ("Please Select the screen to be shared(Operate on the peer side).", "Mesedez, hautatu partekatuko den pantaila (Kudeatu parekidearen aldean)"),
-        ("Show RustDesk", "Erakutsi RustDesk"),
+        ("Show WeDesk", "Erakutsi RustDesk"),
         ("This PC", "PC hau"),
         ("or", "edo"),
         ("Elevate", "Igo maila"),

@@ -381,7 +381,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("xdp-portal-unavailable", "Catura de s'ischermu Wayland fallida. Su XDG Desktop Portal diat pòdere èssere blocadu o non disponìbile. Proa a lu torrare a aviare cun `systemctl --user restart xdg-desktop-portal`."),
         ("JumpLink", "Bae a"),
         ("Please Select the screen to be shared(Operate on the peer side).", "Seletziona s'ischermu de cumpartzire (òpera dae s'ala de su dispositivu remotu)."),
-        ("Show RustDesk", "Mustra RustDesk"),
+        ("Show WeDesk", "Mustra RustDesk"),
         ("This PC", "Custu PC"),
         ("or", "O"),
         ("Elevate", "Cresche"),

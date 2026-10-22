@@ -381,7 +381,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("xdp-portal-unavailable", "Wayland-ის ეკრანის ჩაწერა ვერ მოხერხდა. XDG Desktop Portal შესაძლოა ავარიულად დასრულდა ან მიუწვდომელია. სცადეთ მისი გადატვირთვა ბრძანებით `systemctl --user restart xdg-desktop-portal`."),
         ("JumpLink", "ნახვა"),
         ("Please Select the screen to be shared(Operate on the peer side).", "აირჩიეთ ეკრანი გასაზიარებლად (იმუშავეთ პარტნიორის მხარეს)."),
-        ("Show RustDesk", "RustDesk-ის ჩვენება"),
+        ("Show WeDesk", "RustDesk-ის ჩვენება"),
         ("This PC", "ეს კომპიუტერი"),
         ("or", "ან"),
         ("Elevate", "უფლებების აწევა"),

@@ -381,7 +381,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("xdp-portal-unavailable", "Wayland の画面キャプチャに失敗しました。XDG デスクトップポータルがクラッシュしたか、利用できない可能性があります。`systemctl --user restart xdg-desktop-portal` で再起動してみてください。"),
         ("JumpLink", "表示"),
         ("Please Select the screen to be shared(Operate on the peer side).", "共有する画面を選択してください(リモートコンピューターが操作します)"),
-        ("Show RustDesk", "RustDesk を表示"),
+        ("Show WeDesk", "RustDesk を表示"),
         ("This PC", "この PC"),
         ("or", "または"),
         ("Elevate", "昇格"),

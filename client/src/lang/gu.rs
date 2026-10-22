@@ -381,7 +381,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("xdp-portal-unavailable", "XDP પોર્ટલ અનુપલબ્ધ છે"),
         ("JumpLink", "JumpLink"),
         ("Please Select the screen to be shared(Operate on the peer side).", "કૃપા કરીને શેર કરવાની સ્ક્રીન પસંદ કરો (સામેના છેડે કાર્ય કરો)."),
-        ("Show RustDesk", "RustDesk બતાવો"),
+        ("Show WeDesk", "RustDesk બતાવો"),
         ("This PC", "આ PC"),
         ("or", "અથવા"),
         ("Elevate", "એલિવેટ કરો"),

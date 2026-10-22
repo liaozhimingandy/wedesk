@@ -381,7 +381,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("xdp-portal-unavailable", "Nie udało się przechwycić ekranu Wayland. Portal XDG Desktop mógł ulec awarii lub jest niedostępny. Spróbuj go ponownie uruchomić poleceniem `systemctl --user restart xdg-desktop-portal`."),
         ("JumpLink", "Podgląd"),
         ("Please Select the screen to be shared(Operate on the peer side).", "Wybierz ekran do udostępnienia (działaj po zdalnego urządzenia)."),
-        ("Show RustDesk", "Pokaż RustDesk"),
+        ("Show WeDesk", "Pokaż RustDesk"),
         ("This PC", "Ten komputer"),
         ("or", "lub"),
         ("Elevate", "Uzyskaj uprawnienia"),

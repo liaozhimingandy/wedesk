@@ -381,7 +381,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("xdp-portal-unavailable", "Skärminspelning med Wayland misslyckades. XDG Desktop Portal kan ha kraschat eller är otillgänglig. Försök starta om den med `systemctl --user restart xdg-desktop-portal`."),
         ("JumpLink", "JumpLink"),
         ("Please Select the screen to be shared(Operate on the peer side).", "Välj skärm att dela"),
-        ("Show RustDesk", "Visa RustDesk"),
+        ("Show WeDesk", "Visa RustDesk"),
         ("This PC", "Denna dator"),
         ("or", "eller"),
         ("Elevate", "Höj upp"),

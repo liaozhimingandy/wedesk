@@ -1515,6 +1515,51 @@ jobs:
           cp client/flutter/build/app/outputs/bundle/release/app-release.aab "android-out/wedesk-$V-android.aab"
           ls -lh android-out
 
+      # 用户反馈"安装后桌面名称还是 RustDesk"。桌面名称来自 strings.xml 的
+      # app_name（main/AndroidManifest.xml 引用 @string/app_name），仓库里
+      # 早已是 WeDesk——但这类"看不见的名字问题"没有任何校验，靠人眼发现
+      # 太迟。这里做两级硬校验：① 源码级 app_name 必须是 WeDesk；
+      # ② 产物级用 aapt 解析每个 APK 的 application-label，必须恰好是
+      # WeDesk。aapt 路径从 local.properties（flutter 写死的本次构建实际
+      # SDK 路径）动态查找，找不到时降级只做源码级检查并告警。
+      - name: 校验 APK 应用名（WeDesk）
+        shell: bash
+        run: |
+          set -eo pipefail
+          # 1) 源码级
+          APP_NAME=$(sed -n 's/.*<string name="app_name">\(.*\)<\/string>.*/\1/p' client/flutter/android/app/src/main/res/values/strings.xml)
+          echo "strings.xml app_name = '$APP_NAME'"
+          if [ "$APP_NAME" != "WeDesk" ]; then
+            echo "::error::strings.xml 的 app_name 是 '$APP_NAME' 而不是 WeDesk —— 安装后桌面名称会显示错误品牌"
+            exit 1
+          fi
+          # 2) 产物级：定位 aapt（local.properties 里是 C\:\\...\\ 转义形式）
+          SDK_DIR=""
+          if [ -f client/flutter/android/local.properties ]; then
+            SDK_DIR=$(sed -n 's/^sdk.dir=//p' client/flutter/android/local.properties | head -1 | sed 's/\\:/:/g' | sed 's/\\\\/\//g')
+          fi
+          AAPT=""
+          for base in "$SDK_DIR" "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$HOME/Android/Sdk" "/usr/lib/android-sdk"; do
+            [ -n "$base" ] || continue
+            for cand in "$base"/build-tools/*/aapt.exe; do
+              if [ -f "$cand" ]; then AAPT="$cand"; break; fi
+            done
+            [ -n "$AAPT" ] && break
+          done
+          if [ -z "$AAPT" ]; then
+            echo "::warning::未找到 aapt.exe，跳过 APK 产物级应用名校验（源码级已通过）"
+          else
+            echo "aapt: $AAPT"
+            for apk in android-out/*.apk; do
+              LABEL=$("$AAPT" dump badging "$apk" | sed -n "s/^application-label:'\([^']*\)'.*/\1/p" | head -1)
+              echo "$(basename "$apk") -> application-label: '$LABEL'"
+              if [ "$LABEL" != "WeDesk" ]; then
+                echo "::error::$(basename "$apk") 的应用名是 '$LABEL' 而不是 WeDesk —— 安装后桌面名称会显示错误品牌"
+                exit 1
+              fi
+            done
+          fi
+
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:

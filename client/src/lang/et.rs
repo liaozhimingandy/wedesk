@@ -381,7 +381,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("xdp-portal-unavailable", "Wayland ekraani jäädvustamine ebaõnnestus. XDG Desktop Portal võis kokku joosta või pole saadaval. Proovi see taaskäivitada käsuga `systemctl --user restart xdg-desktop-portal`."),
         ("JumpLink", "JumpLink"),
         ("Please Select the screen to be shared(Operate on the peer side).", "Palun vali jagatav ekraan (tegutse partneri poolel)."),
-        ("Show RustDesk", "Kuva RustDesk"),
+        ("Show WeDesk", "Kuva RustDesk"),
         ("This PC", "See arvuti"),
         ("or", "või"),
         ("Elevate", "Tõsta"),

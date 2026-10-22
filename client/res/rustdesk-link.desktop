@@ -2,10 +2,10 @@
 Name=WeDesk
 NoDisplay=true
 MimeType=x-scheme-handler/wedesk;
-TryExec=rustdesk
-Exec=rustdesk %u
-Icon=rustdesk
+TryExec=wedesk
+Exec=wedesk %u
+Icon=wedesk
 Terminal=false
 Type=Application
 StartupNotify=false
-StartupWMClass=rustdesk
+StartupWMClass=wedesk

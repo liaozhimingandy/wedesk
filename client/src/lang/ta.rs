@@ -381,7 +381,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("xdp-portal-unavailable", "Wayland திரைப் பிடிப்பு தோல்வியடைந்தது. XDG Desktop Portal செயலிழந்திருக்கலாம் அல்லது கிடைக்கவில்லை. `systemctl --user restart xdg-desktop-portal` மூலம் அதை மீண்டும் தொடங்க முயற்சிக்கவும்."),
         ("JumpLink", "ஜம்ப் லிங்க்"),
         ("Please Select the screen to be shared(Operate on the peer side).", "பகிரப்பட வேண்டிய திரை தேர்ந்தெடுக்கவும்"),
-        ("Show RustDesk", "RustDesk ஐ காட்டு"),
+        ("Show WeDesk", "RustDesk ஐ காட்டு"),
         ("This PC", "இந்த PC"),
         ("or", "அல்லது"),
         ("Elevate", "உயர்த்து"),

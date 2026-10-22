@@ -381,7 +381,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("xdp-portal-unavailable", "Η καταγραφή οθόνης μέσω Wayland απέτυχε. Το XDG Desktop Portal ενδέχεται να έχει καταρρεύσει ή να μην είναι διαθέσιμο. Δοκιμάστε να το επανεκκινήσετε με `systemctl --user restart xdg-desktop-portal`."),
         ("JumpLink", "Σύνδεσμος μετάβασης"),
         ("Please Select the screen to be shared(Operate on the peer side).", "Επιλέξτε την οθόνη που θέλετε να μοιραστείτε (Λειτουργία στην πλευρά του απομακρυσμένου σταθμού)."),
-        ("Show RustDesk", "Εμφάνιση του RustDesk"),
+        ("Show WeDesk", "Εμφάνιση του RustDesk"),
         ("This PC", "Αυτός ο υπολογιστής"),
         ("or", "ή"),
         ("Elevate", "Ανύψωση"),

@@ -1280,7 +1280,9 @@ pub fn main_set_env(key: String, value: Option<String>) -> SyncReturn<()> {
 pub fn main_set_local_option(key: String, value: String) {
     let is_texture_render_key = key.eq(keys::OPTION_TEXTURE_RENDER);
     let is_d3d_render_key = key.eq(keys::OPTION_ALLOW_D3D_RENDER);
-    set_local_option(key, value.clone());
+    // 注意：set_local_option 接收 String 所有权（会 move key），此处用 clone 保留
+    // key 供下方开机自启判断复用，否则会触发 E0382 borrow of moved value。
+    set_local_option(key.clone(), value.clone());
     // 开机自启动（无人值守）：本地选项落库后同步系统自启项。
     // 写注册表失败时不回滚选项，仅记日志——UI 下次读取的是注册表同步后的
     // 真实状态由 optGetter 保证不了，但失败场景（路径无效等）极少见。

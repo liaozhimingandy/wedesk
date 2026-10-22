@@ -16,8 +16,9 @@ from sqlalchemy import text
 from .config import settings
 from .database import engine, Base, get_db, manual_session
 from . import models  # noqa: F401  (register all ORM models on Base.metadata)
-from . import auth
+from . import auth, pki
 from .routers import account, device, audit, addressbook, users, peers, devices
+from .routers import cert, mtls_api
 
 
 @asynccontextmanager
@@ -45,6 +46,16 @@ async def lifespan(app: FastAPI):
 
     os.makedirs(settings.record_dir, exist_ok=True)
 
+    # PKI (ROOT -> CA -> leaf). Generates ROOT/CA on first boot if PKI_DIR is
+    # empty; in production mount your offline ROOT and keep root.key out.
+    try:
+        ca = pki.get()
+        app.state.pki_ready = True
+        app.state.pki_info = ca.info()
+    except Exception as exc:  # pragma: no cover - misconfigured PKI_DIR
+        app.state.pki_ready = False
+        app.state.pki_error = str(exc)
+
     yield
 
 
@@ -65,6 +76,8 @@ app.include_router(addressbook.router)
 app.include_router(users.router)
 app.include_router(peers.router)
 app.include_router(devices.router)
+app.include_router(cert.router)
+app.include_router(mtls_api.router)
 
 
 @app.get("/health")
@@ -72,9 +85,15 @@ def health():
     try:
         with manual_session() as db:
             db.execute(text("select 1"))
-        return {"status": "ok", "db": "up"}
+        db_state = "up"
     except Exception as e:  # pragma: no cover
-        return {"status": "degraded", "db": "down", "error": str(e)}
+        db_state = f"down: {e}"
+    return {
+        "status": "ok" if db_state == "up" else "degraded",
+        "db": db_state,
+        "pki": getattr(app.state, "pki_ready", False),
+        "pki_error": getattr(app.state, "pki_error", ""),
+    }
 
 
 @app.get("/")

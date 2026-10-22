@@ -199,6 +199,98 @@ class AdminDeployToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class AdminDeviceCert(Base):
+    """Leaf certificate issued to a device (``cert_type="device"``) or to the
+    mobile app (``cert_type="app"``).
+
+    ``spki_fingerprint`` is the SHA-256 of the DER SubjectPublicKeyInfo: it is
+    stable across renewals that keep the same key pair, which is what the mTLS
+    layer uses to bind a connection to a record even when the serial changed.
+    """
+
+    __tablename__ = "admin_device_certs"
+    __table_args__ = (
+        UniqueConstraint("serial", name="uq_device_cert_serial"),
+    )
+
+    serial = Column(String(64), primary_key=True)  # hex, as printed in the cert
+    device_id = Column(String(100), nullable=False, index=True)
+    cert_type = Column(String(16), nullable=False, default="device")  # device | app
+    subject_cn = Column(String(255), default="")
+    spki_fingerprint = Column(String(128), nullable=False, index=True)
+    certificate = Column(Text, default="")  # PEM, kept for audit / re-download
+    status = Column(String(16), default="active")  # active|superseded|revoked|expired
+    not_before = Column(DateTime(timezone=True), nullable=True)
+    not_after = Column(DateTime(timezone=True), nullable=True)
+    issued_at = Column(DateTime(timezone=True), server_default=func.now())
+    renewed_from = Column(String(64), default="")
+    superseded_by = Column(String(64), default="")
+    renew_count = Column(Integer, default=0)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoke_reason = Column(String(64), default="")
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    last_seen_ip = Column(String(64), default="")
+    created_by = Column(String(64), default="")  # admin guid | activate | renew
+
+
+class AdminActivationToken(Base):
+    """Single-use token that authorises a *first* certificate request over
+    one-way HTTPS (``/api/device/activate``, ``/api/app/activate``).
+
+    Minted by an admin (or by the provisioning line) and burned on first use,
+    so a leaked token cannot be replayed and cannot be re-used to re-activate a
+    device that already holds a live certificate.
+    """
+
+    __tablename__ = "admin_activation_tokens"
+
+    token = Column(String(64), primary_key=True)
+    device_id = Column(String(100), nullable=False, index=True)
+    cert_type = Column(String(16), nullable=False, default="device")
+    used = Column(Boolean, default=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    used_serial = Column(String(64), default="")
+    allow_reissue = Column(Boolean, default=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(String(64), default="")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AdminCertNonce(Base):
+    """Replay guard for proof-of-possession signatures.
+
+    Deleting a nonce is what marks it consumed, so the primary key doubles as
+    the "already used" flag; expired rows are purged opportunistically.
+    """
+
+    __tablename__ = "admin_cert_nonces"
+
+    nonce = Column(String(64), primary_key=True)
+    subject = Column(String(100), default="", index=True)  # device_id or ""
+    used = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class AdminDeviceCommand(Base):
+    """Command queue for ``/api/app/control`` -> ``/api/device/commands``.
+
+    The app enqueues, the device pulls. Payload is opaque JSON to the server.
+    """
+
+    __tablename__ = "admin_device_commands"
+
+    guid = Column(String(36), primary_key=True, default=_uuid)
+    device_id = Column(String(100), nullable=False, index=True)
+    cmd = Column(String(64), nullable=False)
+    payload = Column(JSON, default=lambda: {})
+    created_by = Column(String(100), default="")  # app id that enqueued it
+    status = Column(String(16), default="pending")  # pending|sent|done|failed
+    result = Column(Text, default="")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class AdminOidcState(Base):
     __tablename__ = "admin_oidc_states"
 

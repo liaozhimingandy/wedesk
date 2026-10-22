@@ -104,3 +104,53 @@ class DeployRequest(BaseModel):
     id: str = ""
     uuid: str = ""
     pk: str = ""
+
+
+# ---------------------------------------------------------------------------
+# PKI: device/app certificates
+# ---------------------------------------------------------------------------
+class ActivateRequest(BaseModel):
+    """``POST /api/device/activate`` / ``POST /api/app/activate`` (one-way HTTPS).
+
+    ``csr`` is a PEM PKCS#10 request whose private key never leaves the device.
+    ``token`` is the single-use activation token minted by an admin.
+    ``timestamp``/``nonce``/``signature`` are the optional proof of possession
+    over ``activation_canonical(device_id, csr, timestamp, nonce)``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+    device_id: str = ""
+    csr: str = ""
+    token: str = ""
+    uuid: str = ""
+    timestamp: str = ""
+    nonce: str = ""
+    signature: str = ""
+
+
+class RenewRequest(BaseModel):
+    """``POST /api/cert/renew`` (mTLS).
+
+    ``device_id`` is ignored on purpose: the identity comes from the client
+    certificate, so a renewal can never widen its own scope.
+    """
+
+    model_config = ConfigDict(extra="allow")
+    csr: str = ""
+    device_id: str = ""
+
+
+class ActivationTokenRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    device_id: str = ""
+    cert_type: str = "device"  # device | app
+    ttl_hours: int = 24
+    allow_reissue: bool = False
+
+
+class RevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    serial: str = ""
+    device_id: str = ""
+    cert_type: str = ""
+    reason: str = "unspecified"

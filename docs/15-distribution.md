@@ -157,3 +157,44 @@ sha256sum -c SHA256SUMS.txt
 - **运维发布清单**：更新 update.json 时给对应平台条目加上 `"version_code": <n>`，
   取值 = 该平台最近一次成功构建的 run_number（构建摘要里会打印）。**构建号必须
   递增**，否则已装高构建号的客户端收不到更新提示。
+
+---
+
+## 八、构建时间（BUILD_DATE）规范
+
+产物里写死的"构建时间"来自编译期生成的 `BUILD_DATE`（关于页、`wedesk.exe --build-date`、
+MSI 控制面板"安装日期"都读它），由两处生成：
+
+- Rust 侧：`client/libs/hbb_common/src/lib.rs` 的 `gen_version()` → 写 `BUILD_DATE`；
+- MSI 侧：`client/res/msi/preprocess.py` 的 `g_build_date` → 写 MSI `BuildDate`。
+
+**约定（⚠️ 必须遵守）：构建时间一律由源码层按北京时间（UTC+8）生成，不要改回依赖 runner 时区。**
+
+```rust
+// client/libs/hbb_common/src/lib.rs —— gen_version()
+let build_date = format!("{}", (chrono::Utc::now() + chrono::Duration::hours(8))
+    .format("%Y-%m-%d %H:%M"));
+```
+
+```python
+# client/res/msi/preprocess.py
+g_build_date = (datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+```
+
+### 为什么不能靠"改 runner 时区"
+- Linux / macOS runner：靠顶层 env `TZ=Asia/Shanghai` 即可让 `Local::now()` / `datetime.now()` 变北京时间。
+- **Windows runner：忽略 `TZ` 环境变量**，必须 `tzutil /s "China Standard Time"` 改系统时区才生效。
+- **致命点**：`BUILD_DATE` 不是生成一次就完——`client/build.rs` 在**每个平台 job 各自重新生成**
+  （Windows 在 Windows runner，Android/iOS/Linux/macOS 在各自 runner）。靠 runner 时区就要求
+  **每一个构建 job 都配对时区配置**，漏一个平台就会静默退回 UTC 且不会报错；以后新增 job 或换
+  runner 镜像也会悄悄失效。
+- 源码层 `Utc+8` 对所有平台一视同仁、自解释、不随配置漂移失效。中国不实行夏令时，`+8h` 恒正确。
+
+### 配套项
+- `build-windows.yml` 顶层 `env` 保留 `TZ: "Asia/Shanghai"`（仅让 Linux 日志 / `date` 显示北京时间，
+  不影响构建时间本身；Windows 上它不生效，但留着无害且表意清晰）。
+- 运行期时间（录屏文件名、连接时间戳等）保持机器本地时区，不在此列。
+
+> 备注：曾短暂试过"改 Windows runner 时区（`tzutil` 步骤）+ 回退源码"的方案，因上述跨 job
+> 漂移风险已放弃，回到源码层 `Utc+8`。后续若再看到构建时间变 UTC，先回看本条。

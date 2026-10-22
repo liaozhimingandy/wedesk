@@ -485,6 +485,43 @@ pub fn uninstall_service(show_new_window: bool, sync: bool) -> bool {
     true
 }
 
+/// 仅停止服务（不卸载、不退出 GUI）。
+///
+/// 用于关闭“允许控制本设备”：unload 守护进程与代理，使其不再接受远控连接，
+/// 且不再调用 uninstall_service（其末尾 quit_gui() 会退出 GUI，表现为闪退重开）。
+/// 失败不致命：stop-service=Y 已置位，rendezvous mediator 会跳过监听。
+pub fn stop_service() {
+    log::info!("Stopping service (keep installed)...");
+    crate::ipc::set_option("stop-service", "Y");
+    let full = crate::get_full_name();
+    for label in [format!("{full}_service"), format!("{full}_server")] {
+        let _ = std::process::Command::new("launchctl")
+            .args(["unload", &format!("/Library/LaunchDaemons/{label}.plist")])
+            .status();
+        let _ = std::process::Command::new("launchctl")
+            .args(["unload", &format!("/Library/LaunchAgents/{label}.plist")])
+            .status();
+    }
+}
+
+/// 仅启动服务（不重装、不退出 GUI）。
+///
+/// 用于开启“允许控制本设备”：load 守护进程与代理，恢复可远控，且不再因
+/// install/uninstall 的副作用导致客户端闪退。
+pub fn start_service() {
+    log::info!("Starting service (keep installed)...");
+    crate::ipc::set_option("stop-service", "");
+    let full = crate::get_full_name();
+    for label in [format!("{full}_service"), format!("{full}_server")] {
+        let _ = std::process::Command::new("launchctl")
+            .args(["load", &format!("/Library/LaunchDaemons/{label}.plist")])
+            .status();
+        let _ = std::process::Command::new("launchctl")
+            .args(["load", &format!("/Library/LaunchAgents/{label}.plist")])
+            .status();
+    }
+}
+
 pub fn get_cursor_pos() -> Option<(i32, i32)> {
     unsafe {
         let e = CGEventCreate(0 as _);

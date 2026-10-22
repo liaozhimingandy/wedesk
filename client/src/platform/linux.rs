@@ -2762,6 +2762,38 @@ pub fn install_service() -> bool {
     true
 }
 
+/// 仅停止服务（不卸载、不退出进程）。
+///
+/// 用于关闭“允许控制本设备”：服务停止后本机不再可被远控，且不再调用末尾带
+/// std::process::exit(0) 的 uninstall_service，避免客户端闪退。
+pub fn stop_service() {
+    if !has_cmd("systemctl") {
+        return;
+    }
+    let app_name = crate::get_app_name().to_lowercase();
+    Config::set_option("stop-service".into(), "Y".into());
+    log::info!("Stopping service (keep installed)...");
+    if !run_cmds_privileged(&format!("systemctl stop {app_name}")) {
+        log::debug!("stop service failed");
+    }
+}
+
+/// 仅启动服务（不重装、不退出进程）。
+///
+/// 用于开启“允许控制本设备”：服务恢复运行，本机可被远控，且不再因 install_service
+/// 的副作用导致客户端闪退。同时 enable，使重启后仍能自动拉起。
+pub fn start_service() {
+    if !has_cmd("systemctl") {
+        return;
+    }
+    let app_name = crate::get_app_name().to_lowercase();
+    Config::set_option("stop-service".into(), "".into());
+    log::info!("Starting service (keep installed)...");
+    if !run_cmds_privileged(&format!("systemctl enable {app_name}; systemctl start {app_name}")) {
+        log::debug!("start service failed");
+    }
+}
+
 fn check_if_stop_service() {
     if Config::get_option("stop-service".into()) == "Y" {
         let app_name = crate::get_app_name().to_lowercase();

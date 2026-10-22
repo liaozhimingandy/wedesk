@@ -424,8 +424,14 @@ pub fn set_option(key: String, value: String) {
     if &key == "stop-service" {
         #[cfg(target_os = "macos")]
         {
-            let is_stop = value == "Y";
-            if is_stop && crate::platform::uninstall_service(true, false) {
+            // 仅启动/停止服务，不再卸载/重装：
+            // 原 uninstall_service 末尾 quit_gui() 会退出 GUI，表现为闪退重开。
+            if crate::platform::is_installed() {
+                if value == "Y" {
+                    crate::platform::stop_service();
+                } else {
+                    crate::platform::start_service();
+                }
                 return;
             }
         }
@@ -445,15 +451,13 @@ pub fn set_option(key: String, value: String) {
         }
         #[cfg(target_os = "linux")]
         {
+            // 仅启动/停止服务，不再卸载/重装：
+            // 原 uninstall_service 末尾 std::process::exit(0) 会导致闪退重开。
             if crate::platform::is_installed() {
                 if value == "Y" {
-                    if crate::platform::uninstall_service(true, false) {
-                        return;
-                    }
+                    crate::platform::stop_service();
                 } else {
-                    if crate::platform::install_service() {
-                        return;
-                    }
+                    crate::platform::start_service();
                 }
                 return;
             }

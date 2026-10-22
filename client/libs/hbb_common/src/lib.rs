@@ -237,8 +237,12 @@ pub fn gen_version() {
             break;
         }
     }
-    // generate build date
-    let build_date = format!("{}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
+    // 生成构建时间（北京时间 UTC+8，中国不实行夏令时，故恒为 +8h）。
+    // 不要用 Local::now()：CI 运行器默认 UTC，会导致产物里的时间是 UTC 而非北京时间。
+    let build_date = format!(
+        "{}",
+        (chrono::Utc::now() + chrono::Duration::hours(8)).format("%Y-%m-%d %H:%M")
+    );
     file.write_all(
         format!("#[allow(dead_code)]\npub const BUILD_DATE: &str = \"{build_date}\";\n").as_bytes(),
     )

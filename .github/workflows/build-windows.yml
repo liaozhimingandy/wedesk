@@ -99,6 +99,12 @@ env:
   PYTHONIOENCODING: "utf-8"
   # 同时关掉"没找到 .pyc 就写一份"的告警噪音（可选，顺手）
   PYTHONDONTWRITEBYTECODE: "1"
+  # ---- 时区 ----
+  # 让 Linux runner 上的 date/日志等命令使用北京时间；构建产物里的 BuildDate
+  # 由源码显式按 UTC+8 生成（见 hbb_common/src/lib.rs 与 res/msi/preprocess.py），
+  # 此处仅作为兜底与意图声明。注意：Windows runner 忽略 TZ 环境变量，
+  # 故构建时间正确性的真正保证来自源码层的 UTC+8 计算。
+  TZ: "Asia/Shanghai"
 
   # ---- 版本锁定，全部对齐上游 CI，改动前请先确认上游 flutter-build.yml ----
   RUST_VERSION: "1.75" # 1.78 有 i128 ABI 变更，会导致 sciter/bridge 不兼容

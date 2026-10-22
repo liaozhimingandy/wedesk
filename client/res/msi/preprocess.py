@@ -15,7 +15,9 @@ from xml.sax.saxutils import quoteattr
 
 g_indent_unit = "\t"
 g_version = ""
-g_build_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+# 构建时间统一用北京时间（UTC+8，中国不实行夏令时，故恒为 +8h）。
+# 不能用 datetime.now()：CI 运行器默认 UTC，会导致安装包里的 BuildDate 是 UTC。
+g_build_date = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
 
 # Replace the following links with your own in the custom arp properties.
 # https://learn.microsoft.com/en-us/windows/win32/msi/property-reference

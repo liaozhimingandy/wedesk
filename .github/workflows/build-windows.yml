@@ -895,15 +895,35 @@ jobs:
           rm -rf "$STAGE"
           mkdir -p "$STAGE/driver" "$STAGE/adapter"
 
-          curl -L --fail -o "$STAGE/driver.zip"    "$BASE/rustdesk_printer_driver_v4-1.4.zip"
-          curl -L --fail -o "$STAGE/adapter.zip"   "$BASE/printer_driver_adapter.zip"
-          curl -L --fail -o "$STAGE/sha256sums"    "$BASE/sha256sums"
-          sum_driver=$(awk '$2=="*rustdesk_printer_driver_v4-1.4.zip"{print $1}' "$STAGE/sha256sums")
-          sum_adapter=$(awk '$2=="*printer_driver_adapter.zip"{print $1}' "$STAGE/sha256sums")
-          [ -n "$sum_driver" ] || { echo "::error::sha256sums 里没有 rustdesk_printer_driver_v4-1.4.zip 的条目（上游资源变了）"; exit 1; }
-          [ -n "$sum_adapter" ] || { echo "::error::sha256sums 里没有 printer_driver_adapter.zip 的条目（上游资源变了）"; exit 1; }
-          [ "$(sha256sum "$STAGE/driver.zip"  | cut -d' ' -f1)" = "$sum_driver" ]   || { echo "::error::驱动 zip 校验和不匹配"; exit 1; }
-          [ "$(sha256sum "$STAGE/adapter.zip" | cut -d' ' -f1)" = "$sum_adapter" ] || { echo "::error::适配层 zip 校验和不匹配"; exit 1; }
+          # 下载 + 校验，失败整轮重下（最多 3 轮）。
+          # 教训（run 93，2026-10-22）：release 资产走 CDN，runner 上偶发下载被
+          # 截断 —— zip 只有 34KB 也照样缺斤短两，sha256 不匹配。原先不带重试，
+          # 一次网络抖动整个驱动就静默缺包（continue-on-error 把步骤标成
+          # success，只有"核对打印机驱动"步骤里的 warning 能看出来）。
+          fetch_verify() {
+            local attempt
+            for attempt in 1 2 3; do
+              curl -L --fail --retry 5 --retry-all-errors --connect-timeout 15 -o "$STAGE/driver.zip"  "$BASE/rustdesk_printer_driver_v4-1.4.zip" \
+                && curl -L --fail --retry 5 --retry-all-errors --connect-timeout 15 -o "$STAGE/adapter.zip" "$BASE/printer_driver_adapter.zip" \
+                && curl -L --fail --retry 5 --retry-all-errors --connect-timeout 15 -o "$STAGE/sha256sums"  "$BASE/sha256sums" \
+                || { echo "第 $attempt 轮下载失败（exit $?），清掉重下..."; rm -f "$STAGE/driver.zip" "$STAGE/adapter.zip" "$STAGE/sha256sums"; continue; }
+
+              sum_driver=$(awk '$2=="*rustdesk_printer_driver_v4-1.4.zip"{print $1}' "$STAGE/sha256sums")
+              sum_adapter=$(awk '$2=="*printer_driver_adapter.zip"{print $1}' "$STAGE/sha256sums")
+              [ -n "$sum_driver" ] || { echo "::error::sha256sums 里没有 rustdesk_printer_driver_v4-1.4.zip 的条目（上游资源变了）"; exit 1; }
+              [ -n "$sum_adapter" ] || { echo "::error::sha256sums 里没有 printer_driver_adapter.zip 的条目（上游资源变了）"; exit 1; }
+              if [ "$(sha256sum "$STAGE/driver.zip"  | cut -d' ' -f1)" = "$sum_driver" ] \
+                 && [ "$(sha256sum "$STAGE/adapter.zip" | cut -d' ' -f1)" = "$sum_adapter" ]; then
+                echo "✓ 两个 zip 校验通过（第 $attempt 轮）"
+                return 0
+              fi
+              echo "第 $attempt 轮 sha256 校验不匹配（多半是下载被截断），清掉重下..."
+              rm -f "$STAGE/driver.zip" "$STAGE/adapter.zip" "$STAGE/sha256sums"
+            done
+            echo "::error::驱动 zip 连续 3 轮校验不匹配 —— 若复现请到 rustdesk/hbb_common 的 driver release 核对资产是否被更换"
+            return 1
+          }
+          fetch_verify
 
           unzip -q -o "$STAGE/driver.zip"  -d "$STAGE/driver"
           unzip -q -o "$STAGE/adapter.zip" -d "$STAGE/adapter"

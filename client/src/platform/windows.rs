@@ -3443,6 +3443,41 @@ pub fn install_service() -> bool {
     std::process::exit(0);
 }
 
+/// 仅停止服务（不卸载、不重装、不退出进程）。
+///
+/// 用于关闭“允许控制本设备”：服务停止后本机不再可被远控，且由于不再调用
+/// 末尾带 std::process::exit(0) 的 uninstall_service，客户端进程不会闪退并重开窗口。
+pub fn stop_service() {
+    log::info!("Stopping service (keep installed)...");
+    Config::set_option("stop-service".into(), "Y".into());
+    let app_name = crate::get_app_name();
+    let cmds = format!(
+        "chcp 65001\nsc stop {app_name}",
+        app_name = app_name,
+    );
+    if let Err(err) = run_cmds(cmds, false, "stop_service") {
+        // 失败不致命：配置已置为 stop-service=Y，rendezvous mediator 会跳过监听。
+        log::debug!("stop service failed: {err}");
+    }
+}
+
+/// 仅启动服务（不重装、不退出进程）。
+///
+/// 用于开启“允许控制本设备”：服务恢复运行，本机可被远控，且不再因 install_service
+/// 末尾的 std::process::exit(0) 导致客户端闪退并重开窗口。
+pub fn start_service() {
+    log::info!("Starting service (keep installed)...");
+    Config::set_option("stop-service".into(), "".into());
+    let app_name = crate::get_app_name();
+    let cmds = format!(
+        "chcp 65001\nsc start {app_name}",
+        app_name = app_name,
+    );
+    if let Err(err) = run_cmds(cmds, false, "start_service") {
+        log::debug!("start service failed: {err}");
+    }
+}
+
 /// Calculate the total size of a directory in KB
 /// Does not follow symlinks to prevent directory traversal attacks.
 fn get_directory_size_kb(path: &str) -> u64 {

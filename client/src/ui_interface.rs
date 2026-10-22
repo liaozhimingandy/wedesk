@@ -429,7 +429,21 @@ pub fn set_option(key: String, value: String) {
                 return;
             }
         }
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        #[cfg(target_os = "windows")]
+        {
+            // 仅启动/停止服务，不再卸载/重装：
+            // 原 uninstall_service / install_service 末尾都会 std::process::exit(0)，
+            // 导致切换“允许控制本设备”时客户端进程退出并重开窗口（表现为闪退）。
+            if crate::platform::is_installed() {
+                if value == "Y" {
+                    crate::platform::stop_service();
+                } else {
+                    crate::platform::start_service();
+                }
+                return;
+            }
+        }
+        #[cfg(target_os = "linux")]
         {
             if crate::platform::is_installed() {
                 if value == "Y" {

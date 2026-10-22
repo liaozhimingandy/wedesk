@@ -20,6 +20,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -376,6 +378,60 @@ msg = expect_error(d, "no ROOT")
 check("no ROOT" in msg, f"提示缺少 ROOT：{msg[:80]}")
 check(not (d / "root.crt").exists(), "没有先生成一套临时 ROOT 再失败")
 check(not (d / "root.key").exists(), "没有留下无主的 root.key")
+
+
+# ---------------------------------------------------------------------------
+# L. the documented deployment model, end to end through tools/pki_init.py:
+#    ROOT cert -> device (trust anchor) + server (cert only, key stays offline)
+#    CA cert+key -> server (the signer)
+# ---------------------------------------------------------------------------
+_case = "L 离线工具产出 → 服务端采用 → 叶子链回内置 ROOT"
+print(f"\n[{_case}]")
+tool = Path(__file__).resolve().parents[1] / "tools" / "pki_init.py"
+out = Path(_TMP, "L-out")
+proc = subprocess.run(
+    [sys.executable, str(tool), "--out-dir", str(out)],
+    capture_output=True, text=True,
+)
+check(proc.returncode == 0, f"pki_init.py 生成成功（{proc.stderr[-120:] if proc.returncode else 'ok'}）")
+check((out / "device" / "root.crt").exists(), "产出 device/root.crt（内置信任锚）")
+check((out / "offline" / "root.key").exists(), "产出 offline/root.key（离线保管）")
+check(not (out / "server" / "root.key").exists(),
+      "server 目录里没有 root.key（服务端不需要 ROOT 私钥）")
+
+obj = boot(out / "server")
+check(obj.root_source == "provided", "服务端 ROOT 为 provided")
+check(obj.ca_source == "provided", "服务端 CA 为 provided")
+check(obj.root_key is None, "服务端加载不到 ROOT 私钥（符合离线模型）")
+check(obj.ca_key is not None, "服务端持有 CA 私钥（要签发）")
+
+device_root = x509.load_pem_x509_certificate((out / "device" / "root.crt").read_bytes())
+check(obj.root_cert.fingerprint(hashes.SHA256()) == device_root.fingerprint(hashes.SHA256()),
+      "服务端持有的 ROOT 与设备端内置的是同一张")
+leaf_key = ec.generate_private_key(ec.SECP256R1())
+issued = obj.issue(make_leaf_csr(leaf_key, "123456789012"), device_id="123456789012",
+                   cert_type="device", days=90)
+leaf = x509.load_pem_x509_certificate(issued.certificate_pem.encode())
+check(chained(leaf, obj.ca_cert, device_root),
+      "签发的设备证书能链回设备端内置的 ROOT")
+
+verify = subprocess.run(
+    [sys.executable, str(tool), "--check", str(out / "server")],
+    capture_output=True, text=True,
+)
+check(verify.returncode == 0, "--check 认可该目录可作为 PKI_DIR")
+check("符合部署模型" in verify.stdout, "--check 明确报告符合部署模型")
+
+# A server directory that wrongly contains the ROOT key must be flagged.
+d = fresh_dir("L-bad")
+shutil.copytree(out / "server", d, dirs_exist_ok=True)
+shutil.copy(out / "offline" / "root.key", d / "root.key")
+verify2 = subprocess.run(
+    [sys.executable, str(tool), "--check", str(d)],
+    capture_output=True, text=True,
+)
+check(verify2.returncode == 1, "ROOT 私钥混进服务端目录时 --check 报警（退出码 1）")
+check("ROOT 私钥" in verify2.stdout, "报警文案指出 ROOT 私钥不应在此")
 
 
 print("\n" + "=" * 60)

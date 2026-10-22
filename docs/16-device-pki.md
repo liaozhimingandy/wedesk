@@ -53,10 +53,26 @@ ca_chain.crt          ca.crt + root.crt —— 客户端要信任/安装的就�
 生成——而且只在 `PKI_AUTO_CREATE=1`（默认）时才生成。判断顺序是：
 证书文件存在 → 直接采用；只有空槽位才填。
 
-放进去即可（四种文件都是 PEM）：
+### 2.1.1 部署模型（本项目的约定）
 
 ```
-PKI_DIR/root.crt          你的 ROOT 证书（root.key 可以没有，离线 ROOT 正是推荐形态）
+ROOT
+ ├─ 证书  ──> ① 内置进设备端/客户端（唯一信任锚，建议做证书固定）
+ │          └─ ② 也放一份到服务端 PKI_DIR（用于下发 chain，只此一份证书）
+ └─ 私钥  ──> 离线保管，绝不进容器/镜像；只有将来签新的中间 CA 才用得到
+
+CA（中间 CA）
+ ├─ 证书 + 私钥 ──> 只给服务端。它是真正签发每张设备证书的那把钥匙
+```
+
+**给到 FastAPI 的只有三样：`root.crt`（仅证书）、`ca.crt`、`ca.key`。**
+服务端不需要、也不应该持有 `root.key`——ROOT 私钥唯一用途是签新的中间 CA，
+而这发生在下面的一次性离线初始化里。
+
+放进去即可（都是 PEM）：
+
+```
+PKI_DIR/root.crt          你的 ROOT 证书（不需要 root.key）
 PKI_DIR/ca.crt + ca.key   你的中间 CA —— 必须带私钥，否则签不了叶子
 ```
 
@@ -98,6 +114,49 @@ curl https://admin.example.com/api/cert/ca      # 公开
 会打一行 `[pki] WARNING: using generated CA material`。来源靠
 `.wedesk-pki-origin.json` 记录序列号，重启后依然如实上报——不会出现"第一次
 自动生成、重启后伪装成 provided"。
+
+### 2.1.2 离线初始化：怎么产出这套材料
+
+用 `admin/tools/pki_init.py`（只需 `cryptography`，不依赖服务在运行）：
+
+```bash
+python admin/tools/pki_init.py --out-dir ./pki-out
+```
+
+产出的目录按**去向**分好，照着搬即可：
+
+```
+pki-out/
+  device/root.crt      → 内置到设备端/客户端（信任锚；建议连同 SHA256 指纹做固定）
+  server/root.crt      → 服务端 PKI_DIR
+  server/ca.crt        → 服务端 PKI_DIR
+  server/ca.key        → 服务端 PKI_DIR（唯一需要保密进容器的私钥）
+  server/ca_chain.crt  → 服务端 PKI_DIR（派生文件，可自动重建）
+  offline/root.key     → 离线保管，【绝不】进容器
+```
+
+脚本会打印 ROOT 的 SHA256 指纹，直接拿去做客户端证书固定。默认密钥：
+ROOT `ec384` / 20 年，CA `ec256` / 10 年（`--root-key-type` `--ca-key-type`
+`--root-days` `--ca-days` 可改）。**默认拒绝覆盖已有文件**，重跑需 `--force`。
+
+已经有 ROOT、只想签一个新的中间 CA（ROOT 私钥只用这一次，用完删掉即可）：
+
+```bash
+python admin/tools/pki_init.py --out-dir ./pki-out \
+    --root-cert ./my-root.crt --root-key ./my-root.key
+```
+
+挂进容器之前先自检一遍：
+
+```bash
+python admin/tools/pki_init.py --check ./pki-out/server
+```
+
+它会真加载一遍并报告：
+
+- `符合部署模型：ROOT 仅证书（私钥离线）+ CA 证书与私钥配套`
+- 若 `root.key` 被误放进该目录 → **退出码 1** 并提示"ROOT 私钥也在这个目录里"
+- 若缺 CA 私钥 / CA 与 ROOT 不成链 / 文件损坏 → 退出码 1 并给具体原因
 
 ---
 
@@ -279,14 +338,18 @@ PKI_DIR=/data/pki                 # 需要持久化，否则每次重启都换 C
 PKI_CRL_URL=https://admin.example.com/api/cert/crl   # 可选，写进证书的 CDP
 ```
 
-生产环境再加这两条（用你自己的 ROOT/CA，且不允许自动生成）：
+生产环境再加这些（用你自己的 ROOT/CA，且不允许自动生成）：
 
 ```bash
 PKI_AUTO_CREATE=0                          # 缺证书就停机报错，绝不自己造一套
-PKI_CA_KEY_FILE=/run/secrets/ca.key        # CA 私钥走 secret 挂载，不进镜像
-PKI_ROOT_CERT_FILE=/etc/wedesk/root.crt    # ROOT 只要证书（离线 ROOT）
+PKI_ROOT_CERT_FILE=/etc/wedesk/root.crt    # ROOT 只要证书（私钥离线）
 PKI_CA_CERT_FILE=/etc/wedesk/ca.crt
+PKI_CA_KEY_FILE=/run/secrets/ca.key        # CA 私钥走 secret 挂载，不进镜像
 ```
+
+`server/` 三个文件也可以直接丢进 `PKI_DIR` 而不逐个指定路径。注意
+`server/root.crt` 与设备端内置的 `device/root.crt` **必须是同一张**（同一
+序列号），否则设备校验 chain 时会链不上。
 
 `docker-compose` 里给 admin 服务挂卷：
 
@@ -336,11 +399,14 @@ python tests/test_pki_external.py    # 自带 ROOT/CA 的覆盖防护（10 组�
 → token 单次性 → mTLS 业务调用 → **重放拒绝** → 证书类型越权拒绝 → 密钥轮换续期 →
 旧证书被顶替后拒绝 → 吊销即时生效并进 CRL → 伪造 CA 拒绝 → 无证书拒绝。
 
-`test_pki_external.py` 覆盖自带材料的各种摆放方式与故障模式：离线 ROOT（只有
-证书）+ 自带 CA 原样采用且字节不被改写、二次启动幂等、`PKI_AUTO_CREATE=0` 缺
-材料即报错、离线 ROOT 缺 CA 时不乱签、密钥与证书不匹配时**双方文件都保留**、
-显式路径不存在不退回自动生成、CA 与 ROOT 不成链默认拒绝、合并 PEM 识别、
-空目录仍能自举、非 CA 证书不能冒充中间 CA、来源标记不被冒认。
+`test_pki_external.py` 覆盖自带材料的各种摆放方式与故障模式（12 组、49 项断言）：
+离线 ROOT（只有证书）+ 自带 CA 原样采用且字节不被改写、二次启动幂等、
+`PKI_AUTO_CREATE=0` 缺材料即报错、离线 ROOT 缺 CA 时不乱签、密钥与证书不匹配
+时**双方文件都保留**、显式路径不存在不退回自动生成、CA 与 ROOT 不成链默认
+拒绝、合并 PEM 识别、空目录仍能自举、非 CA 证书不能冒充中间 CA、来源标记不被
+冒认，以及**完整走一遍部署模型**：`pki_init.py` 产出 → 服务端只拿到 `root.crt`
++ `ca.crt` + `ca.key` → 签发的设备证书能链回设备端内置的那张 ROOT；
+`--check` 认可该目录，且 ROOT 私钥误放进服务端目录时报警退出码 1。
 
 ---
 

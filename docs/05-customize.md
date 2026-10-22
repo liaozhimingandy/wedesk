@@ -197,7 +197,7 @@ fn get_api_server_(...) -> String {
 | `client/flutter/android/app/src/main/res/values/strings.xml` | 安卓端 app 名 |
 | `client/flutter/lib/common.dart` | "Powered by" 链接指向自家官网 |
 | `client/flutter/lib/desktop/pages/install_page.dart` | 安装页隐私政策链接 |
-| `client/flutter/lib/desktop/pages/desktop_setting_page.dart` | "关于"页：官网、隐私政策、版权行 |
+| `client/flutter/lib/desktop/pages/desktop_setting_page.dart` | "关于"页：官网、隐私政策（版权行已抽到 `common.dart` 的 `kCopyrightCompany`，见 4.1） |
 | `client/src/client.rs` | Linux 侧 X11 / Wayland 登录屏错误提示里的官方文档链接 |
 | `client/res/msi/Package/Language/Package.en-us.wxl` | MSI 文案：开始菜单项、服务显示名、卸载项 |
 | `client/res/msi/preprocess.py` | MSI 的 ARP 技术支持/帮助链接 |
@@ -210,6 +210,57 @@ fn get_api_server_(...) -> String {
 > 那是过期信息，按旧值匹配会失败。
 
 > 单元测试 `#[cfg(test)]` 里还有 2 处官方地址，**故意没改** —— 改了会破坏测试意图。
+
+---
+
+### 4.1 改了 `company_name`，为什么"关于"页还是旧的
+
+历史坑：早期一次定制把占位值 `贵公司名称` 写进了 `desktop_setting_page.dart`
+`_AboutState` 里那行 `'Copyright © ... 贵公司名称\n$license'` 的字面量。
+`customize.py` 当年的规则认的是上游原文 `Purslane Tech Pte. Ltd.`，改过一次之后
+源文件里已经没有那串了 —— 规则**静默落空**，于是后续改 `custom.toml` 的
+`company_name` 怎么都同步不到界面上（2026-10-22 定位）。
+
+现在的做法是把版权归属收口成一个常量：
+
+| 位置 | 内容 |
+|---|---|
+| `client/flutter/lib/common.dart` | `const String kCopyrightCompany = 'www.alsoapp.com';` ← **唯一来源** |
+| `client/flutter/lib/desktop/pages/desktop_setting_page.dart` | 关于页蓝色区块引用它（不再有字面量） |
+| `build/client/customize.py` | 规则"关于页 - 版权归属（common.dart kCopyrightCompany）"按正则改写它 |
+
+`Runner.rc` / `AppInfo.xcconfig` / `Cargo.toml` 里的版权行也同步 **`company_name`**，
+只是它们各自独立，改完记得跑一次 `customize.py`（见第七节），别指望一次改到处生效。
+
+---
+
+### 4.2 打印机驱动：能改到哪里，不能改到哪里
+
+Windows 远程打印依赖上游的 `RustDesk Printer Driver`（打包时从
+`github.com/rustdesk/hbb_common/releases/download/driver` 下载）。
+**这个驱动包带微软 WHQL 目录签名**（包里的 `*.cat`，签名者
+`Microsoft Windows Hardware Compatibility Publisher`），所以改名是有硬边界的。
+2026-10-22 在本机逐条实测：
+
+| 改动 | 结果 | 依据 |
+|---|---|---|
+| 目录名 `drivers/RustDeskPrinterDriver/` → `drivers/WeDeskPrinterDriver/` | ✅ 可用 | `pnputil /add-driver` 通过，建队列 + 打印正常 |
+| `.inf` 文件名 → `WeDeskPrinterDriver.inf` | ✅ 可用 | 同上 |
+| 改任一文件的**内容**（含 `.inf` 文本） | ❌ 装不上 | `The hash for the file is not present in the specified catalog file` |
+| 驱动名 `"RustDesk v4 Printer Driver"` → WeDesk | ❌ 装不上 | `InstallPrinterDriverFromPackage` 按名字找包 → `The specified driver does not exist in the driver store.` |
+
+目录签名按**文件内容**算哈希，不认路径 —— 所以文件名/目录名随便改，内容一个字都不能动。
+也就是说：
+
+- **用户能看到的是我们自己的品牌**：打印机队列名 `WeDesk Printer`、端口名 `WeDesk Printer`
+  （`client/libs/remote_printer/src/lib.rs` 里由 `app_name` 拼出）。
+- **看不到**（除非打开"打印服务器属性 → 驱动程序"）：驱动内部名仍是 `RustDesk v4 Printer Driver`。
+- 真要连这一处也换掉，只能自己拿代码签名证书重新 `inf2cat` + 签名并自建信任链，
+  代价是丢掉 WHQL 兼容性 + 每台机器预置证书 —— 不建议。
+
+改动点必须四处同步：`lib.rs` 的 `RD_DRIVER_INF_PATH`、`src/ui_session_interface.rs` 的临时目录、
+临时目录、`res/job.py` 的"已签名目录"判定、**CI 的 Bundle printer driver 步骤**
+（它在下载后做改名），四处必须一起改，否则又会回到 "inf does not exists"。
 
 ---
 

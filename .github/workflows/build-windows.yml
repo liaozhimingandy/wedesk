@@ -860,6 +860,19 @@ jobs:
       #   drivers/RustDeskPrinterDriver/RustDeskPrinterDriver.inf
       # ——点击"安装打印机"报 "does not exists"（2026-10-22 实测）。
       # 这里改为按名字定位 .inf / .dll，两种布局都能落到正确位置。
+      #
+      # 品牌改名（RustDesk → WeDesk）能做到的极限，2026-10-22 在本机逐条实测：
+      #   ✅ 改目录名  drivers/WeDeskPrinterDriver/      —— 安装、建队列、打印均正常
+      #   ✅ 改 .inf 文件名 WeDeskPrinterDriver.inf      —— 正常
+      #   ❌ 改包内任一文件的**内容**（含 .inf 文本）：驱动包带微软 WHQL 目录签名
+      #      （*.cat ⊂ "Microsoft Windows Hardware Compatibility Publisher"），
+      #      目录签名按内容算哈希，pnputil 直接报
+      #      "The hash for the file is not present in the specified catalog file"
+      #   ❌ 因此 .inf [Models] 段声明的驱动名 "RustDesk v4 Printer Driver" 也改不了
+      #      （InstallPrinterDriverFromPackage 按名字找包，改成 WeDesk 会报
+      #       "The specified driver does not exist in the driver store."）
+      # 结果：用户能看到的打印机队列名 / 端口名是 "WeDesk Printer"（app_name 拼出），
+      #       驱动属性页里的驱动名仍带 RustDesk 字样 —— 这是上游签名决定的硬边界。
       - name: Bundle printer driver (optional)
         continue-on-error: true
         shell: bash
@@ -889,13 +902,18 @@ jobs:
           [ -n "$DLL" ] || { echo "::error::适配层 zip 里找不到 printer_driver_adapter.dll"; find "$STAGE/adapter" | head -20; exit 1; }
 
           mkdir -p ./rustdesk/drivers
-          rm -rf ./rustdesk/drivers/RustDeskPrinterDriver
-          cp -rf "$(dirname "$INF")" ./rustdesk/drivers/RustDeskPrinterDriver
+          rm -rf ./rustdesk/drivers/WeDeskPrinterDriver
+          cp -rf "$(dirname "$INF")" ./rustdesk/drivers/WeDeskPrinterDriver
+
+          # 只把 .inf 的**文件名**改成 WeDesk；包里其它文件名与所有文件内容必须
+          # 原样不动（详见本步骤上方的实测说明：动内容会导致签名校验失败）。
+          DEST=./rustdesk/drivers/WeDeskPrinterDriver
+          mv -f "$DEST/$(basename "$INF")" "$DEST/WeDeskPrinterDriver.inf"
           cp -f "$DLL" ./rustdesk/
 
           # 落位自检：客户端认的就是这个相对路径，不对就红。
-          test -f ./rustdesk/drivers/RustDeskPrinterDriver/RustDeskPrinterDriver.inf \
-            || { echo "::error::驱动已拷贝但仍不在 drivers/RustDeskPrinterDriver/RustDeskPrinterDriver.inf"; find ./rustdesk/drivers | head -20; exit 1; }
+          test -f ./rustdesk/drivers/WeDeskPrinterDriver/WeDeskPrinterDriver.inf \
+            || { echo "::error::驱动已拷贝但仍不在 drivers/WeDeskPrinterDriver/WeDeskPrinterDriver.inf"; find ./rustdesk/drivers | head -20; exit 1; }
           test -f ./rustdesk/printer_driver_adapter.dll \
             || { echo "::error::printer_driver_adapter.dll 未落到便携包根目录"; exit 1; }
           echo "✓ 打印机驱动已打包"
@@ -908,7 +926,7 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: |
-          INF=./rustdesk/drivers/RustDeskPrinterDriver/RustDeskPrinterDriver.inf
+          INF=./rustdesk/drivers/WeDeskPrinterDriver/WeDeskPrinterDriver.inf
           DLL=./rustdesk/printer_driver_adapter.dll
           if [ -f "$INF" ] && [ -f "$DLL" ]; then
             echo "PRINTER_DRIVER=已打包" >> "$GITHUB_ENV"

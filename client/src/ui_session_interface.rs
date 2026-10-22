@@ -1696,7 +1696,8 @@ impl<T: InvokeUiSession> Session<T> {
 
     pub fn printer_response(&self, id: i32, path: String, printer_name: String) {
         self.printer_names.write().unwrap().insert(id, printer_name);
-        let to = std::env::temp_dir().join(format!("rustdesk_printer_{id}"));
+        // 打印任务落地的临时目录（接收侧本地用的中间目录，名字没有跨端约定）。
+        let to = std::env::temp_dir().join(format!("wedesk_printer_{id}"));
         self.send(Data::SendFiles((
             id,
             base::fs::JobType::Printer,

@@ -2718,7 +2718,10 @@ class _AboutState extends State<_About> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Copyright © ${DateTime.now().toString().substring(0, 4)} 贵公司名称\n$license',
+                            // 版权归属统一走 common.dart 的 kCopyrightCompany：
+                            // 之前这里是写死的字面量（曾被 customize.py 注入成
+                            // 占位值"贵公司名称"），改 custom.toml 也同步不过来。
+                            'Copyright © ${DateTime.now().toString().substring(0, 4)} $kCopyrightCompany\n$license',
                             style: const TextStyle(color: Colors.white),
                           ),
                           Text(

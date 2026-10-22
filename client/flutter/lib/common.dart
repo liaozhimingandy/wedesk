@@ -78,6 +78,17 @@ bool _ignoreDevicePixelRatio = true;
 int windowsBuildNumber = 0;
 DesktopType? desktopType;
 
+/// 关于页底部蓝色区域 "Copyright © <year> <kCopyrightCompany>" 的版权归属。
+///
+/// 以前这一串是直接写在 desktop_setting_page.dart 的 _AboutState 里做字面量的，
+/// 早期一次 customize.py 注入把占位值 "贵公司名称" 写了进去，后来改 custom.toml
+/// 的 company_name 并不会同步到这行（那条规则认的是上游原文 "Purslane Tech Pte.
+/// Ltd."，早已不在文件里，于是每次运行都静默落空）——改了配置也没生效。
+///
+/// 现在收口到这里，全仓只有这一处；customize.py 的"关于页 - 版权归属"规则
+/// 也改为认这一行（custom.toml 的 brand.company_name 会写进来），两边不会再漂。
+const String kCopyrightCompany = 'www.alsoapp.com';
+
 // Tolerance used for floating-point position comparisons to avoid precision errors.
 const double _kPositionEpsilon = 1e-6;
 

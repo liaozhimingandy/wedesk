@@ -383,11 +383,27 @@ def build_rules(c: dict) -> "list[Rule]":
                 r'"Copyright © \d{4} [^"]*"',
                 '"Copyright © %d %s. All rights reserved."' % (2026, company),
             ),
-            Rule(
-                "关于页 - 版权归属",
+            # 关于页的版权归属现在已经收口到 common.dart 的 kCopyrightCompany 常量
+            # （见 desktop_setting_page.dart 的 _AboutState）。
+            # 以前这条规则改的是 desktop_setting_page.dart 里的上游字面量
+            # "Purslane Tech Pte. Ltd." —— 一旦某个版本把它换成别的写法（或早期
+            # 注入留下的占位值"贵公司名称"），规则就静默落空，改 custom.toml 的
+            # company_name 根本同步不到界面上。
+            Rule.regex(
+                "关于页 - 版权归属（common.dart kCopyrightCompany）",
+                "flutter/lib/common.dart",
+                r"(const String kCopyrightCompany = ')[^']*(';)",
+                r"\g<1>%s\g<2>" % company,
+                residual="kCopyrightCompany",
+            ),
+            # 老树兜底：还没迁移到常量的源码里仍有内联字面量，按同一样式改写，
+            # 顺带清掉过去注入进去的占位值。
+            Rule.regex(
+                "关于页 - 版权归属（旧版内联字面量兜底）",
                 "flutter/lib/desktop/pages/desktop_setting_page.dart",
-                "Purslane Tech Pte. Ltd.",
-                company,
+                r"(\$\{DateTime\.now\(\)\.toString\(\)\.substring\(0, 4\)\} )[^\n']*?(\\n\$license')",
+                r"\g<1>$kCopyrightCompany\g<2>",
+                residual="Purslane",
             ),
             # macOS 原生 About 面板的版权行（Info.plist 的
             # NSHumanReadableCopyright 读 $(PRODUCT_COPYRIGHT)）。

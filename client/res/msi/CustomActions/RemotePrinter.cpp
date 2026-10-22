@@ -19,12 +19,18 @@ namespace RemotePrinter
 {
 #define HRESULT_ERR_ELEMENT_NOT_FOUND 0x80070490
 
-    // The driver files and the driver name ship with the app under their stock names
-    // and stay fixed for every custom client. Only the printer and its port carry the
-    // app name, and that arrives at runtime so one dll serves every custom client.
-    LPCWCH RD_DRIVER_INF_PATH = L"drivers\\RustDeskPrinterDriver\\RustDeskPrinterDriver.inf";
+    // 目录名与 .inf 文件名是我们打包时改过的（上游叫 RustDeskPrinterDriver/），
+    // 但包内的内容必须逐字节原样：整个驱动包带微软 WHQL 目录签名（*.cat，
+    // 签名者 Microsoft Windows Hardware Compatibility Publisher），
+    // 目录签名按文件内容算哈希，改 .inf 里任何一个字符都会让
+    // pnputil /add-driver 报 "hash ... not present in the catalog file"。
+    // 只改目录名 / .inf 文件名则是安全的（2026-10-22 实测：建队列 + 打一页正常）。
+    LPCWCH RD_DRIVER_INF_PATH = L"drivers\\WeDeskPrinterDriver\\WeDeskPrinterDriver.inf";
+    // 驱动名同理：必须等于 .inf [Models] 段声明的名字，否则
+    // InstallPrinterDriverFromPackage 报 "driver does not exist in the driver store"。
+    // 用户真正看到的是"打印机队列名"与"端口名"——它们由运行时的 appName 拼出。
     LPCWCH RD_PRINTER_DRIVER_NAME = L"RustDesk v4 Printer Driver";
-    LPCWCH RD_DEFAULT_APP_NAME = L"RustDesk";
+    LPCWCH RD_DEFAULT_APP_NAME = L"WeDesk";
     LPCWCH XCV_MONITOR_LOCAL_PORT = L",XcvMonitor Local Port";
 
     static std::wstring printerNameOf(const std::wstring &appName)
@@ -248,7 +254,7 @@ namespace RemotePrinter
 
     BOOL deletePrinterDriver(LPCWSTR name)
     {
-        // If the printer is used after the spooler service is started. E.g., printing a document through RustDesk Printer.
+        // If the printer is used after the spooler service is started. E.g., printing a document through WeDesk Printer.
         // `DeletePrinterDriverExW()` may fail with `ERROR_PRINTER_DRIVER_IN_USE`(3001, 0xBB9).
         // We can only ignore this error for now.
         // Though restarting the spooler service is a solution, it's not a good idea to restart the service.

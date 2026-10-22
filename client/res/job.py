@@ -205,7 +205,14 @@ def sign_files(dir_path, only_ext=None):
             if not only_ext[i].startswith("."):
                 only_ext[i] = "." + only_ext[i]
     for root, dirs, files in os.walk(dir_path):
-        is_signed_dir = "RustDeskPrinterDriver" in root or "usbmmidd_v2" in root
+        # 这两个目录里的文件由上游签过（WHQL 目录签名），只需要签 .exe；
+        # 目录名改过（RustDeskPrinterDriver → WeDeskPrinterDriver），两种都认，
+        # 否则去动已经签好的 .cat / .dll 会把签名弄坏。
+        is_signed_dir = (
+            "RustDeskPrinterDriver" in root
+            or "WeDeskPrinterDriver" in root
+            or "usbmmidd_v2" in root
+        )
         for file in files:
             file_path = os.path.join(root, file)
             _, ext = os.path.splitext(file_path)
